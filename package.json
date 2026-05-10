@@ -20,14 +20,16 @@
     "agent:run": "tsx scripts/run-agent.ts",
     "agent:predict": "tsx scripts/run-predictive-agent.ts",
     "predict:up": "cd predictive-service && uv run uvicorn predictive_service.main:app --port 8765",
+    "test:unit": "vitest run",
+    "test:unit:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "lint": "eslint . --ext .ts",
     "format": "prettier --write \"**/*.{ts,json,md}\"",
     "install:browsers": "playwright install --with-deps chromium"
   },
   "dependencies": {
-    "ai": "^4.0.0",
     "@ai-sdk/anthropic": "^1.0.0",
+    "ai": "^4.0.0",
     "dotenv": "^16.4.5",
     "pino": "^9.5.0",
     "pino-pretty": "^11.3.0",
@@ -43,6 +45,7 @@
     "eslint-plugin-playwright": "^2.0.1",
     "prettier": "^3.3.3",
     "tsx": "^4.19.2",
-    "typescript": "^5.6.3"
+    "typescript": "^5.6.3",
+    "vitest": "^4.1.5"
   }
 }
