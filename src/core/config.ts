@@ -22,6 +22,16 @@ const schema = z.object({
   ANTHROPIC_API_KEY: z.string().optional(),
   AGENT_MODEL: z.string().default('claude-sonnet-4-6'),
 
+  // --- Predictive agent (TimesFM sidecar + Ollama OSS LLM) ---
+  // El sidecar Python (predictive-service/) corre TimesFM y expone /forecast.
+  // Ollama corre el LLM open source que interpreta el forecast y orquesta tools.
+  PREDICTIVE_SERVICE_URL: z.string().url().default('http://localhost:8765'),
+  PREDICTIVE_SERVICE_TIMEOUT_MS: z.coerce.number().int().positive().default(60_000),
+  OLLAMA_BASE_URL: z.string().url().default('http://localhost:11434'),
+  OLLAMA_MODEL: z.string().default('llama3.1:8b'),
+  OLLAMA_TIMEOUT_MS: z.coerce.number().int().positive().default(120_000),
+  TIMESFM_HORIZON: z.coerce.number().int().positive().max(512).default(24),
+
   PW_WORKERS: z.coerce.number().int().positive().default(4),
   HEADLESS: z
     .enum(['true', 'false'])

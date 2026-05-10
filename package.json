@@ -18,6 +18,8 @@
     "codegen": "playwright codegen",
     "seed:demo": "tsx scripts/seed-demo.ts",
     "agent:run": "tsx scripts/run-agent.ts",
+    "agent:predict": "tsx scripts/run-predictive-agent.ts",
+    "predict:up": "cd predictive-service && uv run uvicorn predictive_service.main:app --port 8765",
     "typecheck": "tsc --noEmit",
     "lint": "eslint . --ext .ts",
     "format": "prettier --write \"**/*.{ts,json,md}\"",

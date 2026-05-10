@@ -22,3 +22,14 @@ logs/
 .DS_Store
 *.swp
 *.tsbuildinfo
+
+# Python sidecar (predictive-service/)
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# pnpm lock genera-do, no lo committeamos en este repo (usan pnpm install limpio)
+pnpm-lock.yaml
