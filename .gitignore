@@ -33,3 +33,8 @@ __pycache__/
 
 # pnpm lock genera-do, no lo committeamos en este repo (usan pnpm install limpio)
 pnpm-lock.yaml
+
+# Next.js (web/)
+web/.next/
+web/out/
+web/next-env.d.ts.bak
