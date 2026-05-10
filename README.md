@@ -63,6 +63,15 @@ pnpm test:debug          # PWDEBUG=1
 pnpm report              # abre el reporte HTML del último run
 ```
 
+### Tests unitarios (vitest)
+
+Cubren el agente predictivo (`src/agents/predictive/`) con `fetch` mockeado — no necesitan el sidecar Python ni Ollama corriendo.
+
+```bash
+pnpm test:unit           # un solo run, ~8s
+pnpm test:unit:watch     # watch mode mientras editas
+```
+
 ### Seed de tenant demo
 
 ```bash
