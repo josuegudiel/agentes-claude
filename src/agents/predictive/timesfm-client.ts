@@ -1,4 +1,3 @@
-import { config } from '../../core/config.js';
 import { logger } from '../../core/logger.js';
 import { AppError } from '../../core/errors.js';
 import { withRetry } from '../../core/retry.js';
@@ -9,6 +8,10 @@ import {
   HealthResponseSchema,
   type HealthResponse,
 } from './schema.js';
+
+// Defaults inline (no via core/config.ts) — ver explicacion en ollama-client.ts.
+const DEFAULT_BASE_URL = process.env['PREDICTIVE_SERVICE_URL'] ?? 'http://localhost:8765';
+const DEFAULT_TIMEOUT_MS = Number(process.env['PREDICTIVE_SERVICE_TIMEOUT_MS'] ?? 60_000);
 
 /**
  * Cliente HTTP minimo al sidecar Python (predictive-service/).
@@ -25,8 +28,8 @@ export class TimesFMClient {
   private readonly log = logger.child({ component: 'predictive.timesfm' });
 
   constructor(opts?: { baseUrl?: string; timeoutMs?: number }) {
-    this.baseUrl = (opts?.baseUrl ?? config.PREDICTIVE_SERVICE_URL).replace(/\/$/, '');
-    this.timeoutMs = opts?.timeoutMs ?? config.PREDICTIVE_SERVICE_TIMEOUT_MS;
+    this.baseUrl = (opts?.baseUrl ?? DEFAULT_BASE_URL).replace(/\/$/, '');
+    this.timeoutMs = opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   }
 
   async health(): Promise<HealthResponse> {

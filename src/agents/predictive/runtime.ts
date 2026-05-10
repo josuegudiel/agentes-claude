@@ -1,4 +1,3 @@
-import { config } from '../../core/config.js';
 import { logger } from '../../core/logger.js';
 import { OllamaClient, type OllamaMessage } from './ollama-client.js';
 import { TimesFMClient } from './timesfm-client.js';
@@ -27,7 +26,20 @@ export interface PredictiveAgentOptions {
   maxSteps?: number;
   timesfm?: TimesFMClient;
   ollama?: OllamaClient;
+  /**
+   * Callback opcional invocado en cada paso del loop. Sirve para hacer
+   * streaming via SSE desde un API route. NO debe lanzar — los errores se
+   * tragan para no romper el agente.
+   */
+  onStep?: (event: AgentEvent) => void;
 }
+
+export type AgentEvent =
+  | { type: 'preflight'; ollamaModel: string; timesfmModel: string; horizonMax: number }
+  | { type: 'assistant_message'; text: string; hasToolCalls: boolean }
+  | { type: 'tool_call'; name: string; args: unknown }
+  | { type: 'tool_result'; name: string; result: unknown }
+  | { type: 'final'; text: string; steps: number };
 
 export interface PredictiveAgentResult {
   text: string;
@@ -45,6 +57,13 @@ export async function runPredictiveAgent(
   const ollama = opts.ollama ?? new OllamaClient();
   const timesfm = opts.timesfm ?? new TimesFMClient();
   const tools: PredictiveTools = buildPredictiveTools({ timesfm, ollama });
+  const emit = (event: AgentEvent): void => {
+    try {
+      opts.onStep?.(event);
+    } catch (err) {
+      log.warn({ err }, 'onStep callback lanzo — ignorando');
+    }
+  };
 
   // Preflight: queremos errores claros ANTES de empezar el loop.
   const ollamaErr = await ollama.preflight();
@@ -70,6 +89,13 @@ export async function runPredictiveAgent(
     'Iniciando agente predictivo',
   );
 
+  emit({
+    type: 'preflight',
+    ollamaModel: ollama.modelName,
+    timesfmModel: health.model,
+    horizonMax: health.horizon_max,
+  });
+
   const messages: OllamaMessage[] = [
     { role: 'system', content: SYSTEM_PROMPT },
     { role: 'user', content: opts.goal },
@@ -89,11 +115,18 @@ export async function runPredictiveAgent(
     messages.push(msg);
 
     const calls = msg.tool_calls ?? [];
+    emit({
+      type: 'assistant_message',
+      text: msg.content.trim(),
+      hasToolCalls: calls.length > 0,
+    });
     if (calls.length === 0) {
       // Modelo termino con texto plano.
       log.info({ steps }, 'Agente termino sin mas tool calls');
+      const text = msg.content.trim();
+      emit({ type: 'final', text, steps });
       return {
-        text: msg.content.trim(),
+        text,
         steps,
         toolCalls: toolCallsLog,
         lastSummary: tools.state.lastSummary,
@@ -103,7 +136,13 @@ export async function runPredictiveAgent(
 
     // Ejecutar cada tool call y appendear el resultado.
     for (const call of calls) {
+      emit({
+        type: 'tool_call',
+        name: call.function.name,
+        args: call.function.arguments,
+      });
       const result = await tools.dispatch(call.function.name, call.function.arguments);
+      emit({ type: 'tool_result', name: call.function.name, result });
       toolCallsLog.push({
         name: call.function.name,
         args: call.function.arguments,
@@ -124,8 +163,11 @@ export async function runPredictiveAgent(
       'Has llegado al limite de tool calls. Da la respuesta final ahora con los datos que ya tienes.',
   });
   const final = await ollama.chat({ messages });
+  const finalText = final.message.content.trim();
+  emit({ type: 'assistant_message', text: finalText, hasToolCalls: false });
+  emit({ type: 'final', text: finalText, steps: steps + 1 });
   return {
-    text: final.message.content.trim(),
+    text: finalText,
     steps: steps + 1,
     toolCalls: toolCallsLog,
     lastSummary: tools.state.lastSummary,
@@ -137,4 +179,3 @@ export { TimesFMClient } from './timesfm-client.js';
 export { OllamaClient } from './ollama-client.js';
 export { buildPredictiveTools } from './tools.js';
 export type { ForecastSummary } from './schema.js';
-export { config as predictiveConfig } from '../../core/config.js';

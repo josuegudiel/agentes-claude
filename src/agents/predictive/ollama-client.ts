@@ -1,7 +1,13 @@
 import { z } from 'zod';
-import { config } from '../../core/config.js';
 import { logger } from '../../core/logger.js';
 import { AppError } from '../../core/errors.js';
+
+// Defaults inline (no via core/config.ts) para que el agente predictivo
+// pueda correr en contextos donde las env vars de Playwright no aplican
+// (ej: Next.js API routes, CI minimo, etc.).
+const DEFAULT_BASE_URL = process.env['OLLAMA_BASE_URL'] ?? 'http://localhost:11434';
+const DEFAULT_MODEL = process.env['OLLAMA_MODEL'] ?? 'llama3.1:8b';
+const DEFAULT_TIMEOUT_MS = Number(process.env['OLLAMA_TIMEOUT_MS'] ?? 120_000);
 
 /**
  * Cliente minimo a Ollama (https://ollama.com).
@@ -73,9 +79,9 @@ export class OllamaClient {
   private readonly log = logger.child({ component: 'predictive.ollama' });
 
   constructor(opts?: { baseUrl?: string; model?: string; timeoutMs?: number }) {
-    this.baseUrl = (opts?.baseUrl ?? config.OLLAMA_BASE_URL).replace(/\/$/, '');
-    this.model = opts?.model ?? config.OLLAMA_MODEL;
-    this.timeoutMs = opts?.timeoutMs ?? config.OLLAMA_TIMEOUT_MS;
+    this.baseUrl = (opts?.baseUrl ?? DEFAULT_BASE_URL).replace(/\/$/, '');
+    this.model = opts?.model ?? DEFAULT_MODEL;
+    this.timeoutMs = opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   }
 
   get modelName(): string {

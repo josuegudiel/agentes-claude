@@ -72,6 +72,24 @@ pnpm test:unit           # un solo run, ~8s
 pnpm test:unit:watch     # watch mode mientras editas
 ```
 
+### UI web (Next.js, en `web/`)
+
+UI interactiva del agente predictivo: pegás una serie, elegís horizonte, y ves los pasos del agente en vivo + un chart con histórico y forecast con bandas P10–P90.
+
+```bash
+# Una sola vez
+cp web/.env.local.example web/.env.local
+
+# 3 procesos en paralelo
+ollama serve                  # terminal 1 (o systemd, lo que uses)
+pnpm predict:up               # terminal 2 — sidecar Python con TimesFM
+pnpm web:dev                  # terminal 3 — abre http://localhost:3000
+```
+
+- `pnpm web:build` y `pnpm web:start` para producción.
+- El web Node es el único punto de entrada al cliente: el sidecar Python (`:8765`) y Ollama (`:11434`) quedan internos, sólo accesibles vía Next.
+- Streaming en vivo (Server-Sent Events) en `POST /api/predict` — cada paso del tool-loop aparece en el panel lateral.
+
 ### Seed de tenant demo
 
 ```bash
