@@ -76,6 +76,37 @@ pnpm seed:demo -- --count 20      # 20 pacientes
 pnpm agent:run -- "Crea un paciente llamado Juan Perez con email juan@test.com"
 ```
 
+### Agente predictivo (TimesFM + Ollama, todo open source)
+
+Agente independiente del anterior. Usa **TimesFM 2.0** (Google Research, Apache 2.0) para forecasting de series temporales y **Ollama** local (Llama 3.1 / Qwen 2.5 / Mistral) para razonamiento en lenguaje natural. **No depende de la API de Anthropic.**
+
+Arquitectura: el agente vive en `src/agents/predictive/` y habla por HTTP con un sidecar Python (`predictive-service/`) que carga TimesFM en PyTorch. Mantenerlos separados evita meter `torch` en el runtime Node y permite mover el sidecar a una box con GPU sin tocar el agente.
+
+Setup una sola vez:
+
+```bash
+# 1. Sidecar Python con TimesFM
+cd predictive-service && uv sync && cd ..
+
+# 2. Modelo OSS para Ollama (instala https://ollama.com primero)
+ollama pull llama3.1:8b
+```
+
+Cada vez que quieras usarlo, levanta el sidecar en otra terminal:
+
+```bash
+pnpm predict:up   # uvicorn en :8765, descarga ~2GB la primera vez
+```
+
+Y corre el agente:
+
+```bash
+pnpm agent:predict -- "Predice las proximas 24 horas de ventas" \
+  --series-file ventas.json --horizon 24 --frequency 0
+```
+
+Detalles en [`predictive-service/README.md`](predictive-service/README.md).
+
 ### Codegen (generar selectores)
 
 ```bash

@@ -1,0 +1,43 @@
+[project]
+name = "predictive-service"
+version = "0.1.0"
+description = "Sidecar HTTP que sirve forecasts de TimesFM al agente predictivo"
+readme = "README.md"
+requires-python = ">=3.10,<3.13"
+license = { text = "Apache-2.0" }
+dependencies = [
+    # FastAPI 0.115 + uvicorn estandar para el HTTP layer.
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "pydantic>=2.9.0",
+    # TimesFM 2.0 (PyTorch). El primer cold-start descarga el checkpoint de HF
+    # (~2GB para 500m) en ~/.cache/huggingface. Despues queda cacheado.
+    "timesfm[torch]>=1.2.0",
+    "numpy>=1.26.0",
+    "huggingface-hub>=0.26.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "httpx>=0.27.0",
+    "ruff>=0.7.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["predictive_service"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "N", "SIM"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
