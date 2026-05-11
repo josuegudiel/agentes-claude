@@ -134,6 +134,21 @@ pnpm agent:predict -- "Predice las proximas 24 horas de ventas" \
 
 Detalles en [`predictive-service/README.md`](predictive-service/README.md).
 
+### Agente Origin (voz para Star Citizen)
+
+Asistente de voz **standalone para Windows** que escucha por **Push-to-Talk**, transcribe local con **faster-whisper** y traduce a teclas DirectInput. Bilingüe ES/EN con toggle, perfiles múltiples (Flight, FPS, EVA, Mining, …), dashboard PySide6, system tray. Sin Internet después de la primera descarga del modelo.
+
+Vive en `origin/` como app Python independiente — no usa Node ni la API de Anthropic. Empaquetable como `.exe` con PyInstaller + Inno Setup.
+
+```powershell
+cd origin
+uv sync
+uv run python -m origin          # GUI
+uv run python -m origin --headless --dry-run   # smoke sin enviar teclas
+```
+
+Detalles en [`origin/README.md`](origin/README.md).
+
 ### Codegen (generar selectores)
 
 ```bash

@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.uv/
+uv.lock
+build/
+dist/
+*.spec~
+.pytest_cache/
+.ruff_cache/
+commands.local.yaml
+origin.log
+installer/models/
+installer/build/
+installer/dist/
+*.exe
