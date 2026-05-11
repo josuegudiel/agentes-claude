@@ -138,6 +138,18 @@ Genera `dist/OriginSetup-0.2.0-small.exe` (~600 MB con `small`). El instalador:
 
 Bajo el hood: PyInstaller (modo `onedir`) + Inno Setup. El modelo Whisper queda **embebido en el bundle** para que el primer arranque no necesite Internet.
 
+### Build automatizado en CI
+
+GitHub Actions (`.github/workflows/origin-release.yml`) corre el pipeline en `windows-latest`:
+
+```bash
+# Empaqueta y publica en Releases automáticamente
+git tag origin-v0.2.0
+git push origin origin-v0.2.0
+```
+
+También se puede disparar manualmente desde la pestaña Actions ("Run workflow") eligiendo el tamaño de modelo. El workflow cachea el modelo Whisper entre runs (no re-descarga 485 MB cada vez), instala Inno Setup vía Chocolatey, sube el `.exe` como artifact y lo adjunta al GitHub Release cuando el trigger es un tag `origin-v*`.
+
 ---
 
 ## Arquitectura

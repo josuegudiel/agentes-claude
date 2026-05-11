@@ -1,0 +1,88 @@
+name: Origin — Build Windows installer
+
+on:
+  push:
+    tags:
+      - 'origin-v*'
+  workflow_dispatch:
+    inputs:
+      model:
+        description: 'Modelo Whisper a empaquetar'
+        type: choice
+        options: [tiny, base, small, medium, large-v3]
+        default: small
+
+permissions:
+  contents: write
+
+concurrency:
+  # Builds de tag distintos no se cancelan entre sí; manuales sobre la misma ref sí.
+  group: origin-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build & package (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    env:
+      MODEL: ${{ github.event.inputs.model || 'small' }}
+
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: origin
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+          cache-dependency-glob: 'origin/uv.lock'
+
+      - name: Install deps (with dev extras for pyinstaller)
+        run: uv sync --extra dev
+
+      # Modelo Whisper: ~485 MB para small, hasta 3 GB para large-v3. Cacheamos
+      # entre runs para no repetir el download desde HuggingFace cada vez.
+      - name: Cache Whisper model
+        id: model-cache
+        uses: actions/cache@v4
+        with:
+          path: origin/installer/models/Systran--faster-whisper-${{ env.MODEL }}
+          key: whisper-${{ env.MODEL }}-v1
+
+      - name: Install Inno Setup 6
+        shell: pwsh
+        working-directory: .
+        run: choco install innosetup --no-progress --yes
+
+      - name: Build installer
+        run: pwsh installer/build_installer.ps1 -Model $env:MODEL
+
+      - name: Show outputs
+        run: Get-ChildItem -Path dist -Recurse -File | Select-Object FullName, Length
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OriginSetup-${{ env.MODEL }}
+          path: origin/dist/OriginSetup-*.exe
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Publish GitHub Release (only on tag)
+        if: startsWith(github.ref, 'refs/tags/origin-v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: origin/dist/OriginSetup-*.exe
+          generate_release_notes: true
+          name: Origin ${{ github.ref_name }}
+          draft: false
+          prerelease: false
