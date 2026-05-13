@@ -8,7 +8,7 @@ import logging
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QLockFile, Qt
+from PySide6.QtCore import QLockFile
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from ..engine.events import EventBus

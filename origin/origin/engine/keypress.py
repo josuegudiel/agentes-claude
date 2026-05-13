@@ -137,3 +137,27 @@ def execute(combos: list[str], inter_key_delay_ms: int = 30, dry_run: bool = Fal
         finally:
             for m in reversed(mods):
                 pdi.keyUp(m)
+
+
+def execute_held(combo: str, hold_ms: int, dry_run: bool = False) -> None:
+    """Mantiene `combo` presionado durante `hold_ms` antes de soltar.
+
+    Útil para steps tipo `{key: "b", hold_ms: 500}` (ej. spool quantum drive).
+    """
+    mods, key = parse_combo(combo)
+    if dry_run:
+        logger.info("dry_run held key=%s hold_ms=%d", combo, hold_ms)
+        return
+    pdi = _get_pdi()
+    if pdi is None:
+        logger.warning("pydirectinput no disponible — saltando held key=%s", combo)
+        return
+    for m in mods:
+        pdi.keyDown(m)
+    pdi.keyDown(key)
+    try:
+        time.sleep(max(0, hold_ms) / 1000.0)
+    finally:
+        pdi.keyUp(key)
+        for m in reversed(mods):
+            pdi.keyUp(m)

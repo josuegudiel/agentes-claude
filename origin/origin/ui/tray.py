@@ -8,7 +8,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QActionGroup, QColor, QFont, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import QMenu, QSystemTrayIcon
 
-from ..engine.runtime import Orchestrator, State
+from ..engine.runtime import Orchestrator
 from .engine_bridge import EngineBridge
 from .i18n.tr import tr
 

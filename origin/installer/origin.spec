@@ -20,14 +20,23 @@ datas = [
     (str(root / "origin" / "ui" / "i18n" / "es.json"),         "origin/ui/i18n"),
     (str(root / "origin" / "ui" / "i18n" / "en.json"),         "origin/ui/i18n"),
     (str(root / "origin" / "ui" / "assets"),                    "origin/ui/assets"),
+    (str(root / "origin" / "engine" / "tts_phrases_es.json"),  "origin/engine"),
+    (str(root / "origin" / "engine" / "tts_phrases_en.json"),  "origin/engine"),
     (str(root / "commands.preset.yaml"),                        "."),
 ]
 
-# Modelo Whisper pre-descargado (installer/models/Systran--faster-whisper-small/).
-# El script de build lo deja ahí antes de invocar pyinstaller.
+# Modelo Whisper pre-descargado.
 models_dir = root / "installer" / "models"
 if models_dir.exists():
     datas.append((str(models_dir), "models"))
+
+# Piper TTS + voces ONNX pre-descargados por build_installer.ps1 paso [0/4].
+piper_dir = root / "installer" / "piper"
+voices_dir = root / "installer" / "voices"
+if piper_dir.exists():
+    datas.append((str(piper_dir), "piper"))
+if voices_dir.exists():
+    datas.append((str(voices_dir), "voices"))
 
 hiddenimports = [
     "ctranslate2",
@@ -39,6 +48,8 @@ hiddenimports = [
     "tokenizers",
     "watchdog.observers.read_directory_changes",
     "watchdog.observers.winapi",
+    "httpx",
+    "inputs",
 ]
 
 a = Analysis(

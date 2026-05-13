@@ -24,6 +24,12 @@ class EventType(str, Enum):
     CONFIG_RELOADED = "config_reloaded"
     CONFIG_ERROR = "config_error"
     LOG = "log"
+    # ===== v0.3 =====
+    TTS_STARTED = "tts_started"
+    TTS_DONE = "tts_done"
+    HOTAS_BUTTON_PRESSED = "hotas_button_pressed"
+    LLM_INTENT_RESOLVED = "llm_intent_resolved"
+    SCRIPT_STEP_EXECUTED = "script_step_executed"
 
 
 Listener = Callable[[dict[str, Any]], None]

@@ -4,6 +4,15 @@ App de escritorio para Windows que escucha comandos por **Push-to-Talk** (PTT), 
 
 **Sin Internet** después de la primera descarga del modelo. Sin telemetría. Sin pagos por API.
 
+## Novedades v0.3
+
+- **TTS local con Piper** — Origin te responde por voz tras matchear ("hangar solicitado, capitán"). Una voz fija ES + una EN configurables; bundle del `.exe` incluye `piper.exe` + 2 modelos ONNX.
+- **PTT por botón de HOTAS / joystick** — librería `inputs`, capture-by-press en Settings. Funciona en paralelo con la tecla PTT.
+- **Fallback LLM con Ollama** — cuando ningún comando matchea por fuzzy pero la transcripción no está vacía, un LLM local interpreta intent free-form ("prepará entrada a Crusader" → secuencia de comandos). Opt-in, requiere `ollama serve` corriendo.
+- **Scripting DSL** — cada comando puede declarar `steps:` con tipos `key`, `wait`, `say`, `set`, `if`, `goto`, `label`, `repeat`. Backward compatible: `keys:` legacy sigue funcionando.
+- **Preset 200+ comandos** — 10 perfiles bilingües: flight, mobiglas, fps, eva, mining, quantum, combat, salvage, refuel_cargo, voice_misc.
+- **3 estados nuevos en el dashboard**: `running_script`, `speaking`, `resolving_intent`.
+
 ---
 
 ## Quickstart (Windows 11)
