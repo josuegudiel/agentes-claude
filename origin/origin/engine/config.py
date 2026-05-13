@@ -363,7 +363,11 @@ class CommandsFileV3(BaseModel):
         return self.model_copy(update={"settings": Settings(**merged)})
 
     def to_dump(self) -> dict[str, Any]:
-        return self.model_dump(mode="json", exclude_none=False)
+        # `by_alias=True` para que `IfStep.else_` se serialice como `else:` en YAML
+        # (alias del campo Pydantic). Sin esto, el YAML auto-saved tenía `else_:`,
+        # técnicamente válido por populate_by_name pero inconsistente con el YAML
+        # escrito a mano por humanos en commands.preset.yaml.
+        return self.model_dump(mode="json", exclude_none=False, by_alias=True)
 
 
 # Backwards-compat alias: el resto del codebase importa `CommandsFileV2`.
@@ -470,15 +474,18 @@ def command_as_steps(cmd: Command, settings: Settings) -> list[Any]:
             out.append(WaitStep(ms=settings.inter_key_delay_ms))
         out.append(KeyStep(combo=combo))
     if settings.tts.enabled:
-        say_text = cmd.say_es or cmd.say_en
-        if say_text or settings.tts.default_response_when_no_say:
-            out.append(
-                SayStep(
-                    text=cmd.label_es,
-                    text_es=cmd.say_es,
-                    text_en=cmd.say_en,
-                )
-            )
+        # Resolvemos el texto del say con un fallback explícito. Antes el SayStep
+        # podía quedar con todos los campos None si el comando no tenía say_es,
+        # say_en, ni label_es/en — el validator de SayStep lo rechazaba en runtime.
+        say_es = cmd.say_es
+        say_en = cmd.say_en
+        fallback = (
+            (cmd.label_es or cmd.label_en)
+            if settings.tts.default_response_when_no_say
+            else None
+        )
+        if say_es or say_en or fallback:
+            out.append(SayStep(text=fallback, text_es=say_es, text_en=say_en))
     return out
 
 

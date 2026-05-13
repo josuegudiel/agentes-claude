@@ -298,11 +298,30 @@ class CommandsEditorPage(QWidget):
             item.setToolTip("")
 
     def _collect_table_as_commands(self) -> list[dict[str, Any]]:
+        """Reconstruye los comandos del perfil activo desde la tabla.
+
+        Mergeo cuidadoso: la tabla solo edita columnas planas (id, phrases, keys,
+        labels, descriptions). Los campos `steps`, `say_es`, `say_en`, `say_key`
+        del comando original se preservan vía lookup por id contra el perfil
+        actual — sin esto, un edit en la tabla borraba el script de `Edit script`.
+        """
+        cf = self._orch.config
+        pid = self._profile_combo.currentText() or self._orch.profiles.active_id
+        try:
+            original_by_id = {c.id: c for c in cf.get_profile(pid).commands}
+        except KeyError:
+            original_by_id = {}
+
         out: list[dict[str, Any]] = []
         for r in range(self._table.rowCount()):
-            row = {col[0]: (self._table.item(r, i).text() if self._table.item(r, i) else "") for i, col in enumerate(COLS)}
+            row = {
+                col[0]: (self._table.item(r, i).text() if self._table.item(r, i) else "")
+                for i, col in enumerate(COLS)
+            }
+            new_id = row["id"].strip()
+            original = original_by_id.get(new_id)
             cmd = {
-                "id": row["id"].strip(),
+                "id": new_id,
                 "phrases_es": _split_list(row["phrases_es"]),
                 "phrases_en": _split_list(row["phrases_en"]),
                 "keys": _split_list(row["keys"]),
@@ -310,6 +329,11 @@ class CommandsEditorPage(QWidget):
                 "label_en": row["label_en"].strip() or None,
                 "description_es": row["description_es"].strip() or None,
                 "description_en": row["description_en"].strip() or None,
+                # ===== preserved (no editables desde la tabla) =====
+                "steps": [s.model_dump(by_alias=True) for s in original.steps] if (original and original.steps) else None,
+                "say_es": original.say_es if original else None,
+                "say_en": original.say_en if original else None,
+                "say_key": original.say_key if original else None,
             }
             out.append(cmd)
         return out
@@ -331,10 +355,11 @@ class CommandsEditorPage(QWidget):
             "commands": new_commands,
         }
         new_profiles = [
-            new_profile if p.id == profile_id else p.model_dump() for p in cf.profiles
+            new_profile if p.id == profile_id else p.model_dump(by_alias=True)
+            for p in cf.profiles
         ]
         new_dump = {
-            "version": 2,
+            "version": 3,
             "settings": cf.settings.model_dump(),
             "profiles": new_profiles,
         }

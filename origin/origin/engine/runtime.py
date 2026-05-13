@@ -168,9 +168,10 @@ class Orchestrator:
         self._script_executor = StepExecutor(
             keypress_exec=lambda combos, delay, dry: keypress.execute(combos, delay, dry),
             keypress_exec_held=lambda combo, ms, dry: keypress.execute_held(combo, ms, dry),
-            tts_say=self._tts_say if self._tts else None,
-            tts_cancel=self._tts.cancel if self._tts else None,
-            set_substate=lambda s: self._set_state(State(s) if s != "running_script" else State.RUNNING_SCRIPT),
+            # Métodos bound a `self`: siempre re-leen self._tts / self._settings.
+            tts_say=self._tts_say,
+            tts_cancel=self._tts_cancel_indirect,
+            set_substate=lambda s: self._set_state(State(s)),
             bus=self._bus,
             settings_provider=lambda: self._settings,
             i18n_say=self._i18n_say,
@@ -298,13 +299,23 @@ class Orchestrator:
         return True
 
     def execute_command_test(self, command_id: str, profile_id: str | None = None) -> None:
-        """Ejecuta los steps de un comando sin necesidad de hablar (botón Test del editor)."""
+        """Ejecuta los steps de un comando sin necesidad de hablar (botón Test del editor).
+
+        Esta ruta NO pasa por el executor, así que no hay `_on_process_done` que
+        resetee el state. Lo hacemos en finally — sin esto el dashboard quedaba
+        atascado en RUNNING_SCRIPT tras un Test.
+        """
         pid = profile_id or self._profiles.active_id
         prof = self._cf.get_profile(pid)
         cmd = next((c for c in prof.commands if c.id == command_id), None)
         if cmd is None:
             raise KeyError(command_id)
-        self._dispatch_command(cmd, self._settings.active_language, test=True)
+        try:
+            self._dispatch_command(cmd, self._settings.active_language, test=True)
+        finally:
+            with self._state_lock:
+                if self._state not in (State.PAUSED, State.ERROR):
+                    self._set_state(State.READY)
 
     # ====================================================================
     # Internos
@@ -557,7 +568,11 @@ class Orchestrator:
         """Ejecuta un comando vía StepExecutor (unifica keys+steps)."""
         assert self._script_executor is not None
         steps = cfgmod.command_as_steps(cmd, self._settings)
-        state = self._script_states.setdefault(self._profiles.active_id, StepExecutionState())
+        # `setdefault` bajo lock — reload_config puede mutar `_script_states`.
+        with self._state_lock:
+            state = self._script_states.setdefault(
+                self._profiles.active_id, StepExecutionState()
+            )
         # Clear (no reasignar) — un shutdown() en flight que llamó .set() sobre el
         # mismo Event mantiene su efecto, no se pierde por re-asignación.
         self._script_cancel.clear()
@@ -595,7 +610,9 @@ class Orchestrator:
     # ----- TTS helpers -----
 
     def _tts_say(self, text: str, lang: str) -> None:
-        if not self._tts:
+        # Gate por settings.tts.enabled — el toggle desde Settings tiene que
+        # cortar TODO TTS, incluyendo say steps explícitos en scripts.
+        if not self._tts or not self._settings.tts.enabled:
             return
         self._tts.say(
             text,
@@ -603,6 +620,12 @@ class Orchestrator:
             speed=self._settings.tts.speed,
             volume=self._settings.tts.volume,
         )
+
+    def _tts_cancel_indirect(self) -> None:
+        # Indirección para evitar capturar `self._tts.cancel` con bind temprano:
+        # si TTS se rebuildea, el lookup en runtime sigue válido.
+        if self._tts:
+            self._tts.cancel()
 
     def _i18n_say(self, key: str, lang: str) -> str:
         return self._tts_phrases.get(lang, {}).get(key) or f"[missing:{key}]"
