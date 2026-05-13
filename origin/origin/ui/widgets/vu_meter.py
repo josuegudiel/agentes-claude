@@ -1,7 +1,7 @@
 """Barra VU horizontal con peak-hold suave. Recibe RMS por `set_level()`."""
 from __future__ import annotations
 
-from PySide6.QtCore import QRectF, Qt, QTimer
+from PySide6.QtCore import QRectF, QTimer
 from PySide6.QtGui import QColor, QPainter, QPaintEvent
 from PySide6.QtWidgets import QSizePolicy, QWidget
 

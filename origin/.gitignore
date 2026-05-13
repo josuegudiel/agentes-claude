@@ -10,8 +10,11 @@ dist/
 .pytest_cache/
 .ruff_cache/
 commands.local.yaml
+commands.v*.backup.yaml
 origin.log
 installer/models/
+installer/piper/
+installer/voices/
 installer/build/
 installer/dist/
 *.exe

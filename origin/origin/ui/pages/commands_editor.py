@@ -93,11 +93,13 @@ class CommandsEditorPage(QWidget):
         self._btn_dup = QPushButton()
         self._btn_del = QPushButton()
         self._btn_test = QPushButton()
+        self._btn_script = QPushButton()
         for btn, slot in (
             (self._btn_add, self._on_add),
             (self._btn_dup, self._on_duplicate),
             (self._btn_del, self._on_delete),
             (self._btn_test, self._on_test),
+            (self._btn_script, self._on_edit_script),
         ):
             btn.clicked.connect(slot)
             bar.addWidget(btn)
@@ -234,6 +236,32 @@ class CommandsEditorPage(QWidget):
         # Countdown 3s para alt-tab al juego.
         QTimer.singleShot(3000, lambda: self._orch.execute_command_test(cmd.id, profile_id=pid))
 
+    def _on_edit_script(self) -> None:
+        from ..widgets.script_editor import ScriptEditorDialog
+
+        row = self._table.currentRow()
+        if row < 0:
+            return
+        cf = self._orch.config
+        pid = self._profile_combo.currentText()
+        prof = cf.get_profile(pid)
+        cmd = prof.commands[row]
+        current_steps = list(cmd.steps) if cmd.steps else []
+        dlg = ScriptEditorDialog(steps=current_steps, parent=self)
+        if dlg.exec() != ScriptEditorDialog.Accepted:
+            return
+        new_steps = dlg.result_steps
+        # Build el comando con steps actualizados; mantenemos keys como sugar legacy.
+        new_cmd_dump = cmd.model_dump()
+        new_cmd_dump["steps"] = [s.model_dump() for s in new_steps] if new_steps else None
+        new_commands = []
+        for c in prof.commands:
+            if c.id == cmd.id:
+                new_commands.append(new_cmd_dump)
+            else:
+                new_commands.append(c.model_dump())
+        self._apply_profile_change(pid, new_commands)
+
     def _on_profile_changed(self, _pid: str) -> None:
         if self._suppress_save:
             return
@@ -331,5 +359,6 @@ class CommandsEditorPage(QWidget):
         self._btn_dup.setText(tr("commands.duplicate"))
         self._btn_del.setText(tr("commands.delete"))
         self._btn_test.setText(tr("commands.test"))
+        self._btn_script.setText(tr("script.edit"))
         headers = [tr(label_key) for _, label_key in COLS]
         self._table.setHorizontalHeaderLabels(headers)

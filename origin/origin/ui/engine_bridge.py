@@ -23,6 +23,12 @@ class EngineBridge(QObject):
     config_reloaded = Signal()
     config_error = Signal(str)
     log_event = Signal(dict)
+    # ===== v0.3 =====
+    tts_started = Signal(dict)
+    tts_done = Signal(dict)
+    hotas_event = Signal(dict)
+    llm_intent_resolved = Signal(dict)
+    script_step_executed = Signal(dict)
 
     def __init__(self, bus: EventBus, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -43,6 +49,11 @@ class EngineBridge(QObject):
             sub(EventType.CONFIG_RELOADED, self._on_reloaded),
             sub(EventType.CONFIG_ERROR, self._on_cfg_err),
             sub(EventType.LOG, self._on_log),
+            sub(EventType.TTS_STARTED, lambda p: self.tts_started.emit(dict(p))),
+            sub(EventType.TTS_DONE, lambda p: self.tts_done.emit(dict(p))),
+            sub(EventType.HOTAS_BUTTON_PRESSED, lambda p: self.hotas_event.emit(dict(p))),
+            sub(EventType.LLM_INTENT_RESOLVED, lambda p: self.llm_intent_resolved.emit(dict(p))),
+            sub(EventType.SCRIPT_STEP_EXECUTED, lambda p: self.script_step_executed.emit(dict(p))),
         ])
 
     def teardown(self) -> None:

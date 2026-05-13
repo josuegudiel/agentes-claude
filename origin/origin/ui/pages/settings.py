@@ -2,18 +2,20 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QDesktopServices
 from PySide6.QtCore import QUrl
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QDoubleSpinBox,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPushButton,
     QScrollArea,
     QSpinBox,
@@ -22,9 +24,9 @@ from PySide6.QtWidgets import (
 )
 
 from ...engine import audio as audiomod
-from ...engine import autostart_windows
-from ...engine import keypress
-from ...engine.paths import default_paths
+from ...engine import autostart_windows, keypress
+from ...engine.llm import OllamaClient
+from ...engine.paths import bundled_voices_dir, default_paths
 from ...engine.runtime import Orchestrator
 from ..engine_bridge import EngineBridge
 from ..i18n.tr import register_retranslatable, tr
@@ -226,6 +228,122 @@ class SettingsPage(QWidget):
         f.addRow("", self._btn_open_logs)
         root.addWidget(self._gb_logs)
 
+        # ----- TTS -----
+        self._gb_tts = QGroupBox()
+        f = QFormLayout(self._gb_tts)
+        self._chk_tts = QCheckBox()
+        self._chk_tts.toggled.connect(lambda v: self._apply_sub("tts", {"enabled": bool(v)}))
+        self._cb_voice_es = QComboBox()
+        self._cb_voice_en = QComboBox()
+        self._cb_voice_es.currentIndexChanged.connect(
+            lambda _i: self._apply_sub("tts", {"voice_es": self._cb_voice_es.currentData() or ""})
+        )
+        self._cb_voice_en.currentIndexChanged.connect(
+            lambda _i: self._apply_sub("tts", {"voice_en": self._cb_voice_en.currentData() or ""})
+        )
+        self._btn_tts_refresh = QPushButton()
+        self._btn_tts_refresh.clicked.connect(self._refresh_voices)
+        self._sp_tts_speed = QDoubleSpinBox()
+        self._sp_tts_speed.setRange(0.5, 2.0)
+        self._sp_tts_speed.setSingleStep(0.05)
+        self._sp_tts_speed.valueChanged.connect(lambda v: self._apply_sub("tts", {"speed": float(v)}))
+        self._sp_tts_volume = QDoubleSpinBox()
+        self._sp_tts_volume.setRange(0.0, 1.5)
+        self._sp_tts_volume.setSingleStep(0.1)
+        self._sp_tts_volume.valueChanged.connect(lambda v: self._apply_sub("tts", {"volume": float(v)}))
+        self._chk_tts_default = QCheckBox()
+        self._chk_tts_default.toggled.connect(
+            lambda v: self._apply_sub("tts", {"default_response_when_no_say": bool(v)})
+        )
+        self._chk_tts_cancel = QCheckBox()
+        self._chk_tts_cancel.toggled.connect(
+            lambda v: self._apply_sub("tts", {"cancel_on_ptt": bool(v)})
+        )
+        self._btn_tts_test = QPushButton()
+        self._btn_tts_test.clicked.connect(self._on_tts_test)
+        self._lbl_tts_enabled = QLabel()
+        self._lbl_tts_voice_es = QLabel()
+        self._lbl_tts_voice_en = QLabel()
+        self._lbl_tts_speed = QLabel()
+        self._lbl_tts_volume = QLabel()
+        self._lbl_tts_default = QLabel()
+        self._lbl_tts_cancel = QLabel()
+        f.addRow(self._lbl_tts_enabled, self._chk_tts)
+        f.addRow(self._lbl_tts_voice_es, self._cb_voice_es)
+        f.addRow(self._lbl_tts_voice_en, self._cb_voice_en)
+        f.addRow("", self._btn_tts_refresh)
+        f.addRow(self._lbl_tts_speed, self._sp_tts_speed)
+        f.addRow(self._lbl_tts_volume, self._sp_tts_volume)
+        f.addRow(self._lbl_tts_default, self._chk_tts_default)
+        f.addRow(self._lbl_tts_cancel, self._chk_tts_cancel)
+        f.addRow("", self._btn_tts_test)
+        root.addWidget(self._gb_tts)
+
+        # ----- HOTAS -----
+        self._gb_hotas = QGroupBox()
+        f = QFormLayout(self._gb_hotas)
+        self._chk_hotas = QCheckBox()
+        self._chk_hotas.toggled.connect(lambda v: self._apply_sub("hotas", {"enabled": bool(v)}))
+        self._inp_hotas_binding = QLineEdit()
+        self._inp_hotas_binding.setReadOnly(True)
+        self._btn_hotas_capture = QPushButton()
+        self._btn_hotas_capture.clicked.connect(self._on_hotas_capture)
+        self._sp_hotas_hz = QSpinBox()
+        self._sp_hotas_hz.setRange(10, 240)
+        self._sp_hotas_hz.valueChanged.connect(lambda v: self._apply_sub("hotas", {"poll_hz": int(v)}))
+        self._lbl_hotas_enabled = QLabel()
+        self._lbl_hotas_binding = QLabel()
+        self._lbl_hotas_hz = QLabel()
+        f.addRow(self._lbl_hotas_enabled, self._chk_hotas)
+        binding_row = QHBoxLayout()
+        binding_row.addWidget(self._inp_hotas_binding, 1)
+        binding_row.addWidget(self._btn_hotas_capture)
+        f.addRow(self._lbl_hotas_binding, binding_row)
+        f.addRow(self._lbl_hotas_hz, self._sp_hotas_hz)
+        root.addWidget(self._gb_hotas)
+
+        # ----- LLM -----
+        self._gb_llm = QGroupBox()
+        f = QFormLayout(self._gb_llm)
+        self._chk_llm = QCheckBox()
+        self._chk_llm.toggled.connect(lambda v: self._apply_sub("llm", {"enabled": bool(v)}))
+        self._inp_llm_url = QLineEdit()
+        self._inp_llm_url.editingFinished.connect(
+            lambda: self._apply_sub("llm", {"base_url": self._inp_llm_url.text()})
+        )
+        self._inp_llm_model = QLineEdit()
+        self._inp_llm_model.editingFinished.connect(
+            lambda: self._apply_sub("llm", {"model": self._inp_llm_model.text()})
+        )
+        self._sp_llm_timeout = QSpinBox()
+        self._sp_llm_timeout.setRange(500, 60000)
+        self._sp_llm_timeout.setSingleStep(500)
+        self._sp_llm_timeout.valueChanged.connect(lambda v: self._apply_sub("llm", {"timeout_ms": int(v)}))
+        self._sp_llm_floor = QSpinBox()
+        self._sp_llm_floor.setRange(0, 100)
+        self._sp_llm_floor.valueChanged.connect(lambda v: self._apply_sub("llm", {"floor_score": int(v)}))
+        self._sp_llm_temp = QDoubleSpinBox()
+        self._sp_llm_temp.setRange(0.0, 2.0)
+        self._sp_llm_temp.setSingleStep(0.05)
+        self._sp_llm_temp.valueChanged.connect(lambda v: self._apply_sub("llm", {"temperature": float(v)}))
+        self._btn_llm_test = QPushButton()
+        self._btn_llm_test.clicked.connect(self._on_llm_test)
+        self._lbl_llm_enabled = QLabel()
+        self._lbl_llm_url = QLabel()
+        self._lbl_llm_model = QLabel()
+        self._lbl_llm_timeout = QLabel()
+        self._lbl_llm_floor = QLabel()
+        self._lbl_llm_temp = QLabel()
+        f.addRow(self._lbl_llm_enabled, self._chk_llm)
+        f.addRow(self._lbl_llm_url, self._inp_llm_url)
+        f.addRow(self._lbl_llm_model, self._inp_llm_model)
+        f.addRow(self._lbl_llm_timeout, self._sp_llm_timeout)
+        f.addRow(self._lbl_llm_floor, self._sp_llm_floor)
+        f.addRow(self._lbl_llm_temp, self._sp_llm_temp)
+        f.addRow("", self._btn_llm_test)
+        root.addWidget(self._gb_llm)
+
+        self._refresh_voices()
         root.addStretch(1)
         self.retranslate()
 
@@ -254,10 +372,41 @@ class SettingsPage(QWidget):
             self._cb_log.setCurrentIndex(self._cb_log.findData(s.log_format))
             self._chk_autostart.setChecked(s.autostart_windows)
             self._chk_minimized.setChecked(s.start_minimized)
+            # ----- v0.3 -----
+            tts = s.tts
+            for w in (self._chk_tts, self._sp_tts_speed, self._sp_tts_volume,
+                      self._chk_tts_default, self._chk_tts_cancel,
+                      self._chk_hotas, self._sp_hotas_hz,
+                      self._chk_llm, self._inp_llm_url, self._inp_llm_model,
+                      self._sp_llm_timeout, self._sp_llm_floor, self._sp_llm_temp,
+                      self._inp_hotas_binding):
+                w.blockSignals(True)
+            self._chk_tts.setChecked(tts.enabled)
+            self._sp_tts_speed.setValue(tts.speed)
+            self._sp_tts_volume.setValue(tts.volume)
+            self._chk_tts_default.setChecked(tts.default_response_when_no_say)
+            self._chk_tts_cancel.setChecked(tts.cancel_on_ptt)
+            hot = s.hotas
+            self._chk_hotas.setChecked(hot.enabled)
+            self._sp_hotas_hz.setValue(hot.poll_hz)
+            self._inp_hotas_binding.setText(hot.button_binding or "")
+            llm = s.llm
+            self._chk_llm.setChecked(llm.enabled)
+            self._inp_llm_url.setText(llm.base_url)
+            self._inp_llm_model.setText(llm.model)
+            self._sp_llm_timeout.setValue(llm.timeout_ms)
+            self._sp_llm_floor.setValue(llm.floor_score)
+            self._sp_llm_temp.setValue(llm.temperature)
         finally:
             for w in (self._cb_model, self._cb_device, self._cb_compute, self._cb_mic, self._cb_sr,
                       self._cb_ui_lang, self._cb_theme, self._cb_log, self._sp_maxrec, self._sp_delay,
-                      self._chk_autostart, self._chk_minimized):
+                      self._chk_autostart, self._chk_minimized,
+                      self._chk_tts, self._sp_tts_speed, self._sp_tts_volume,
+                      self._chk_tts_default, self._chk_tts_cancel,
+                      self._chk_hotas, self._sp_hotas_hz,
+                      self._chk_llm, self._inp_llm_url, self._inp_llm_model,
+                      self._sp_llm_timeout, self._sp_llm_floor, self._sp_llm_temp,
+                      self._inp_hotas_binding):
                 w.blockSignals(False)
 
     def _refresh_mics(self) -> None:
@@ -291,6 +440,123 @@ class SettingsPage(QWidget):
             from PySide6.QtWidgets import QMessageBox
 
             QMessageBox.warning(self, tr("common.error"), str(e))
+
+    def _apply_sub(self, section: str, changes: dict[str, Any]) -> None:
+        """Aplica cambios a un sub-bloque de settings (tts/hotas/llm)."""
+        try:
+            self._orch.set_setting(**{section: changes})
+        except Exception as e:
+            logger.exception("set_subsetting_failed section=%s", section)
+            from PySide6.QtWidgets import QMessageBox
+
+            QMessageBox.warning(self, tr("common.error"), str(e))
+
+    def _refresh_voices(self) -> None:
+        """Pobla los dropdowns de voces TTS desde bundled + user dirs."""
+        from PySide6.QtCore import QSignalBlocker
+
+        voices: dict[str, Path] = {}
+        for d in (bundled_voices_dir(), default_paths().voices_dir):
+            if d is None or not d.exists():
+                continue
+            for onnx in d.glob("*.onnx"):
+                if (onnx.parent / f"{onnx.stem}.onnx.json").exists():
+                    voices[onnx.stem] = onnx
+        s = self._orch.config.settings.tts
+        for combo, current in (
+            (self._cb_voice_es, s.voice_es),
+            (self._cb_voice_en, s.voice_en),
+        ):
+            with QSignalBlocker(combo):
+                combo.clear()
+                if not voices:
+                    combo.addItem(tr("settings.tts.no_voices"), "")
+                else:
+                    for stem in sorted(voices):
+                        combo.addItem(stem, stem)
+                idx = combo.findData(current)
+                if idx >= 0:
+                    combo.setCurrentIndex(idx)
+
+    def _on_tts_test(self) -> None:
+        from PySide6.QtCore import QObject, QThread, Signal
+
+        class Worker(QObject):
+            done = Signal()
+
+            def __init__(self, orch, lang):
+                super().__init__()
+                self._orch = orch
+                self._lang = lang
+
+            def run(self):
+                if self._orch._tts is not None:  # noqa: SLF001
+                    text_es = "Hola capitán, prueba de voz."
+                    text_en = "Hello captain, voice test."
+                    self._orch._tts.say(  # noqa: SLF001
+                        text_en if self._lang == "en" else text_es, self._lang,
+                        speed=self._orch.config.settings.tts.speed,
+                        volume=self._orch.config.settings.tts.volume,
+                    )
+                self.done.emit()
+
+        lang = self._orch.config.settings.active_language
+        self._tts_thread = QThread(self)
+        self._tts_worker = Worker(self._orch, lang)
+        self._tts_worker.moveToThread(self._tts_thread)
+        self._tts_thread.started.connect(self._tts_worker.run)
+        self._tts_worker.done.connect(self._tts_thread.quit)
+        self._tts_thread.start()
+
+    def _on_hotas_capture(self) -> None:
+        from PySide6.QtCore import QObject, QThread, Signal
+        from PySide6.QtWidgets import QMessageBox
+
+        if self._orch._hotas is None:  # noqa: SLF001
+            QMessageBox.information(self, tr("common.warning"), tr("settings.hotas.no_devices"))
+            return
+
+        original = self._btn_hotas_capture.text()
+        self._btn_hotas_capture.setText(tr("settings.hotas.capturing"))
+        self._btn_hotas_capture.setEnabled(False)
+
+        class Worker(QObject):
+            captured = Signal(str)
+
+            def __init__(self, hotas):
+                super().__init__()
+                self._hotas = hotas
+
+            def run(self):
+                value = self._hotas.capture_next_press(5.0)
+                self.captured.emit(value or "")
+
+        self._cap_thread = QThread(self)
+        self._cap_worker = Worker(self._orch._hotas)  # noqa: SLF001
+        self._cap_worker.moveToThread(self._cap_thread)
+        self._cap_thread.started.connect(self._cap_worker.run)
+
+        def on_captured(value: str) -> None:
+            self._btn_hotas_capture.setText(original)
+            self._btn_hotas_capture.setEnabled(True)
+            if value:
+                self._inp_hotas_binding.setText(value)
+                self._apply_sub("hotas", {"button_binding": value, "enabled": True})
+
+        self._cap_worker.captured.connect(on_captured)
+        self._cap_worker.captured.connect(self._cap_thread.quit)
+        self._cap_thread.start()
+
+    def _on_llm_test(self) -> None:
+        from PySide6.QtWidgets import QMessageBox
+
+        s = self._orch.config.settings.llm
+        client = OllamaClient(s.base_url, s.model, s.timeout_ms)
+        err = client.preflight()
+        if err is None:
+            QMessageBox.information(self, tr("settings.llm.test"), tr("settings.llm.preflight_ok"))
+        else:
+            QMessageBox.warning(self, tr("common.error"), err)
 
     def _on_autostart_toggled(self, checked: bool) -> None:
         if checked:
@@ -331,3 +597,27 @@ class SettingsPage(QWidget):
         self._lbl_log.setText(tr("settings.log_format"))
         self._btn_open_logs.setText(tr("settings.open_logs_folder"))
         self._fuzz.setPlaceholder(tr("settings.preview_placeholder"))
+        # ----- v0.3 -----
+        self._gb_tts.setTitle(tr("settings.section.tts"))
+        self._lbl_tts_enabled.setText(tr("settings.tts.enabled"))
+        self._lbl_tts_voice_es.setText(tr("settings.tts.voice_es"))
+        self._lbl_tts_voice_en.setText(tr("settings.tts.voice_en"))
+        self._lbl_tts_speed.setText(tr("settings.tts.speed"))
+        self._lbl_tts_volume.setText(tr("settings.tts.volume"))
+        self._lbl_tts_default.setText(tr("settings.tts.default_response"))
+        self._lbl_tts_cancel.setText(tr("settings.tts.cancel_on_ptt"))
+        self._btn_tts_refresh.setText(tr("settings.tts.refresh_voices"))
+        self._btn_tts_test.setText(tr("settings.tts.test"))
+        self._gb_hotas.setTitle(tr("settings.section.hotas"))
+        self._lbl_hotas_enabled.setText(tr("settings.hotas.enabled"))
+        self._lbl_hotas_binding.setText(tr("settings.hotas.binding"))
+        self._btn_hotas_capture.setText(tr("settings.hotas.capture"))
+        self._lbl_hotas_hz.setText(tr("settings.hotas.poll_hz"))
+        self._gb_llm.setTitle(tr("settings.section.llm"))
+        self._lbl_llm_enabled.setText(tr("settings.llm.enabled"))
+        self._lbl_llm_url.setText(tr("settings.llm.url"))
+        self._lbl_llm_model.setText(tr("settings.llm.model"))
+        self._lbl_llm_timeout.setText(tr("settings.llm.timeout_ms"))
+        self._lbl_llm_floor.setText(tr("settings.llm.floor_score"))
+        self._lbl_llm_temp.setText(tr("settings.llm.temperature"))
+        self._btn_llm_test.setText(tr("settings.llm.test"))

@@ -45,9 +45,15 @@ class AppPaths:
     def lock_file(self) -> Path:
         return self.base / ".lock"
 
+    @property
+    def voices_dir(self) -> Path:
+        """Voces TTS de usuario. Se chequea aparte de las bundled."""
+        return self.base / "voices"
+
     def ensure(self) -> None:
         self.base.mkdir(parents=True, exist_ok=True)
         self.logs_dir.mkdir(parents=True, exist_ok=True)
+        self.voices_dir.mkdir(parents=True, exist_ok=True)
 
 
 def default_paths() -> AppPaths:
@@ -55,7 +61,32 @@ def default_paths() -> AppPaths:
 
 
 def bundled_resource_dir() -> Path:
-    """Carpeta de recursos empaquetados (modelo Whisper, i18n, assets, preset YAML)."""
+    """Carpeta de recursos empaquetados (modelo Whisper, i18n, assets, preset YAML, piper)."""
     if getattr(sys, "frozen", False):
         return Path(sys._MEIPASS)  # type: ignore[attr-defined]
     return Path(__file__).resolve().parent.parent
+
+
+def piper_exe_path() -> Path | None:
+    """Localiza piper.exe (frozen → bundle, dev → %APPDATA%/Origin/piper/). None si no existe."""
+    candidates: list[Path] = []
+    if getattr(sys, "frozen", False):
+        candidates.append(bundled_resource_dir() / "piper" / "piper.exe")
+    candidates.append(default_paths().base / "piper" / "piper.exe")
+    candidates.append(default_paths().base / "piper" / "piper")  # linux dev
+    for c in candidates:
+        if c.exists():
+            return c
+    return None
+
+
+def bundled_voices_dir() -> Path | None:
+    """Carpeta de voces bundled (read-only). Las del usuario van en `default_paths().voices_dir`."""
+    candidates: list[Path] = []
+    if getattr(sys, "frozen", False):
+        candidates.append(bundled_resource_dir() / "voices")
+    candidates.append(Path(__file__).resolve().parent.parent.parent / "installer" / "voices")
+    for c in candidates:
+        if c.exists():
+            return c
+    return None

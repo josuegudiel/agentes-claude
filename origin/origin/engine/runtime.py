@@ -1,14 +1,15 @@
-"""Orquestador: PTT listener + Recorder + Transcriber + IntentMatcher + Keypress.
+"""Orquestador v0.3: PTT (tecla + HOTAS) + Recorder + Transcriber + IntentMatcher
++ StepExecutor (DSL) + Piper TTS + LLM fallback (Ollama).
 
-Estado: IDLE → RECORDING → TRANSCRIBING → EXECUTING → IDLE.
-Las transiciones están protegidas por `_state_lock` y publican `ENGINE_STATE_CHANGED`.
+Estados: LOADING → READY → RECORDING → TRANSCRIBING → (RESOLVING_INTENT) →
+RUNNING_SCRIPT → (SPEAKING) → READY. Transiciones protegidas por `_state_lock`.
 
-Si un PTT-press llega durante TRANSCRIBING/EXECUTING → se ignora con log `ptt_busy`.
-Si el PTT-press es un auto-repeat del SO mientras ya estamos RECORDING → se ignora.
-El perfil se snapshotea al PTT-press; un switch durante captura aplica al siguiente PTT.
+PTT-press durante TRANSCRIBING / RESOLVING_INTENT / RUNNING_SCRIPT → `ptt_busy`.
+PTT-press durante SPEAKING con `tts.cancel_on_ptt` → corta TTS, arranca RECORDING.
 """
 from __future__ import annotations
 
+import json
 import logging
 import threading
 import time
@@ -21,8 +22,13 @@ from . import config as cfgmod
 from . import keypress
 from .audio import Recorder
 from .events import EventBus, EventType
+from .hotas import HotasListener
+from .llm import LLMIntentResolver, OllamaClient
+from .paths import bundled_voices_dir, default_paths, piper_exe_path
 from .profiles import ProfileRegistry
+from .script import StepExecutionState, StepExecutor
 from .stt import Transcriber
+from .tts import PiperTTS
 
 logger = logging.getLogger(__name__)
 
@@ -33,11 +39,32 @@ class State(str, Enum):
     PAUSED = "paused"
     RECORDING = "recording"
     TRANSCRIBING = "transcribing"
-    EXECUTING = "executing"
+    EXECUTING = "executing"           # legado v0.2 (execute_command_test)
+    RUNNING_SCRIPT = "running_script"
+    SPEAKING = "speaking"
+    RESOLVING_INTENT = "resolving_intent"
     ERROR = "error"
 
 
-_MIN_RECORD_SECONDS = 0.3  # tap accidental → descartar
+_MIN_RECORD_SECONDS = 0.3
+_BUSY_STATES = {
+    State.TRANSCRIBING,
+    State.EXECUTING,
+    State.RUNNING_SCRIPT,
+    State.RESOLVING_INTENT,
+}
+
+
+def _load_tts_phrases(lang: str) -> dict[str, str]:
+    """Carga `tts_phrases_{lang}.json` adyacente al módulo. Devuelve {} si falta."""
+    path = Path(__file__).resolve().parent / f"tts_phrases_{lang}.json"
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        logger.exception("tts_phrases_load_failed lang=%s", lang)
+        return {}
 
 
 class Orchestrator:
@@ -59,16 +86,23 @@ class Orchestrator:
         self._recorder: Recorder | None = None
         self._transcriber: Transcriber | None = None
         self._executor: ThreadPoolExecutor | None = None
-        self._kb_listener: Any | None = None  # pynput.keyboard.Listener
-        self._hk_listener: Any | None = None  # pynput.keyboard.GlobalHotKeys
+        self._kb_listener: Any | None = None
+        self._hk_listener: Any | None = None
         self._watchdog_obs: Any | None = None
+        self._tts: PiperTTS | None = None
+        self._hotas: HotasListener | None = None
+        self._llm: LLMIntentResolver | None = None
+        self._script_executor: StepExecutor | None = None
+        self._script_states: dict[str, StepExecutionState] = {}
+        self._script_cancel = threading.Event()
+
+        self._tts_phrases = {"es": _load_tts_phrases("es"), "en": _load_tts_phrases("en")}
 
         self._state = State.LOADING
         self._state_lock = threading.RLock()
         self._ptt_pressed = False
         self._capture_started_at: float | None = None
         self._capture_profile_id: str | None = None
-        self._record_start_emitted = False
 
     # ====================================================================
     # Ciclo de vida
@@ -76,9 +110,7 @@ class Orchestrator:
 
     def start(self, autoload_model: bool = True) -> None:
         logger.info("orchestrator_start dry_run=%s", self._dry_run)
-        self._executor = ThreadPoolExecutor(
-            max_workers=1, thread_name_prefix="origin-stt"
-        )
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="origin-stt")
         self._recorder = Recorder(
             sample_rate=self._settings.sample_rate,
             mic_device=self._settings.mic_device,
@@ -91,13 +123,22 @@ class Orchestrator:
             device_preference=self._settings.whisper_device,
             compute_type=self._settings.whisper_compute_type,
         )
+        self._build_tts()
+        self._build_script_executor()
+        self._build_llm_if_enabled()
         if autoload_model:
             self._executor.submit(self._load_model)
         self._start_keyboard_listeners()
+        self._start_hotas_listener()
         self._start_watchdog()
 
     def shutdown(self) -> None:
         logger.info("orchestrator_shutdown")
+        self._script_cancel.set()
+        if self._hotas:
+            self._hotas.stop()
+        if self._tts:
+            self._tts.shutdown()
         self._stop_watchdog()
         self._stop_keyboard_listeners()
         if self._recorder:
@@ -106,7 +147,54 @@ class Orchestrator:
             self._executor.shutdown(wait=True, cancel_futures=False)
 
     # ====================================================================
-    # Control desde la UI
+    # Construcción de módulos
+    # ====================================================================
+
+    def _build_tts(self) -> None:
+        self._tts = PiperTTS(
+            piper_exe=piper_exe_path(),
+            bundled_voices_dir=bundled_voices_dir(),
+            user_voices_dir=default_paths().voices_dir,
+            voice_es=self._settings.tts.voice_es,
+            voice_en=self._settings.tts.voice_en,
+            bus=self._bus,
+        )
+
+    def _build_script_executor(self) -> None:
+        self._script_executor = StepExecutor(
+            keypress_exec=lambda combos, delay, dry: keypress.execute(combos, delay, dry),
+            keypress_exec_held=lambda combo, ms, dry: keypress.execute_held(combo, ms, dry),
+            tts_say=self._tts_say if self._tts else None,
+            tts_cancel=self._tts.cancel if self._tts else None,
+            set_substate=lambda s: self._set_state(State(s) if s != "running_script" else State.RUNNING_SCRIPT),
+            bus=self._bus,
+            settings_provider=lambda: self._settings,
+            i18n_say=self._i18n_say,
+            dry_run=self._dry_run,
+        )
+
+    def _build_llm_if_enabled(self) -> None:
+        if not self._settings.llm.enabled:
+            self._llm = None
+            return
+        client = OllamaClient(
+            self._settings.llm.base_url,
+            self._settings.llm.model,
+            self._settings.llm.timeout_ms,
+        )
+        self._llm = LLMIntentResolver(client, self._settings.llm)
+        # Preflight no-bloqueante: si falla, banner amarillo vía CONFIG_ERROR.
+        if self._executor:
+            self._executor.submit(self._llm_preflight, client)
+
+    def _llm_preflight(self, client: OllamaClient) -> None:
+        err = client.preflight()
+        if err:
+            logger.warning("llm_preflight_failed err=%s", err)
+            self._bus.emit(EventType.CONFIG_ERROR, {"error": f"LLM: {err}", "kind": "llm"})
+
+    # ====================================================================
+    # API pública
     # ====================================================================
 
     def pause(self) -> None:
@@ -131,7 +219,7 @@ class Orchestrator:
             return self._state
 
     @property
-    def config(self) -> cfgmod.CommandsFileV2:
+    def config(self) -> cfgmod.CommandsFileV3:
         return self._cf
 
     @property
@@ -156,17 +244,12 @@ class Orchestrator:
     def set_active_language(self, lang: str) -> None:
         if lang not in ("es", "en"):
             raise ValueError(f"idioma inválido: {lang}")
-        # El settings es inmutable; reemplazamos en memoria.
         self._cf = self._cf.with_settings(active_language=lang)
         self._settings = self._cf.settings
         self._bus.emit(EventType.LANGUAGE_CHANGED, {"lang": lang})
 
     def set_setting(self, **changes: Any) -> None:
-        """Aplica cambios al bloque settings, emite eventos y persiste.
-
-        Cambios costosos (whisper_model/device/compute_type, mic_device, ptt_key,
-        profile_switch_hotkey) se reconcilian con un rebuild parcial.
-        """
+        """Aplica cambios al bloque settings, emite eventos y persiste a disco."""
         old = self._settings
         self._cf = self._cf.with_settings(**changes)
         self._settings = self._cf.settings
@@ -179,14 +262,21 @@ class Orchestrator:
         if "ptt_key" in changes or "profile_switch_hotkey" in changes:
             self._stop_keyboard_listeners()
             self._start_keyboard_listeners()
+        if "tts" in changes and self._tts:
+            self._tts.update_voices(self._settings.tts.voice_es, self._settings.tts.voice_en)
+        if "hotas" in changes:
+            if self._hotas:
+                self._hotas.stop()
+                self._hotas = None
+            self._start_hotas_listener()
+        if "llm" in changes:
+            self._build_llm_if_enabled()
         if "active_language" in changes and old.active_language != self._settings.active_language:
             self._bus.emit(EventType.LANGUAGE_CHANGED, {"lang": self._settings.active_language})
         if "active_profile" in changes and old.active_profile != self._settings.active_profile:
             self.set_active_profile(self._settings.active_profile)
 
     def reload_config(self) -> bool:
-        """Recarga desde disco. Emite CONFIG_RELOADED o CONFIG_ERROR.
-        Devuelve True si OK."""
         try:
             new_cf = cfgmod.load(self._config_path)
         except cfgmod.ConfigError as e:
@@ -197,26 +287,20 @@ class Orchestrator:
             self._cf = new_cf
             self._settings = new_cf.settings
             self._profiles.replace_config(new_cf)
+            # Limpiar script_states de perfiles que ya no existen.
+            valid_ids = {p.id for p in new_cf.profiles}
+            self._script_states = {k: v for k, v in self._script_states.items() if k in valid_ids}
         self._bus.emit(EventType.CONFIG_RELOADED, {})
         return True
 
     def execute_command_test(self, command_id: str, profile_id: str | None = None) -> None:
-        """Ejecuta las teclas de un comando sin necesidad de hablar. Usado por
-        el botón 'Test command' del editor."""
+        """Ejecuta los steps de un comando sin necesidad de hablar (botón Test del editor)."""
         pid = profile_id or self._profiles.active_id
         prof = self._cf.get_profile(pid)
         cmd = next((c for c in prof.commands if c.id == command_id), None)
         if cmd is None:
             raise KeyError(command_id)
-        self._set_state(State.EXECUTING)
-        try:
-            keypress.execute(cmd.keys, self._settings.inter_key_delay_ms, dry_run=self._dry_run)
-            self._bus.emit(
-                EventType.COMMAND_EXECUTED,
-                {"command_id": cmd.id, "keys": list(cmd.keys), "dry_run": self._dry_run, "test": True},
-            )
-        finally:
-            self._set_state(State.READY if not self.is_paused() else State.PAUSED)
+        self._dispatch_command(cmd, self._settings.active_language, test=True)
 
     # ====================================================================
     # Internos
@@ -230,7 +314,6 @@ class Orchestrator:
         self._bus.emit(EventType.ENGINE_STATE_CHANGED, {"state": new_state.value})
 
     def _emit_audio_level(self, rms: float) -> None:
-        # Normalización rudimentaria — la UI sabe que <0.7 es ok, >0.9 clipping.
         self._bus.emit(EventType.AUDIO_LEVEL, {"rms": rms})
 
     def _load_model(self) -> None:
@@ -259,7 +342,6 @@ class Orchestrator:
     def _start_keyboard_listeners(self) -> None:
         from pynput import keyboard as kb  # lazy
 
-        # PTT — un único key, manejado con press/release.
         ptt_key = self._parse_pynput_key(self._settings.ptt_key)
 
         def on_press(key: Any) -> None:
@@ -273,7 +355,6 @@ class Orchestrator:
         self._kb_listener = kb.Listener(on_press=on_press, on_release=on_release)
         self._kb_listener.start()
 
-        # Profile-switch hotkey (combo con modificadores) — GlobalHotKeys lo maneja solo.
         try:
             hk_spec = self._format_hotkey_for_pynput(self._settings.profile_switch_hotkey)
             self._hk_listener = kb.GlobalHotKeys({hk_spec: self._on_cycle_hotkey})
@@ -299,7 +380,6 @@ class Orchestrator:
         from pynput import keyboard as kb
 
         n = name.lower().strip()
-        # alias
         n = {"esc": "escape", "return": "enter"}.get(n, n)
         if hasattr(kb.Key, n):
             return getattr(kb.Key, n)
@@ -309,7 +389,6 @@ class Orchestrator:
 
     @staticmethod
     def _format_hotkey_for_pynput(combo: str) -> str:
-        """`"ctrl+f12"` → `"<ctrl>+<f12>"` (formato GlobalHotKeys)."""
         parts = []
         for p in combo.lower().split("+"):
             p = p.strip()
@@ -328,6 +407,21 @@ class Orchestrator:
         except Exception:
             return False
 
+    # ----- HOTAS -----
+
+    def _start_hotas_listener(self) -> None:
+        cfg = self._settings.hotas
+        if not cfg.enabled or not cfg.button_binding:
+            return
+        self._hotas = HotasListener(
+            on_press=self._on_ptt_press,
+            on_release=self._on_ptt_release,
+            poll_hz=cfg.poll_hz,
+        )
+        self._hotas.set_binding(cfg.button_binding)
+        self._hotas.start()
+        self._bus.emit(EventType.HOTAS_BUTTON_PRESSED, {"event": "listener_started", "binding": cfg.button_binding})
+
     # ----- PTT flow -----
 
     def _on_ptt_press(self) -> None:
@@ -335,11 +429,17 @@ class Orchestrator:
             if self._state in (State.PAUSED, State.LOADING, State.ERROR):
                 logger.debug("ptt_press_ignored state=%s", self._state.value)
                 return
-            if self._state in (State.TRANSCRIBING, State.EXECUTING):
+            # SPEAKING + cancel_on_ptt → cortar y proceder a grabar.
+            if self._state == State.SPEAKING and self._settings.tts.cancel_on_ptt:
+                if self._tts:
+                    self._tts.cancel()
+                # Esperamos hasta 50 ms a que el thread del say dejé el state en otro.
+                # Si no, forzamos transición.
+                self._set_state(State.READY)
+            if self._state in _BUSY_STATES:
                 logger.info("ptt_busy state=%s", self._state.value)
                 return
             if self._ptt_pressed:
-                # Auto-repeat del SO mientras la tecla sigue down — no reiniciar.
                 return
             self._ptt_pressed = True
             self._capture_started_at = time.monotonic()
@@ -366,7 +466,6 @@ class Orchestrator:
                 self._set_state(State.READY)
                 return
             self._set_state(State.TRANSCRIBING)
-        # Fuera del lock para no bloquear el listener si el executor se llena.
         assert self._executor is not None
         profile_id = self._capture_profile_id or self._profiles.active_id
         fut = self._executor.submit(self._process_audio, audio, profile_id)
@@ -387,7 +486,7 @@ class Orchestrator:
             EventType.TRANSCRIPTION_DONE,
             {"text": text, "language": lang, "elapsed_ms": stt_ms},
         )
-        # Match contra el perfil snapshoteado al PTT-press.
+
         try:
             prof = self._cf.get_profile(profile_id)
         except KeyError:
@@ -395,10 +494,13 @@ class Orchestrator:
         from .intent import IntentMatcher
 
         matcher = (
-            self._profiles.matcher() if prof.id == self._profiles.active_id else IntentMatcher(prof.commands)
+            self._profiles.matcher()
+            if prof.id == self._profiles.active_id
+            else IntentMatcher(prof.commands)
         )
         t1 = time.monotonic()
-        result = matcher.match(text, lang, self._settings.fuzz_threshold)
+        threshold = self._settings.fuzz_threshold
+        result = matcher.match(text, lang, threshold)
         match_ms = int((time.monotonic() - t1) * 1000)
         self._bus.emit(
             EventType.MATCH_DONE,
@@ -411,23 +513,64 @@ class Orchestrator:
                 "elapsed_ms": match_ms,
             },
         )
+
         if result.command is not None:
-            self._set_state(State.EXECUTING)
-            keypress.execute(
-                result.command.keys,
-                self._settings.inter_key_delay_ms,
-                dry_run=self._dry_run,
+            self._dispatch_command(result.command, lang)
+            return {"ok": True, "matched": True}
+
+        # ----- LLM fallback -----
+        llm_cfg = self._settings.llm
+        if (
+            self._llm is not None
+            and llm_cfg.enabled
+            and text.strip()
+            and llm_cfg.floor_score <= result.score < threshold
+        ):
+            self._set_state(State.RESOLVING_INTENT)
+            resolution = self._llm.resolve(text, prof, lang)
+            self._bus.emit(
+                EventType.LLM_INTENT_RESOLVED,
+                {
+                    "transcription": text,
+                    "command_ids": list(resolution.commands),
+                    "confidence": resolution.confidence,
+                    "reasoning": resolution.reasoning,
+                },
             )
+            if resolution.confidence != "low" and resolution.commands:
+                for cmd_id in resolution.commands:
+                    cmd = next((c for c in prof.commands if c.id == cmd_id), None)
+                    if cmd is not None:
+                        self._dispatch_command(cmd, lang)
+
+        return {"ok": True, "matched": False}
+
+    def _dispatch_command(
+        self,
+        cmd: cfgmod.Command,
+        lang: str,
+        *,
+        test: bool = False,
+    ) -> None:
+        """Ejecuta un comando vía StepExecutor (unifica keys+steps)."""
+        assert self._script_executor is not None
+        steps = cfgmod.command_as_steps(cmd, self._settings)
+        state = self._script_states.setdefault(self._profiles.active_id, StepExecutionState())
+        self._script_cancel = threading.Event()  # cancel limpio por comando
+        self._set_state(State.RUNNING_SCRIPT)
+        try:
+            self._script_executor.execute(steps, state, lang, cancel=self._script_cancel)
+        finally:
             self._bus.emit(
                 EventType.COMMAND_EXECUTED,
                 {
-                    "command_id": result.command.id,
-                    "keys": list(result.command.keys),
+                    "command_id": cmd.id,
+                    "keys": list(cmd.keys),
+                    "steps_count": len(steps),
                     "dry_run": self._dry_run,
-                    "test": False,
+                    "test": test,
                 },
             )
-        return {"ok": True}
 
     def _on_process_done(self, fut: Future[dict[str, Any]]) -> None:
         try:
@@ -444,6 +587,21 @@ class Orchestrator:
             self.cycle_profile()
         except Exception:
             logger.exception("cycle_profile_failed")
+
+    # ----- TTS helpers -----
+
+    def _tts_say(self, text: str, lang: str) -> None:
+        if not self._tts:
+            return
+        self._tts.say(
+            text,
+            lang,
+            speed=self._settings.tts.speed,
+            volume=self._settings.tts.volume,
+        )
+
+    def _i18n_say(self, key: str, lang: str) -> str:
+        return self._tts_phrases.get(lang, {}).get(key) or f"[missing:{key}]"
 
     # ----- Watchdog (hot-reload del commands.yaml) -----
 

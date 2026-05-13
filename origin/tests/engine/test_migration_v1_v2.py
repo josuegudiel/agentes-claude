@@ -12,7 +12,7 @@ def test_v1_migrates_to_single_default_profile(fixtures_dir: Path, tmp_path: Pat
     dst = tmp_path / "commands.yaml"
     shutil.copy(src, dst)
     cf = cfgmod.load(dst)
-    assert cf.version == 2
+    assert cf.version == 3  # v1 ahora migra directo a v3
     assert len(cf.profiles) == 1
     assert cf.profiles[0].id == "default"
     assert cf.settings.active_profile == "default"
