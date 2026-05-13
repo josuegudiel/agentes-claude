@@ -134,6 +134,8 @@ class Orchestrator:
 
     def shutdown(self) -> None:
         logger.info("orchestrator_shutdown")
+        # Orden: cortar I/O externo (HOTAS, TTS, watchdog, keyboard) ANTES de
+        # esperar al executor; setear cancel para abortar scripts en vuelo.
         self._script_cancel.set()
         if self._hotas:
             self._hotas.stop()
@@ -144,7 +146,9 @@ class Orchestrator:
         if self._recorder:
             self._recorder.stop_stream()
         if self._executor:
-            self._executor.shutdown(wait=True, cancel_futures=False)
+            # cancel_futures=True para que un LLM lento o un script colgado no
+            # bloqueen el shutdown indefinidamente.
+            self._executor.shutdown(wait=True, cancel_futures=True)
 
     # ====================================================================
     # Construcción de módulos
@@ -429,14 +433,12 @@ class Orchestrator:
             if self._state in (State.PAUSED, State.LOADING, State.ERROR):
                 logger.debug("ptt_press_ignored state=%s", self._state.value)
                 return
-            # SPEAKING + cancel_on_ptt → cortar y proceder a grabar.
+            # SPEAKING + cancel_on_ptt → cortar TTS y proceder a grabar.
+            # No emitimos READY intermedio: la transición visible es SPEAKING → RECORDING.
             if self._state == State.SPEAKING and self._settings.tts.cancel_on_ptt:
                 if self._tts:
                     self._tts.cancel()
-                # Esperamos hasta 50 ms a que el thread del say dejé el state en otro.
-                # Si no, forzamos transición.
-                self._set_state(State.READY)
-            if self._state in _BUSY_STATES:
+            elif self._state in _BUSY_STATES:
                 logger.info("ptt_busy state=%s", self._state.value)
                 return
             if self._ptt_pressed:
@@ -556,7 +558,9 @@ class Orchestrator:
         assert self._script_executor is not None
         steps = cfgmod.command_as_steps(cmd, self._settings)
         state = self._script_states.setdefault(self._profiles.active_id, StepExecutionState())
-        self._script_cancel = threading.Event()  # cancel limpio por comando
+        # Clear (no reasignar) — un shutdown() en flight que llamó .set() sobre el
+        # mismo Event mantiene su efecto, no se pierde por re-asignación.
+        self._script_cancel.clear()
         self._set_state(State.RUNNING_SCRIPT)
         try:
             self._script_executor.execute(steps, state, lang, cancel=self._script_cancel)

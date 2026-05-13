@@ -116,7 +116,7 @@ class MainWindow(QWidget):
         self._sidebar.setObjectName("sidebar")
         self._sidebar.setFixedWidth(180)
         self._sidebar.currentRowChanged.connect(self._on_sidebar_changed)
-        for key, label_key in SIDEBAR:
+        for key, _label_key in SIDEBAR:
             item = QListWidgetItem("")
             item.setData(Qt.UserRole, key)
             self._sidebar.addItem(item)
