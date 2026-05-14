@@ -256,9 +256,20 @@ class Orchestrator:
     def set_setting(self, **changes: Any) -> None:
         """Aplica cambios al bloque settings, emite eventos y persiste a disco."""
         old = self._settings
-        self._cf = self._cf.with_settings(**changes)
-        self._settings = self._cf.settings
-        cfgmod.save_atomic(self._cf, self._config_path)
+        new_cf = self._cf.with_settings(**changes)
+        try:
+            cfgmod.save_atomic(new_cf, self._config_path)
+        except OSError as e:
+            # Disk full, permission denied, etc. — no actualizamos in-memory para
+            # mantener la consistencia entre RAM y disco; avisamos a la UI.
+            logger.error("set_setting_save_failed: %s", e)
+            self._bus.emit(
+                EventType.CONFIG_ERROR,
+                {"error": f"No se pudo guardar settings: {e}"},
+            )
+            return
+        self._cf = new_cf
+        self._settings = new_cf.settings
 
         if "mic_device" in changes and self._recorder:
             self._recorder.restart_stream(self._settings.mic_device)

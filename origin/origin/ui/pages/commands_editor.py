@@ -142,7 +142,11 @@ class CommandsEditorPage(QWidget):
                 profile = cf.get_profile(pid)
             except KeyError:
                 self._table.setRowCount(0)
+                self._last_rendered_profile = None
                 return
+            # Track el perfil renderizado para que un cambio de combo pueda
+            # flushear el save pendiente al perfil correcto, no al nuevo.
+            self._last_rendered_profile = pid
             self._table.setRowCount(len(profile.commands))
             for r, cmd in enumerate(profile.commands):
                 self._set_cell(r, 0, cmd.id)
@@ -265,6 +269,18 @@ class CommandsEditorPage(QWidget):
     def _on_profile_changed(self, _pid: str) -> None:
         if self._suppress_save:
             return
+        # Si hay un save pendiente del perfil anterior, flushearlo antes del re-render
+        # — sin esto, los edits del perfil viejo se perdían cuando el usuario
+        # cambiaba el combo durante el debounce de 500 ms.
+        if self._save_timer.isActive():
+            self._save_timer.stop()
+            try:
+                pid_prev = getattr(self, "_last_rendered_profile", None)
+                if pid_prev:
+                    cmds = self._collect_table_as_commands()
+                    self._apply_profile_change(pid_prev, cmds)
+            except Exception:
+                logger.exception("flush_pending_save_on_profile_change_failed")
         self._render_table()
 
     def _on_external_profile_changed(self, pid: str) -> None:

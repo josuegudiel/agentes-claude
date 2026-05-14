@@ -122,6 +122,80 @@ def test_command_as_steps_no_invalid_say_when_command_has_no_labels(tmp_path: Pa
         f"command_as_steps generó SayStep inválido para comando sin labels: {steps}"
 
 
+def test_audio_truncation_logs_warning(tmp_path: Path, caplog):
+    """REGRESSION: si el audio supera max_record_seconds, el truncado debe loguear
+    para que el usuario sepa que perdió parte del audio."""
+    import logging
+    import numpy as np
+
+    from origin.engine.audio import Recorder
+
+    rec = Recorder(sample_rate=16000, max_record_seconds=1)
+    # Inyectar buffer "como si" hubiera capturado 2s de audio.
+    rec._buffer = [np.zeros(32000, dtype=np.float32)]  # noqa: SLF001
+    rec._capturing = True  # noqa: SLF001
+    with caplog.at_level(logging.WARNING):
+        audio = rec.end_capture()
+    assert audio.shape[0] == 16000, "debe truncar a max_samples"
+    assert any("audio_truncated" in r.message for r in caplog.records), \
+        "truncado debería loguear warning"
+
+
+def test_restart_stream_clears_capture_buffer(monkeypatch):
+    """REGRESSION: cambiar mic durante captura mezclaba audio del viejo + nuevo.
+
+    `restart_stream` ahora debe descartar el buffer y resetear _capturing.
+    """
+    import sys
+    import numpy as np
+
+    # Stub mínimo de sounddevice — solo InputStream.start()/stop()/close().
+    fake_sd = type("FakeSd", (), {})()
+    class FakeStream:
+        def start(self): pass
+        def stop(self): pass
+        def close(self): pass
+    fake_sd.InputStream = lambda **kw: FakeStream()
+    monkeypatch.setitem(sys.modules, "sounddevice", fake_sd)
+
+    from origin.engine.audio import Recorder
+    rec = Recorder(sample_rate=16000, mic_device=None, max_record_seconds=8)
+    rec.start_stream()
+    rec.begin_capture()
+    rec._buffer.append(np.ones(8000, dtype=np.float32))  # noqa: SLF001 — simulado
+    assert rec.is_capturing()
+
+    rec.restart_stream(mic_device=1)
+
+    assert not rec.is_capturing(), "_capturing debe resetearse al cambiar mic"
+    assert rec._buffer == [], "buffer debe limpiarse al cambiar mic"  # noqa: SLF001
+
+
+def test_set_setting_disk_full_emits_config_error(tmp_path: Path, fixtures_dir: Path, monkeypatch):
+    """REGRESSION: si save_atomic falla (disk full / permission denied),
+    `set_setting` debe emitir CONFIG_ERROR y NO actualizar el state in-memory."""
+    shutil.copy(fixtures_dir / "commands_v2_minimal.yaml", tmp_path / "commands.yaml")
+    bus = EventBus()
+    errors: list[dict] = []
+    from origin.engine.events import EventType
+    bus.subscribe(EventType.CONFIG_ERROR, lambda p: errors.append(p))
+    orch = Orchestrator(tmp_path / "commands.yaml", bus, dry_run=True)
+    original_lang = orch.config.settings.active_language
+
+    # Simular falla en save_atomic.
+    monkeypatch.setattr(
+        "origin.engine.config.save_atomic",
+        lambda cf, path: (_ for _ in ()).throw(OSError("disk full")),
+    )
+
+    orch.set_setting(active_language="en")
+
+    assert orch.config.settings.active_language == original_lang, \
+        "state in-memory no debe actualizarse si el save falla"
+    assert errors, "debe emitirse CONFIG_ERROR"
+    assert "disk full" in errors[0]["error"]
+
+
 def test_script_states_setdefault_under_lock(isolated_orch):
     """REGRESSION: `_dispatch_command` toma el state lock antes de tocar `_script_states`.
 
