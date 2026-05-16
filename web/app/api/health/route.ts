@@ -1,46 +1,47 @@
 import { NextResponse } from 'next/server';
-import { OllamaClient } from '../../../../src/agents/predictive/ollama-client';
+import {
+  makeChatClient,
+  chatClientProvider,
+} from '../../../../src/agents/predictive/chat-client-factory';
 import { TimesFMClient } from '../../../../src/agents/predictive/timesfm-client';
 import type { HealthResponse } from '../../../lib/types';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
-function buildClients() {
-  const ollama = new OllamaClient({
-    baseUrl: process.env['OLLAMA_BASE_URL'] ?? 'http://localhost:11434',
-    model: process.env['OLLAMA_MODEL'] ?? 'llama3.1:8b',
-  });
+export async function GET(): Promise<NextResponse<HealthResponse>> {
+  // Construimos los clients aqui — si la GROQ_API_KEY falta y querias Groq,
+  // makeChatClient() tira; lo capturamos como error claro.
+  let chatErr: string | null = null;
+  let chatModel = '(unknown)';
+  let chatProvider: 'groq' | 'ollama' = chatClientProvider();
+  let chatReady = false;
+  try {
+    const client = makeChatClient();
+    chatModel = client.modelName;
+    const r = await client.preflight();
+    chatReady = r === null;
+    chatErr = r;
+  } catch (err) {
+    chatErr = err instanceof Error ? err.message : String(err);
+  }
+
   const timesfm = new TimesFMClient({
     baseUrl: process.env['PREDICTIVE_SERVICE_URL'] ?? 'http://localhost:8765',
   });
-  return { ollama, timesfm };
-}
-
-export async function GET(): Promise<NextResponse<HealthResponse>> {
-  const { ollama, timesfm } = buildClients();
-
-  // Corremos en paralelo. Cada chequeo tiene su propio try/catch para que
-  // un servicio caido no oculte el estado del otro.
-  const [ollamaResult, timesfmResult] = await Promise.all([
-    ollama.preflight().then(
-      (err) => ({ ready: err === null, error: err ?? undefined }),
-      (err: Error) => ({ ready: false, error: err.message }),
-    ),
-    timesfm
-      .health()
-      .then(
-        (h) => ({ ready: h.status === 'ok', status: h.status, model: h.model }),
-        (err: Error) => ({ ready: false, status: 'unreachable' as const, error: err.message }),
-      ),
-  ]);
+  const timesfmResult = await timesfm
+    .health()
+    .then(
+      (h) => ({ ready: h.status === 'ok', status: h.status, model: h.model }),
+      (err: Error) => ({ ready: false, status: 'unreachable' as const, error: err.message }),
+    );
 
   const body: HealthResponse = {
-    ok: ollamaResult.ready && timesfmResult.ready,
+    ok: chatReady && timesfmResult.ready,
     ollama: {
-      ready: ollamaResult.ready,
-      model: ollama.modelName,
-      ...(ollamaResult.error ? { error: ollamaResult.error } : {}),
+      ready: chatReady,
+      model: `${chatProvider}: ${chatModel}`,
+      ...(chatErr ? { error: chatErr } : {}),
     },
     timesfm: {
       ready: timesfmResult.ready,

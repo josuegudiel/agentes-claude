@@ -31,6 +31,12 @@ export function HealthBadges(): React.ReactElement {
     };
   }, []);
 
+  // El label del segundo badge cambia segun si la API usa Groq o Ollama.
+  // El campo `ollama.model` viene con prefijo "groq: ..." o "ollama: ..."
+  // desde /api/health para facilitar la decision aqui.
+  const provider = health?.ollama.model?.split(':')[0]?.trim() ?? 'LLM';
+  const providerLabel = provider === 'groq' ? 'Groq' : provider === 'ollama' ? 'Ollama' : 'LLM';
+
   return (
     <div className="flex items-center gap-2 text-xs">
       <Badge
@@ -40,7 +46,7 @@ export function HealthBadges(): React.ReactElement {
         detail={health?.timesfm.model ?? health?.timesfm.error ?? '...'}
       />
       <Badge
-        label="Ollama"
+        label={providerLabel}
         ready={health?.ollama.ready ?? false}
         loading={loading}
         detail={health?.ollama.model ?? health?.ollama.error ?? '...'}

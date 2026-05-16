@@ -1,10 +1,11 @@
 import { z } from 'zod';
-import { OllamaClient } from '../../../../src/agents/predictive/ollama-client';
+import { makeChatClient } from '../../../../src/agents/predictive/chat-client-factory';
 import { TimesFMClient } from '../../../../src/agents/predictive/timesfm-client';
 import {
   runPredictiveAgent,
   type AgentEvent,
 } from '../../../../src/agents/predictive/runtime';
+import { checkRateLimit, clientKey } from '../../../lib/rate-limit';
 import type { SSEEvent, ForecastSummaryClient } from '../../../lib/types';
 
 export const dynamic = 'force-dynamic';
@@ -16,16 +17,11 @@ const RequestSchema = z.object({
   question: z.string().max(500).optional(),
 });
 
-function buildClients() {
-  const ollama = new OllamaClient({
-    baseUrl: process.env['OLLAMA_BASE_URL'] ?? 'http://localhost:11434',
-    model: process.env['OLLAMA_MODEL'] ?? 'llama3.1:8b',
-  });
-  const timesfm = new TimesFMClient({
-    baseUrl: process.env['PREDICTIVE_SERVICE_URL'] ?? 'http://localhost:8765',
-  });
-  return { ollama, timesfm };
-}
+// Limites mas conservadores en produccion (Vercel) para proteger las cuotas
+// gratuitas de Groq / Hugging Face. En local desactivamos rate limit.
+const RATE_LIMIT_ENABLED = process.env['NODE_ENV'] === 'production';
+const RATE_LIMIT_PER_IP = Number(process.env['RATE_LIMIT_PER_IP'] ?? 10);
+const RATE_LIMIT_WINDOW_MS = Number(process.env['RATE_LIMIT_WINDOW_MS'] ?? 10 * 60 * 1000);
 
 function sseFormat(event: SSEEvent): string {
   return `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`;
@@ -48,6 +44,31 @@ function buildGoal(series: number[], horizon: number, question?: string): string
 }
 
 export async function POST(req: Request): Promise<Response> {
+  // Rate limit antes de parsear el body — protege contra spam mas barato.
+  if (RATE_LIMIT_ENABLED) {
+    const key = clientKey(req);
+    const rl = checkRateLimit(key, {
+      limit: RATE_LIMIT_PER_IP,
+      windowMs: RATE_LIMIT_WINDOW_MS,
+    });
+    if (!rl.ok) {
+      const retryAfter = Math.ceil((rl.resetAt - Date.now()) / 1000);
+      return new Response(
+        JSON.stringify({
+          error: 'Demasiadas predicciones desde esta IP. Espera un rato.',
+          retryAfter,
+        }),
+        {
+          status: 429,
+          headers: {
+            'content-type': 'application/json',
+            'retry-after': String(retryAfter),
+          },
+        },
+      );
+    }
+  }
+
   let parsed: z.infer<typeof RequestSchema>;
   try {
     const body: unknown = await req.json();
@@ -75,7 +96,11 @@ export async function POST(req: Request): Promise<Response> {
       };
 
       send({ type: 'start', goal });
-      const { ollama, timesfm } = buildClients();
+      // Factory: usa Groq si hay GROQ_API_KEY, Ollama local si no.
+      const ollama = makeChatClient();
+      const timesfm = new TimesFMClient({
+        baseUrl: process.env['PREDICTIVE_SERVICE_URL'] ?? 'http://localhost:8765',
+      });
 
       // Capturamos la ultima respuesta de TimesFM para mandarsela al cliente
       // junto con la serie original (asi el chart puede pintar todo).

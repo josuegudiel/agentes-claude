@@ -4,6 +4,8 @@ import { TimesFMClient } from './timesfm-client.js';
 import { buildPredictiveTools, type PredictiveTools } from './tools.js';
 import { SYSTEM_PROMPT } from './prompts.js';
 import type { ForecastSummary } from './schema.js';
+import type { ChatClient } from './chat-client.js';
+import { makeChatClient } from './chat-client-factory.js';
 
 /**
  * Runtime del agente predictivo. Loop minimo de tool-use sobre Ollama:
@@ -25,7 +27,11 @@ export interface PredictiveAgentOptions {
   goal: string;
   maxSteps?: number;
   timesfm?: TimesFMClient;
-  ollama?: OllamaClient;
+  /**
+   * Chat client (Ollama local o Groq cloud). Si no se pasa, se elige
+   * automaticamente: Groq si hay GROQ_API_KEY, Ollama en caso contrario.
+   */
+  ollama?: ChatClient;
   /**
    * Callback opcional invocado en cada paso del loop. Sirve para hacer
    * streaming via SSE desde un API route. NO debe lanzar — los errores se
@@ -54,7 +60,7 @@ export async function runPredictiveAgent(
 ): Promise<PredictiveAgentResult> {
   const log = logger.child({ component: 'predictive.runtime' });
 
-  const ollama = opts.ollama ?? new OllamaClient();
+  const ollama: ChatClient = opts.ollama ?? makeChatClient();
   const timesfm = opts.timesfm ?? new TimesFMClient();
   const tools: PredictiveTools = buildPredictiveTools({ timesfm, ollama });
   const emit = (event: AgentEvent): void => {
