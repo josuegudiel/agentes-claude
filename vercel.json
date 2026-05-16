@@ -1,0 +1,16 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "buildCommand": "pnpm --filter agentes-claude-web build",
+  "devCommand": "pnpm --filter agentes-claude-web dev",
+  "installCommand": "pnpm install --filter agentes-claude-web... --frozen-lockfile=false",
+  "framework": "nextjs",
+  "outputDirectory": "web/.next",
+  "functions": {
+    "web/app/api/predict/route.ts": {
+      "maxDuration": 60
+    },
+    "web/app/api/health/route.ts": {
+      "maxDuration": 10
+    }
+  }
+}

@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { logger } from '../../core/logger.js';
 import { AppError } from '../../core/errors.js';
+import type { ChatClient } from './chat-client.js';
 
 // Defaults inline (no via core/config.ts) para que el agente predictivo
 // pueda correr en contextos donde las env vars de Playwright no aplican
@@ -72,7 +73,7 @@ export interface OllamaChatOptions {
   temperature?: number;
 }
 
-export class OllamaClient {
+export class OllamaClient implements ChatClient {
   private readonly baseUrl: string;
   private readonly model: string;
   private readonly timeoutMs: number;

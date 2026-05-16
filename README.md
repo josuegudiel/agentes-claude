@@ -76,19 +76,28 @@ pnpm test:unit:watch     # watch mode mientras editas
 
 UI interactiva del agente predictivo: pegás una serie, elegís horizonte, y ves los pasos del agente en vivo + un chart con histórico y forecast con bandas P10–P90.
 
+**Dos modos de correr:**
+
+**Modo local (todo open source en tu PC):**
+
 ```bash
 # Una sola vez
 cp web/.env.local.example web/.env.local
 
 # 3 procesos en paralelo
-ollama serve                  # terminal 1 (o systemd, lo que uses)
+ollama serve                  # terminal 1
 pnpm predict:up               # terminal 2 — sidecar Python con TimesFM
 pnpm web:dev                  # terminal 3 — abre http://localhost:3000
 ```
 
-- `pnpm web:build` y `pnpm web:start` para producción.
-- El web Node es el único punto de entrada al cliente: el sidecar Python (`:8765`) y Ollama (`:11434`) quedan internos, sólo accesibles vía Next.
+**Modo cloud (publicado en internet, $0/mes):**
+
+Frontend en Vercel + Groq como LLM + Hugging Face Spaces para TimesFM. Pasos detallados en [`DEPLOY.md`](DEPLOY.md). El agente detecta automaticamente cuál usar via la env var `GROQ_API_KEY`: si está, va a Groq; si no, va a Ollama local.
+
+- `pnpm web:build` y `pnpm web:start` para producción local.
+- El web Node es el único punto de entrada al cliente: el sidecar Python y el LLM quedan internos, sólo accesibles vía Next.
 - Streaming en vivo (Server-Sent Events) en `POST /api/predict` — cada paso del tool-loop aparece en el panel lateral.
+- Rate limit por IP activo solo en producción (10 req / 10 min por default, configurable).
 
 ### Seed de tenant demo
 

@@ -1,8 +1,7 @@
 import { z } from 'zod';
 import { logger } from '../../core/logger.js';
 import { AgentToolError } from '../../core/errors.js';
-import type { OllamaToolDefinition } from './ollama-client.js';
-import type { OllamaClient } from './ollama-client.js';
+import type { ChatClient, OllamaToolDefinition } from './chat-client.js';
 import type { TimesFMClient } from './timesfm-client.js';
 import {
   ForecastRequestSchema,
@@ -67,7 +66,8 @@ export interface PredictiveTools {
 
 export function buildPredictiveTools(deps: {
   timesfm: TimesFMClient;
-  ollama: OllamaClient;
+  /** Cualquier ChatClient (Ollama local o Groq cloud). */
+  ollama: ChatClient;
 }): PredictiveTools {
   const log = logger.child({ component: 'predictive.tools' });
   const state: PredictiveToolState = { lastSummary: null };
