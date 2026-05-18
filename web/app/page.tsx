@@ -76,7 +76,15 @@ export default function HomePage(): React.ReactElement {
             TimesFM 2.0 (forecast) + Ollama (razonamiento) — todo open source.
           </p>
         </div>
-        <HealthBadges />
+        <div className="flex items-center gap-3">
+          <a
+            href="/scanner"
+            className="rounded-md border border-ink-700 bg-ink-800 px-3 py-1.5 text-xs text-ink-200 hover:bg-ink-700"
+          >
+            Abrir scanner -&gt;
+          </a>
+          <HealthBadges />
+        </div>
       </header>
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_380px]">
