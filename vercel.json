@@ -11,9 +11,6 @@
     },
     "web/app/api/health/route.ts": {
       "maxDuration": 10
-    },
-    "web/app/api/scan/identify/route.ts": {
-      "maxDuration": 30
     }
   }
 }

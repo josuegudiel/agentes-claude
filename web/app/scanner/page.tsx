@@ -16,8 +16,8 @@ export default function ScannerPage(): React.ReactElement {
             Scanner
           </h1>
           <p className="text-sm text-ink-400">
-            Captura, edita y exporta documentos. Identificacion automatica
-            con Claude Vision.
+            Captura, edita y exporta documentos. Todo corre en el browser —
+            tus imagenes nunca salen del dispositivo.
           </p>
         </div>
         <a
@@ -33,9 +33,9 @@ export default function ScannerPage(): React.ReactElement {
       </section>
 
       <footer className="mt-auto border-t border-ink-800 pt-4 text-xs text-ink-500">
-        Todo el procesamiento (camara, crop, filtros, PDF) ocurre en el
-        browser. El agente solo recibe la imagen para clasificarla via{' '}
-        <code>POST /api/scan/identify</code>.
+        100% client-side: camara via <code>getUserMedia</code>, crop y
+        filtros con canvas 2D, PDF con jsPDF. No hay backend, no se sube
+        nada a ningun servidor.
       </footer>
     </main>
   );

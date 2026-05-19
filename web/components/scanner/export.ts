@@ -102,17 +102,3 @@ export function downloadBlob(blob: Blob, filename: string): void {
   // URL se libera dentro del mismo tick.
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
-
-/**
- * Convierte un canvas a base64 (sin el prefijo `data:`) listo para enviar
- * al API de identificacion. Usamos JPEG calidad 0.85 — el modelo no nota
- * la diferencia y el payload baja 4-6x.
- */
-export function canvasToBase64Jpeg(canvas: HTMLCanvasElement): {
-  base64: string;
-  mimeType: 'image/jpeg';
-} {
-  const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
-  const base64 = dataUrl.split(',', 2)[1] ?? '';
-  return { base64, mimeType: 'image/jpeg' };
-}

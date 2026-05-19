@@ -1,13 +1,11 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useState } from 'react';
 import {
-  canvasToBase64Jpeg,
   downloadBlob,
   exportPages,
   type ExportFormat,
 } from './export';
-import type { ScanIdentifyResult } from './types';
 
 interface Page {
   canvas: HTMLCanvasElement;
@@ -30,56 +28,7 @@ const FORMATS: { id: ExportFormat; label: string; hint: string }[] = [
 export function ExportView({ pages, onAddPage, onRemovePage, onRestart }: Props): React.ReactElement {
   const [format, setFormat] = useState<ExportFormat>('pdf');
   const [filename, setFilename] = useState<string>('escaneo');
-  const [identifying, setIdentifying] = useState(false);
-  const [classification, setClassification] = useState<ScanIdentifyResult | null>(null);
-  const [idError, setIdError] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
-
-  // Auto-identificar la primera pagina cuando aparece. Solo lo intentamos
-  // una vez por sesion para no quemar tokens si el usuario re-edita.
-  const [identifiedFor, setIdentifiedFor] = useState<HTMLCanvasElement | null>(null);
-  useEffect(() => {
-    if (pages.length === 0) return;
-    const first = pages[0]!.canvas;
-    if (identifiedFor === first) return;
-
-    let cancelled = false;
-    setIdentifying(true);
-    setIdError(null);
-
-    (async () => {
-      try {
-        const { base64, mimeType } = canvasToBase64Jpeg(first);
-        const res = await fetch('/api/scan/identify', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ imageBase64: base64, mimeType }),
-        });
-        if (!res.ok) {
-          const j = (await res.json().catch(() => null)) as { error?: string } | null;
-          throw new Error(j?.error ?? `HTTP ${res.status}`);
-        }
-        const data = (await res.json()) as { classification: ScanIdentifyResult };
-        if (cancelled) return;
-        setClassification(data.classification);
-        // Solo auto-renombramos si el usuario no toco el campo.
-        setFilename((current) =>
-          current === 'escaneo' ? data.classification.suggestedFilename : current,
-        );
-      } catch (err) {
-        if (!cancelled) setIdError(err instanceof Error ? err.message : String(err));
-      } finally {
-        if (!cancelled) {
-          setIdentifying(false);
-          setIdentifiedFor(first);
-        }
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [pages, identifiedFor]);
 
   const handleExport = useCallback(async () => {
     if (pages.length === 0) return;
@@ -140,34 +89,6 @@ export function ExportView({ pages, onAddPage, onRemovePage, onRestart }: Props)
             </div>
           ))}
         </div>
-      </div>
-
-      {/* Identificacion */}
-      <div className="rounded-md border border-ink-800 bg-ink-900 p-3 text-sm">
-        <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-ink-400">
-          Identificacion automatica
-        </div>
-        {identifying && <p className="text-ink-300">Analizando con Claude...</p>}
-        {idError && (
-          <p className="text-rose-300">No se pudo identificar: {idError}</p>
-        )}
-        {classification && !identifying && (
-          <div className="space-y-1 text-ink-200">
-            <p>
-              <span className="text-ink-400">Tipo:</span>{' '}
-              <code className="text-emerald-300">{classification.documentType}</code>
-              <span className="ml-2 text-ink-500">
-                ({Math.round(classification.confidence * 100)}%)
-              </span>
-            </p>
-            {classification.title && (
-              <p>
-                <span className="text-ink-400">Titulo:</span> {classification.title}
-              </p>
-            )}
-            <p className="text-ink-300">{classification.summary}</p>
-          </div>
-        )}
       </div>
 
       {/* Formato y nombre */}

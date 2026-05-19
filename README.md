@@ -77,7 +77,7 @@ pnpm test:unit:watch     # watch mode mientras editas
 Dos apps que se sirven desde el mismo deploy de Vercel:
 
 - **`/`** — UI interactiva del agente predictivo: pegás una serie, elegís horizonte, y ves los pasos del agente en vivo + un chart con histórico y forecast con bandas P10–P90.
-- **`/scanner`** — Scanner de documentos tipo CamScanner. Captura con la cámara del móvil (o subida de archivo), crop con handles, filtros (B&N adaptativo, magic auto-enhance, color boost, gris) y export a JPG / PNG / PDF multi-página. Identificación automática del tipo de documento via Claude Vision (`POST /api/scan/identify`, agente en `src/agents/scanner/`).
+- **`/scanner`** — Scanner de documentos tipo CamScanner. Captura con la cámara del móvil (o subida de archivo), crop con handles, filtros (B&N adaptativo, magic auto-enhance, color boost, gris) y export a JPG / PNG / PDF multi-página. 100% client-side (canvas 2D + jsPDF) — no se sube nada a ningún servidor, no necesita env vars para desplegar.
 
 **Dos modos de correr:**
 
