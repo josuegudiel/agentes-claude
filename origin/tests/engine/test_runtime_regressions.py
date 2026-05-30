@@ -196,6 +196,19 @@ def test_set_setting_disk_full_emits_config_error(tmp_path: Path, fixtures_dir: 
     assert "disk full" in errors[0]["error"]
 
 
+def test_setting_active_profile_no_dual_emit(isolated_orch):
+    """REGRESSION: `set_setting(active_profile=X)` debe emitir PROFILE_CHANGED
+    una sola vez (no double-emit por el camino with_settings + set_active_profile)."""
+    from origin.engine.events import EventType
+    orch, bus = isolated_orch
+    events: list[dict] = []
+    bus.subscribe(EventType.PROFILE_CHANGED, lambda p: events.append(p))
+    orch.set_setting(active_profile="fps")
+    assert len(events) == 1, f"esperaba 1 emit, got {len(events)}"
+    assert orch._profiles.active_id == "fps"  # noqa: SLF001
+    assert orch._settings.active_profile == "fps"  # noqa: SLF001
+
+
 def test_script_states_setdefault_under_lock(isolated_orch):
     """REGRESSION: `_dispatch_command` toma el state lock antes de tocar `_script_states`.
 

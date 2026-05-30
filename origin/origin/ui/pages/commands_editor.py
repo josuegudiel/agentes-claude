@@ -277,7 +277,10 @@ class CommandsEditorPage(QWidget):
             try:
                 pid_prev = getattr(self, "_last_rendered_profile", None)
                 if pid_prev:
-                    cmds = self._collect_table_as_commands()
+                    # Pasamos profile_id explícito — el combo ya cambió al perfil
+                    # nuevo y leer currentText() haría el lookup de steps/say_*
+                    # contra el perfil equivocado.
+                    cmds = self._collect_table_as_commands(profile_id=pid_prev)
                     self._apply_profile_change(pid_prev, cmds)
             except Exception:
                 logger.exception("flush_pending_save_on_profile_change_failed")
@@ -313,16 +316,22 @@ class CommandsEditorPage(QWidget):
             item.setData(Qt.BackgroundRole, None)
             item.setToolTip("")
 
-    def _collect_table_as_commands(self) -> list[dict[str, Any]]:
-        """Reconstruye los comandos del perfil activo desde la tabla.
+    def _collect_table_as_commands(self, profile_id: str | None = None) -> list[dict[str, Any]]:
+        """Reconstruye los comandos desde la tabla.
+
+        `profile_id` permite forzar el perfil contra el cual hacer el lookup de
+        campos preservados (`steps`, `say_*`). Sin esto, el flush en
+        `_on_profile_changed` lookupea contra el perfil NUEVO (combo ya cambió)
+        en vez del que renderizó la tabla.
 
         Mergeo cuidadoso: la tabla solo edita columnas planas (id, phrases, keys,
         labels, descriptions). Los campos `steps`, `say_es`, `say_en`, `say_key`
-        del comando original se preservan vía lookup por id contra el perfil
-        actual — sin esto, un edit en la tabla borraba el script de `Edit script`.
+        del comando original se preservan vía lookup por id.
         """
         cf = self._orch.config
-        pid = self._profile_combo.currentText() or self._orch.profiles.active_id
+        pid = profile_id or (
+            self._profile_combo.currentText() or self._orch.profiles.active_id
+        )
         try:
             original_by_id = {c.id: c for c in cf.get_profile(pid).commands}
         except KeyError:
