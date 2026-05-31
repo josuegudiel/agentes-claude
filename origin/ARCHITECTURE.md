@@ -9,18 +9,27 @@ Decisiones top-level: (a) **engine sin Qt** — `origin/engine/*` no importa PyS
 ## 2. Capas y threading
 
 ```
+   +---------------------------------------------------------------------------+
+   |                       Process (single instance via QLockFile)              |
+   +---------------------------------------------------------------------------+
+
                           +------------------------------------+
                           |   Main / Qt event loop (UI thread) |
-                          |   - MainWindow, pages, widgets     |
+                          |   - QApplication, MainWindow       |
+                          |   - Pages: dashboard, commands,    |
+                          |     profiles, settings, logs       |
+                          |   - OriginTray (QSystemTrayIcon)   |
                           |   - EngineBridge (QObject)         |
                           +------------------+-----------------+
-                                             | Qt signals (QueuedConnection
-                                             | porque emitidas desde otros threads)
-                                             v
+                                             ^
+                                             | Qt signals (auto-connection
+                                             | → QueuedConnection cuando
+                                             |   se emiten desde otros threads)
+                                             |
    +-----------------------------------------+-----------------------------------------+
    |                              EventBus  (engine/events.py)                          |
    |   subscribe / emit, fan-out síncrono en el thread del emisor                       |
-   +-----------------------------------------+-----------------------------------------+
+   +-----------------------------------------------------------------------------------+
        ^         ^         ^         ^        ^                ^             ^
        |         |         |         |        |                |             |
    +---+--+  +---+---+ +---+---+ +---+----+ +-+------+   +-----+------+ +----+----+
@@ -32,12 +41,29 @@ Decisiones top-level: (a) **engine sin Qt** — `origin/engine/*` no importa PyS
      pynput   pynput   PortAudio  inputs    subprocess     watchdog       Future
      Listener Global   InputStream                                        callback
               HotKeys                                                     -> bus
+
+                           +-----------------------------+
+                           |   Subsistemas del engine    |
+                           |  - Recorder (audio.py)      |
+                           |  - Transcriber (stt.py)     |
+                           |  - IntentMatcher (intent.py)|
+                           |  - StepExecutor (script.py) |
+                           |  - PiperTTS (tts.py)        |
+                           |  - HotasListener (hotas.py) |
+                           |  - LLMIntentResolver (llm.py)|
+                           |  - ProfileRegistry          |
+                           |  - keypress.execute (DirectInput)|
+                           +-----------------------------+
+                                  ↑ orquestados por
+                           Orchestrator (runtime.py)
 ```
 
 Reglas de oro:
-- Cualquier hilo del engine puede llamar `bus.emit()`. Cada subscriber corre en ese hilo emisor; los subscribers Qt re-emiten signals que llegan al main thread vía auto-connection (`QueuedConnection`).
-- El `Orchestrator` protege transiciones de estado y mutaciones de `_script_states` con `self._state_lock` (`RLock`).
-- El recorder mantiene el `sounddevice.InputStream` siempre abierto; `begin_capture()` y `end_capture()` arman/cierran ventanas. El callback de PortAudio es real-time, así que solo hace `np.copy` + push al buffer y calcula RMS para el VU meter.
+- Cualquier hilo del engine puede llamar `bus.emit()`. Cada subscriber corre en ese hilo emisor; los subscribers Qt re-emiten signals que llegan al main thread vía auto-connection (`QueuedConnection` porque `bridge` se crea en el main thread).
+- El `Orchestrator` protege transiciones de estado y mutaciones de `_script_states` con `self._state_lock` (`RLock` para soportar re-entradas como `_dispatch_command` invocando `_set_state` desde dentro del bloque).
+- El recorder mantiene el `sounddevice.InputStream` siempre abierto; `begin_capture()` y `end_capture()` arman/cierran ventanas dentro del stream continuo. El callback de PortAudio es real-time (latencia ms), así que solo hace `np.copy` + push al buffer y calcula RMS para el VU meter — sin I/O, sin locks largos.
+- El engine **no importa Qt en ningún lado**: `grep -r "PySide6" origin/engine/` da cero matches. Esto se preserva como invariante arquitectónico.
+- La UI puede vivir sin engine para tests con un `EventBus` falso, y el engine puede correr sin UI (`origin --headless`).
 
 ## 3. State machine del orchestrator
 
