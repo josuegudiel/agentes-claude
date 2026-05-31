@@ -26,12 +26,29 @@ class _JsonFormatter(logging.Formatter):
         return json.dumps(base, ensure_ascii=False)
 
 
+_NOISY_LOGGERS = (
+    "pynput",
+    "pynput.keyboard",
+    "pynput.mouse",
+    "faster_whisper",
+    "ctranslate2",
+    "watchdog",
+    "watchdog.observers",
+    "sounddevice",
+    "PIL",  # via QPixmap save por si acaso
+)
+
+
 def setup(level: str, log_file: Path | None, fmt: LogFormat = "pretty") -> None:
     root = logging.getLogger()
     root.setLevel(level.upper())
     # Limpieza para reconfigurar sobre reload.
     for h in list(root.handlers):
         root.removeHandler(h)
+    # Silenciar librerías ruidosas — con `--log-level DEBUG` el usuario quiere
+    # debug de Origin, no de pynput tickleando cada keystroke ni de ctranslate2.
+    for name in _NOISY_LOGGERS:
+        logging.getLogger(name).setLevel(logging.WARNING)
 
     if fmt == "json":
         formatter: logging.Formatter = _JsonFormatter()
