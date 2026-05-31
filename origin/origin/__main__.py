@@ -29,7 +29,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--headless", action="store_true", help="Sin GUI, engine puro")
     p.add_argument("--tray", action="store_true", help="Arranca minimizado al tray")
     p.add_argument("--config", type=Path, default=None)
-    p.add_argument("--log-level", default="INFO")
+    p.add_argument(
+        "--log-level",
+        default="INFO",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+        type=str.upper,
+    )
     p.add_argument("--list-mics", action="store_true")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--version", action="version", version=f"origin {__version__}")
@@ -56,9 +61,19 @@ def ensure_preset(target: Path) -> bool:
 
 
 def print_mics() -> None:
-    from .engine.audio import list_input_devices
-
-    devices = list_input_devices()
+    try:
+        from .engine.audio import list_input_devices
+        devices = list_input_devices()
+    except (ImportError, OSError) as e:
+        # PortAudio missing (Linux sin libportaudio2), sounddevice no instalado,
+        # o cualquier otro fallo de inicialización del audio backend.
+        print(f"No se pudo enumerar micrófonos: {e}", file=sys.stderr)
+        print(
+            "  Hint: en Linux instalá libportaudio2 (apt install libportaudio2). "
+            "En Windows debería andar out-of-the-box.",
+            file=sys.stderr,
+        )
+        return
     if not devices:
         print("No se detectaron micrófonos.")
         return
@@ -120,6 +135,10 @@ def main(argv: list[str] | None = None) -> int:
         except FileNotFoundError as e:
             logging.error("%s", e)
             return 2
+    elif not config_path.exists():
+        # --config con path explícito que no existe → error claro, no FileNotFoundError crudo.
+        print(f"Error: --config '{config_path}' no existe", file=sys.stderr)
+        return 2
 
     try:
         if args.headless:
