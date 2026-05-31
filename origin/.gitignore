@@ -18,3 +18,4 @@ installer/voices/
 installer/build/
 installer/dist/
 *.exe
+.coverage

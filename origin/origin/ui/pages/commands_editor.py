@@ -142,7 +142,11 @@ class CommandsEditorPage(QWidget):
                 profile = cf.get_profile(pid)
             except KeyError:
                 self._table.setRowCount(0)
+                self._last_rendered_profile = None
                 return
+            # Track el perfil renderizado para que un cambio de combo pueda
+            # flushear el save pendiente al perfil correcto, no al nuevo.
+            self._last_rendered_profile = pid
             self._table.setRowCount(len(profile.commands))
             for r, cmd in enumerate(profile.commands):
                 self._set_cell(r, 0, cmd.id)
@@ -265,6 +269,21 @@ class CommandsEditorPage(QWidget):
     def _on_profile_changed(self, _pid: str) -> None:
         if self._suppress_save:
             return
+        # Si hay un save pendiente del perfil anterior, flushearlo antes del re-render
+        # — sin esto, los edits del perfil viejo se perdían cuando el usuario
+        # cambiaba el combo durante el debounce de 500 ms.
+        if self._save_timer.isActive():
+            self._save_timer.stop()
+            try:
+                pid_prev = getattr(self, "_last_rendered_profile", None)
+                if pid_prev:
+                    # Pasamos profile_id explícito — el combo ya cambió al perfil
+                    # nuevo y leer currentText() haría el lookup de steps/say_*
+                    # contra el perfil equivocado.
+                    cmds = self._collect_table_as_commands(profile_id=pid_prev)
+                    self._apply_profile_change(pid_prev, cmds)
+            except Exception:
+                logger.exception("flush_pending_save_on_profile_change_failed")
         self._render_table()
 
     def _on_external_profile_changed(self, pid: str) -> None:
@@ -297,12 +316,37 @@ class CommandsEditorPage(QWidget):
             item.setData(Qt.BackgroundRole, None)
             item.setToolTip("")
 
-    def _collect_table_as_commands(self) -> list[dict[str, Any]]:
+    def _collect_table_as_commands(self, profile_id: str | None = None) -> list[dict[str, Any]]:
+        """Reconstruye los comandos desde la tabla.
+
+        `profile_id` permite forzar el perfil contra el cual hacer el lookup de
+        campos preservados (`steps`, `say_*`). Sin esto, el flush en
+        `_on_profile_changed` lookupea contra el perfil NUEVO (combo ya cambió)
+        en vez del que renderizó la tabla.
+
+        Mergeo cuidadoso: la tabla solo edita columnas planas (id, phrases, keys,
+        labels, descriptions). Los campos `steps`, `say_es`, `say_en`, `say_key`
+        del comando original se preservan vía lookup por id.
+        """
+        cf = self._orch.config
+        pid = profile_id or (
+            self._profile_combo.currentText() or self._orch.profiles.active_id
+        )
+        try:
+            original_by_id = {c.id: c for c in cf.get_profile(pid).commands}
+        except KeyError:
+            original_by_id = {}
+
         out: list[dict[str, Any]] = []
         for r in range(self._table.rowCount()):
-            row = {col[0]: (self._table.item(r, i).text() if self._table.item(r, i) else "") for i, col in enumerate(COLS)}
+            row = {
+                col[0]: (self._table.item(r, i).text() if self._table.item(r, i) else "")
+                for i, col in enumerate(COLS)
+            }
+            new_id = row["id"].strip()
+            original = original_by_id.get(new_id)
             cmd = {
-                "id": row["id"].strip(),
+                "id": new_id,
                 "phrases_es": _split_list(row["phrases_es"]),
                 "phrases_en": _split_list(row["phrases_en"]),
                 "keys": _split_list(row["keys"]),
@@ -310,6 +354,11 @@ class CommandsEditorPage(QWidget):
                 "label_en": row["label_en"].strip() or None,
                 "description_es": row["description_es"].strip() or None,
                 "description_en": row["description_en"].strip() or None,
+                # ===== preserved (no editables desde la tabla) =====
+                "steps": [s.model_dump(by_alias=True) for s in original.steps] if (original and original.steps) else None,
+                "say_es": original.say_es if original else None,
+                "say_en": original.say_en if original else None,
+                "say_key": original.say_key if original else None,
             }
             out.append(cmd)
         return out
@@ -331,10 +380,11 @@ class CommandsEditorPage(QWidget):
             "commands": new_commands,
         }
         new_profiles = [
-            new_profile if p.id == profile_id else p.model_dump() for p in cf.profiles
+            new_profile if p.id == profile_id else p.model_dump(by_alias=True)
+            for p in cf.profiles
         ]
         new_dump = {
-            "version": 2,
+            "version": 3,
             "settings": cf.settings.model_dump(),
             "profiles": new_profiles,
         }

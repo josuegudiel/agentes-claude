@@ -64,10 +64,15 @@ def run_app(config_path: Path, dry_run: bool, start_minimized: bool) -> int:
         retranslate_all()
 
     bridge.language_changed.connect(_on_lang_change)
-    bridge.config_reloaded.connect(lambda: (
-        load_lang(orch.config.settings.ui_language),
-        retranslate_all(),
-    ))
+
+    def _on_config_reloaded() -> None:
+        load_lang(orch.config.settings.ui_language)
+        retranslate_all()
+        # Re-aplicar tema en caliente: sin esto el cambio de theme desde Settings
+        # no surtía efecto hasta restart.
+        theme.apply_theme(app, orch.config.settings.theme)
+
+    bridge.config_reloaded.connect(_on_config_reloaded)
 
     # Ventana principal con close → tray.
     main_window = MainWindow(orch, bridge, on_close_to_tray=None)

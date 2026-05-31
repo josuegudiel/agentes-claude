@@ -109,7 +109,14 @@ class Recorder:
             logger.info("audio_stream_stopped")
 
     def restart_stream(self, mic_device: int | None) -> None:
-        """Cierra y reabre con un nuevo device (cambio de mic desde Settings)."""
+        """Cierra y reabre con un nuevo device (cambio de mic desde Settings).
+
+        Importante: si había una captura en vuelo, se descarta — sin esto, el
+        audio del mic viejo + el del nuevo se concatenaban en el mismo buffer.
+        """
+        with self._lock:
+            self._capturing = False
+            self._buffer = []
         self.stop_stream()
         self._mic_device = mic_device
         self.start_stream()
@@ -128,6 +135,13 @@ class Recorder:
             return np.zeros(0, dtype=np.float32)
         audio = np.concatenate(chunks)
         if audio.shape[0] > self._max_samples:
+            # Truncamos a max_record_seconds — el usuario debe enterarse para
+            # no asumir que su frase larga se procesó completa.
+            logger.warning(
+                "audio_truncated samples=%d max=%d (dur=%.1fs)",
+                audio.shape[0], self._max_samples,
+                audio.shape[0] / self._sample_rate,
+            )
             audio = audio[: self._max_samples]
         return audio
 

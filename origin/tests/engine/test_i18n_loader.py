@@ -12,6 +12,13 @@ def test_load_existing_lang(tmp_path: Path):
     assert load_strings(tmp_path, "es") == {"k": "valor"}
 
 
+def test_load_handles_utf8_bom(tmp_path: Path):
+    """REGRESSION: editores en Windows (Notepad) agregan BOM UTF-8 al guardar
+    JSON. Sin utf-8-sig el load crashea con JSONDecodeError."""
+    (tmp_path / "es.json").write_bytes(b"\xef\xbb\xbf" + b'{"k": "valor"}')
+    assert load_strings(tmp_path, "es") == {"k": "valor"}
+
+
 def test_load_missing_returns_empty(tmp_path: Path):
     assert load_strings(tmp_path, "xx") == {}
 

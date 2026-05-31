@@ -134,6 +134,8 @@ class Orchestrator:
 
     def shutdown(self) -> None:
         logger.info("orchestrator_shutdown")
+        # Orden: cortar I/O externo (HOTAS, TTS, watchdog, keyboard) ANTES de
+        # esperar al executor; setear cancel para abortar scripts en vuelo.
         self._script_cancel.set()
         if self._hotas:
             self._hotas.stop()
@@ -144,7 +146,9 @@ class Orchestrator:
         if self._recorder:
             self._recorder.stop_stream()
         if self._executor:
-            self._executor.shutdown(wait=True, cancel_futures=False)
+            # cancel_futures=True para que un LLM lento o un script colgado no
+            # bloqueen el shutdown indefinidamente.
+            self._executor.shutdown(wait=True, cancel_futures=True)
 
     # ====================================================================
     # Construcción de módulos
@@ -164,9 +168,10 @@ class Orchestrator:
         self._script_executor = StepExecutor(
             keypress_exec=lambda combos, delay, dry: keypress.execute(combos, delay, dry),
             keypress_exec_held=lambda combo, ms, dry: keypress.execute_held(combo, ms, dry),
-            tts_say=self._tts_say if self._tts else None,
-            tts_cancel=self._tts.cancel if self._tts else None,
-            set_substate=lambda s: self._set_state(State(s) if s != "running_script" else State.RUNNING_SCRIPT),
+            # Métodos bound a `self`: siempre re-leen self._tts / self._settings.
+            tts_say=self._tts_say,
+            tts_cancel=self._tts_cancel_indirect,
+            set_substate=lambda s: self._set_state(State(s)),
             bus=self._bus,
             settings_provider=lambda: self._settings,
             i18n_say=self._i18n_say,
@@ -251,9 +256,20 @@ class Orchestrator:
     def set_setting(self, **changes: Any) -> None:
         """Aplica cambios al bloque settings, emite eventos y persiste a disco."""
         old = self._settings
-        self._cf = self._cf.with_settings(**changes)
-        self._settings = self._cf.settings
-        cfgmod.save_atomic(self._cf, self._config_path)
+        new_cf = self._cf.with_settings(**changes)
+        try:
+            cfgmod.save_atomic(new_cf, self._config_path)
+        except OSError as e:
+            # Disk full, permission denied, etc. — no actualizamos in-memory para
+            # mantener la consistencia entre RAM y disco; avisamos a la UI.
+            logger.error("set_setting_save_failed: %s", e)
+            self._bus.emit(
+                EventType.CONFIG_ERROR,
+                {"error": f"No se pudo guardar settings: {e}"},
+            )
+            return
+        self._cf = new_cf
+        self._settings = new_cf.settings
 
         if "mic_device" in changes and self._recorder:
             self._recorder.restart_stream(self._settings.mic_device)
@@ -294,13 +310,23 @@ class Orchestrator:
         return True
 
     def execute_command_test(self, command_id: str, profile_id: str | None = None) -> None:
-        """Ejecuta los steps de un comando sin necesidad de hablar (botón Test del editor)."""
+        """Ejecuta los steps de un comando sin necesidad de hablar (botón Test del editor).
+
+        Esta ruta NO pasa por el executor, así que no hay `_on_process_done` que
+        resetee el state. Lo hacemos en finally — sin esto el dashboard quedaba
+        atascado en RUNNING_SCRIPT tras un Test.
+        """
         pid = profile_id or self._profiles.active_id
         prof = self._cf.get_profile(pid)
         cmd = next((c for c in prof.commands if c.id == command_id), None)
         if cmd is None:
             raise KeyError(command_id)
-        self._dispatch_command(cmd, self._settings.active_language, test=True)
+        try:
+            self._dispatch_command(cmd, self._settings.active_language, test=True)
+        finally:
+            with self._state_lock:
+                if self._state not in (State.PAUSED, State.ERROR):
+                    self._set_state(State.READY)
 
     # ====================================================================
     # Internos
@@ -429,14 +455,12 @@ class Orchestrator:
             if self._state in (State.PAUSED, State.LOADING, State.ERROR):
                 logger.debug("ptt_press_ignored state=%s", self._state.value)
                 return
-            # SPEAKING + cancel_on_ptt → cortar y proceder a grabar.
+            # SPEAKING + cancel_on_ptt → cortar TTS y proceder a grabar.
+            # No emitimos READY intermedio: la transición visible es SPEAKING → RECORDING.
             if self._state == State.SPEAKING and self._settings.tts.cancel_on_ptt:
                 if self._tts:
                     self._tts.cancel()
-                # Esperamos hasta 50 ms a que el thread del say dejé el state en otro.
-                # Si no, forzamos transición.
-                self._set_state(State.READY)
-            if self._state in _BUSY_STATES:
+            elif self._state in _BUSY_STATES:
                 logger.info("ptt_busy state=%s", self._state.value)
                 return
             if self._ptt_pressed:
@@ -555,8 +579,14 @@ class Orchestrator:
         """Ejecuta un comando vía StepExecutor (unifica keys+steps)."""
         assert self._script_executor is not None
         steps = cfgmod.command_as_steps(cmd, self._settings)
-        state = self._script_states.setdefault(self._profiles.active_id, StepExecutionState())
-        self._script_cancel = threading.Event()  # cancel limpio por comando
+        # `setdefault` bajo lock — reload_config puede mutar `_script_states`.
+        with self._state_lock:
+            state = self._script_states.setdefault(
+                self._profiles.active_id, StepExecutionState()
+            )
+        # Clear (no reasignar) — un shutdown() en flight que llamó .set() sobre el
+        # mismo Event mantiene su efecto, no se pierde por re-asignación.
+        self._script_cancel.clear()
         self._set_state(State.RUNNING_SCRIPT)
         try:
             self._script_executor.execute(steps, state, lang, cancel=self._script_cancel)
@@ -591,7 +621,9 @@ class Orchestrator:
     # ----- TTS helpers -----
 
     def _tts_say(self, text: str, lang: str) -> None:
-        if not self._tts:
+        # Gate por settings.tts.enabled — el toggle desde Settings tiene que
+        # cortar TODO TTS, incluyendo say steps explícitos en scripts.
+        if not self._tts or not self._settings.tts.enabled:
             return
         self._tts.say(
             text,
@@ -599,6 +631,12 @@ class Orchestrator:
             speed=self._settings.tts.speed,
             volume=self._settings.tts.volume,
         )
+
+    def _tts_cancel_indirect(self) -> None:
+        # Indirección para evitar capturar `self._tts.cancel` con bind temprano:
+        # si TTS se rebuildea, el lookup en runtime sigue válido.
+        if self._tts:
+            self._tts.cancel()
 
     def _i18n_say(self, key: str, lang: str) -> str:
         return self._tts_phrases.get(lang, {}).get(key) or f"[missing:{key}]"
