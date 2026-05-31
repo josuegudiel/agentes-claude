@@ -114,6 +114,33 @@ Transiciones legales (origen → destino):
 | `piper.exe` subprocess | Spawned por cada `say()`. Lee texto por stdin, escribe PCM int16 22050Hz mono por stdout. Stderr ignorado. | `PiperTTS.say()` (`tts.py:79`). NO es un thread Python: subproceso del SO. | `proc.wait(timeout=0.5)` o `terminate()` en cancel/shutdown. |
 | Subscriber callbacks del bus | Corren sincrónicamente en el thread del emisor. UI subscribers re-emiten Qt signals (cross-thread → `QueuedConnection`). | `EventBus.subscribe()` | desubscripción / shutdown. |
 
+## 4.1 Ciclo de vida del Orchestrator
+
+`Orchestrator.__init__` (`runtime.py:71`) carga config y arma los subsistemas pero NO los arranca. `start()` (`runtime.py:111`) hace en orden:
+
+1. Crea `ThreadPoolExecutor(max_workers=1, thread_name_prefix="origin-stt")`.
+2. `Recorder(...).start_stream()` — abre el `InputStream` de sounddevice.
+3. `Transcriber(...)` — instancia (no carga modelo aún).
+4. `_build_tts()` — instancia `PiperTTS` (resuelve paths de piper.exe y voces).
+5. `_build_script_executor()` — instancia `StepExecutor` con callbacks bound.
+6. `_build_llm_if_enabled()` — si `settings.llm.enabled`, crea `OllamaClient` + `LLMIntentResolver` y submitea `_llm_preflight` al executor.
+7. Si `autoload_model=True` (default), submitea `_load_model` al executor (corre warm-up de Whisper en background).
+8. `_start_keyboard_listeners()` — pynput.Listener + GlobalHotKeys.
+9. `_start_hotas_listener()` — si `settings.hotas.enabled` y hay `button_binding`.
+10. `_start_watchdog()` — si `watchdog` está instalado.
+
+`shutdown()` (`runtime.py:135`) hace el inverso, pero **el orden importa** y está explícito en el código:
+
+1. `_script_cancel.set()` — aborta scripts en vuelo.
+2. `self._hotas.stop()` — antes que nada para cortar input externo.
+3. `self._tts.shutdown()` — cancel + terminate del subprocess.
+4. `self._stop_watchdog()` — `.stop()` + `.join(2s)`.
+5. `self._stop_keyboard_listeners()` — pynput.
+6. `self._recorder.stop_stream()` — cierra PortAudio.
+7. `self._executor.shutdown(wait=True, cancel_futures=True)` — clave: `cancel_futures=True` para que un LLM lento o un script colgado no bloqueen el shutdown indefinidamente.
+
+Si `shutdown()` se llama dos veces, las operaciones son idempotentes (chequean si el recurso ya está liberado).
+
 ## 5. EventBus contract
 
 Definido en `origin/engine/events.py`. 15 tipos de eventos enumerados en `EventType`. Pattern: emisor llama `bus.emit(event, payload_dict)`, suscriptores reciben el `dict` plano. Sin lock por subscriber — un subscriber colgado bloquea al emisor.
@@ -253,20 +280,41 @@ Ejemplo `steps:` mixto:
 
 Caso: `phrases_es: ["pide hangar"]`, `keys: ["alt+n"]`, `say_es: "permiso solicitado"`.
 
-1. **PTT down** (`F12`). `pynput.Listener` daemon llama `_on_ptt_press` (`runtime.py:453`).
-2. Bajo `_state_lock`: si `BUSY/PAUSED/LOADING/ERROR` → return; si `SPEAKING` + `cancel_on_ptt` → `PiperTTS.cancel()`. Setea `_ptt_pressed = True`, `_capture_started_at = monotonic()`, `Recorder.begin_capture()`, `state = RECORDING`.
-3. **Audio acumulándose**: PortAudio callback en su propio thread mete `np.copy` del bloque (~30ms) en `_buffer`. Emite RMS al VU meter.
-4. **PTT up**. `_on_ptt_release` (`runtime.py:475`). Cierra `Recorder.end_capture()` → `np.ndarray`. Si dur < `_MIN_RECORD_SECONDS` (0.3s) → vuelve a `READY`. Si OK: `state = TRANSCRIBING`, submit `_process_audio` al `origin-stt` executor.
-5. **Worker thread**: `Transcriber.transcribe(audio, lang)` corre `faster-whisper` con `vad_filter=True`, `beam_size=5`. Emite `TRANSCRIPTION_DONE`. Si CUDA OOM, downgrade a CPU on the fly.
-6. **Match**: `IntentMatcher.match(text, lang, threshold)` (cached por perfil activo). Best score con `rapidfuzz.fuzz.token_set_ratio` sobre frases normalizadas (NFKD + lowercase + collapse whitespace). Emite `MATCH_DONE`.
-7. Si `result.command is not None`: `_dispatch_command`. Si no, ver §9 (LLM fallback).
-8. **`_dispatch_command`**: `state = RUNNING_SCRIPT`. `command_as_steps(cmd, settings)` traduce `keys: ["alt+n"]` a `[KeyStep("alt+n"), SayStep(text="permiso solicitado")]` (más `WaitStep(inter_key_delay_ms)` si hay múltiples keys).
-9. **StepExecutor.execute**: itera. `KeyStep` → `keypress.execute(["alt+n"], 30)` → `pdi.keyDown("alt")`, `pdi.press("n")`, `pdi.keyUp("alt")`. Star Citizen recibe el evento DirectInput.
-10. `SayStep` → `set_substate("speaking")` → `PiperTTS.say("permiso solicitado", "es")`. Spawn `piper.exe`, escribe texto a stdin, `_play_stream` lee stdout en chunks de 4096 bytes y los empuja a `sd.RawOutputStream` (chequeando `cancel` por chunk). Emite `TTS_STARTED` y `TTS_DONE` al final.
-11. Step executor termina. `_dispatch_command` emite `COMMAND_EXECUTED` en `finally`.
-12. **`_on_process_done`** (callback del `Future`): bajo `_state_lock`, si no es `PAUSED/ERROR` → `state = READY`.
+| # | Acción | Thread | Notas |
+|---|---|---|---|
+| 1 | Usuario presiona `F12` | OS keyboard hook | `pynput.Listener` daemon detecta el press. |
+| 2 | `_on_ptt_press` (`runtime.py:453`) | pynput thread | Bajo `_state_lock`: si `BUSY/PAUSED/LOADING/ERROR` → return; si `SPEAKING` + `cancel_on_ptt` → `PiperTTS.cancel()` y entra a `RECORDING`. Setea `_ptt_pressed`, `_capture_started_at = monotonic()`, `_capture_profile_id = active_id`. |
+| 3 | `Recorder.begin_capture()` | pynput thread | Resetea `_buffer = []`, setea `_capturing = True` bajo lock. |
+| 4 | `_set_state(RECORDING)` → emit `ENGINE_STATE_CHANGED` | pynput thread | Tray icon cambia a amarillo, header dot updates via QueuedConnection. |
+| 5 | Audio fluye | PortAudio callback | Cada ~30ms el callback recibe un bloque, calcula RMS, emite `AUDIO_LEVEL`, y si `_capturing` hace `np.copy` al buffer. |
+| 6 | Usuario suelta `F12` | OS keyboard hook | |
+| 7 | `_on_ptt_release` (`runtime.py:475`) | pynput thread | `Recorder.end_capture()` → `np.ndarray`. Si `elapsed < 0.3s` → `READY` y return. Si OK: `state = TRANSCRIBING`. |
+| 8 | `executor.submit(_process_audio, audio, profile_id)` | pynput thread | Pasa el `profile_id` capturado en paso 2 — si el usuario cambia perfil mientras transcribe, se respeta el perfil del momento de hablar. |
+| 9 | `Transcriber.transcribe(audio, "es")` | `origin-stt` worker | `faster-whisper` con `beam_size=5`, `vad_filter=True`, `vad_parameters={"min_silence_duration_ms": 300}`. CUDA OOM → catch + `_downgrade_to_cpu()`. |
+| 10 | emit `TRANSCRIPTION_DONE {text, language, elapsed_ms}` | worker | Dashboard agrega entrada al `TranscriptionLog`. |
+| 11 | `IntentMatcher.match(text, "es", 75)` | worker | `normalize` (NFKD + lower + drop punct) + `fuzz.token_set_ratio`. Best score: 95 (matcheó "pide hangar"). |
+| 12 | emit `MATCH_DONE {text, command_id, score, phrase, keys, elapsed_ms}` | worker | |
+| 13 | `_dispatch_command(cmd, "es")` (`runtime.py:572`) | worker | `command_as_steps` traduce `keys: ["alt+n"]` + `say_es:"..."` a `[KeyStep("alt+n"), SayStep(text_es="permiso solicitado")]`. `_script_cancel.clear()`. `state = RUNNING_SCRIPT`. |
+| 14 | `StepExecutor.execute([KeyStep, SayStep], state, "es", cancel=_script_cancel)` | worker | |
+| 15 | `KeyStep("alt+n")` → `keypress.execute(["alt+n"], 30, False)` | worker | `parse_combo` → `(["alt"], "n")`. `pdi.keyDown("alt")` → `pdi.press("n")` → `pdi.keyUp("alt")`. Star Citizen recibe DirectInput. |
+| 16 | emit `SCRIPT_STEP_EXECUTED {type:"key", pc:0}` | worker | |
+| 17 | `SayStep` → `_say` → `set_substate("speaking")` → `tts_say("permiso solicitado", "es")` | worker | `state = SPEAKING`. |
+| 18 | `PiperTTS.say` | worker (bloqueante) | Spawn `subprocess.Popen([piper.exe, --model, voice.onnx, --output-raw, --length_scale, "1.000"])`. Escribe texto a stdin, close. |
+| 19 | `_play_stream(stdout)` | worker | Loop: chequea `_cancel`, `stdout.read(4096)`, aplica gain si `volume != 1.0`, `stream.write(chunk)`. Hasta EOF o cancel. |
+| 20 | emit `TTS_DONE {text, cancelled}` | worker | Sub-state vuelve a `running_script`. |
+| 21 | StepExecutor termina | worker | |
+| 22 | `_dispatch_command` finally: emit `COMMAND_EXECUTED` | worker | |
+| 23 | `_on_process_done` callback del Future | worker (callback) | Bajo `_state_lock`, si no es `PAUSED/ERROR` → `state = READY`. |
+| 24 | Dashboard/tray actualizan al ver `ENGINE_STATE_CHANGED` | main UI | Vía QueuedConnection. |
 
-Tiempos típicos (Whisper small, CPU int8): paso 5 ≈ 250-600ms; pasos 6+9 < 5ms; paso 10 (TTS) ≈ 300ms desde spawn hasta primer audio.
+Tiempos típicos (Whisper small, CPU int8):
+- Paso 9 (STT): 250-600 ms (depende de longitud del audio).
+- Paso 11 (match): < 5 ms para perfiles de hasta ~100 comandos × ~5 phrases.
+- Paso 15 (keypress): < 10 ms.
+- Paso 18-20 (TTS): ~300 ms spawn + duración del audio sintetizado.
+- **Total ear-to-action**: típico 350-700 ms entre soltar PTT y que Star Citizen reciba la tecla.
+
+Si paso 11 no matchea (`result.command is None`), saltamos al §9 (LLM fallback) antes de seguir con dispatch.
 
 ## 9. LLM fallback
 
@@ -353,47 +401,100 @@ El idioma de la UI (`ui_language`) y el idioma activo de voz/STT (`active_langua
 
 ## 14. Build pipeline
 
-`installer/build_installer.ps1` orquesta:
+`installer/build_installer.ps1` orquesta 4 pasos (Windows-only — el script es PowerShell):
 
-| Paso | Acción | Salida |
-|---|---|---|
-| [0/3] | Descarga `piper_windows_amd64.zip` de `rhasspy/piper`, lo expande en `installer/piper/`. Descarga voces ONNX (`es_ES-mls_10246-low`, `en_US-amy-low`) de HuggingFace `rhasspy/piper-voices` a `installer/voices/`. | `installer/piper/piper.exe`, `installer/voices/*.onnx`. |
-| [1/4] | `uv run python -c "from huggingface_hub import snapshot_download..."` baja el modelo Whisper `Systran/faster-whisper-<size>` a `installer/models/`. Idempotente. | `installer/models/Systran--faster-whisper-<size>/`. |
-| [2/4] | `uv run pyinstaller installer/origin.spec --noconfirm` (onedir mode). Limpia `build/` y `dist/` antes. | `dist/Origin/Origin.exe` + dlls + datas. |
-| [3/4] | `ISCC.exe installer/origin.iss` compila el instalador. | `dist/OriginSetup-<version>-<model>-v3.exe`. |
+| Paso | Acción | Salida | Idempotente |
+|---|---|---|---|
+| [0/3] | Descarga `piper_windows_amd64.zip` de `github.com/rhasspy/piper/releases/<PiperVersion>`, expande en `installer/piper/`. Descarga voces ONNX (`es_ES-mls_10246-low`, `en_US-amy-low`) de `huggingface.co/rhasspy/piper-voices` a `installer/voices/`. Skip con `-SkipPiper`. | `installer/piper/piper.exe`, `installer/voices/*.onnx{,.json}` | Sí, chequea `Test-Path`. |
+| [1/4] | `uv run python -c "from huggingface_hub import snapshot_download..."` baja el modelo Whisper `Systran/faster-whisper-<Model>` a `installer/models/`. Soporta `-Model {tiny,base,small,medium,large-v3}`, default `small`. | `installer/models/Systran--faster-whisper-<size>/` | Sí, skip si la carpeta tiene contenido. |
+| [2/4] | `uv run pyinstaller installer/origin.spec --noconfirm` (onedir mode). Limpia `build/` y `dist/` antes para evitar caches viejos. | `dist/Origin/Origin.exe` + DLLs + datas (~700 MB para small). | No (full rebuild). |
+| [3/4] | `ISCC.exe installer/origin.iss` compila el instalador. Si `ISCC.exe` no está en `$IsccPath` (default `C:\Program Files (x86)\Inno Setup 6\ISCC.exe`), warning y skip. | `dist/OriginSetup-<version>-<model>-v3.exe` (~250 MB). | No. |
 
 PyInstaller spec (`installer/origin.spec`):
-- `datas`: copia i18n, assets, `commands.preset.yaml`, `tts_phrases_*.json`, `models/`, `piper/`, `voices/`.
-- `hiddenimports`: `ctranslate2`, `faster_whisper`, `sounddevice._sounddevice`, `pydirectinput`, `pynput.keyboard._win32`, `pynput.mouse._win32`, `tokenizers`, `watchdog.observers.{read_directory_changes,winapi}`, `httpx`, `inputs`.
-- `excludes`: `tkinter`, `matplotlib`, `scipy` (reducción de bundle size).
-- `console=False` (no consola flotante).
+
+```python
+datas = [
+    (root / "origin/ui/i18n/es.json",         "origin/ui/i18n"),
+    (root / "origin/ui/i18n/en.json",         "origin/ui/i18n"),
+    (root / "origin/ui/assets",                "origin/ui/assets"),
+    (root / "origin/engine/tts_phrases_es.json", "origin/engine"),
+    (root / "origin/engine/tts_phrases_en.json", "origin/engine"),
+    (root / "commands.preset.yaml",            "."),
+]
+if (root / "installer/models").exists():  datas.append((root/"installer/models",  "models"))
+if (root / "installer/piper").exists():   datas.append((root/"installer/piper",   "piper"))
+if (root / "installer/voices").exists():  datas.append((root/"installer/voices",  "voices"))
+
+hiddenimports = [
+    "ctranslate2", "faster_whisper", "sounddevice._sounddevice",
+    "pydirectinput", "pynput.keyboard._win32", "pynput.mouse._win32",
+    "tokenizers", "watchdog.observers.read_directory_changes",
+    "watchdog.observers.winapi", "httpx", "inputs",
+]
+excludes = ["tkinter", "matplotlib", "scipy"]
+```
+
+`console=False` para que no flote consola al lanzar el .exe.
 
 Inno Setup (`installer/origin.iss`):
-- `DefaultDirName={localappdata}\Programs\Origin` (no requiere admin: `PrivilegesRequired=lowest`).
-- Task opcional `autostart` que escribe `HKCU\...\Run\Origin = "<app>\Origin.exe" --tray`.
+- `DefaultDirName={localappdata}\Programs\Origin` (sin admin: `PrivilegesRequired=lowest`, `PrivilegesRequiredOverridesAllowed=dialog`).
+- AppId GUID fijo `{8C7F0A1F-2A5A-4D6D-9C2F-7B5E2A0C9F00}` — upgrade in-place entre versiones.
+- Task opcional `autostart` (unchecked por default) que escribe `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\Origin = "<app>\Origin.exe" --tray`.
 - Task `desktopicon`.
+- Compresión `lzma2 + SolidCompression=yes`.
+- Idiomas del instalador: inglés y español.
 
 CI (`.github/workflows/origin-release.yml`):
-- Trigger: push de tag `origin-v*` o `workflow_dispatch` con choice de modelo.
-- Runner: `windows-latest`, Python 3.12, `uv sync --extra dev`.
-- Cachea el modelo Whisper entre runs con `actions/cache@v4` key `whisper-<model>-v1`.
-- `choco install innosetup --yes`, después `pwsh installer/build_installer.ps1 -Model $env:MODEL`.
-- Upload artifact siempre; en tag, crea GitHub Release con `softprops/action-gh-release@v2`.
+- **Trigger**: push de tag `origin-v*` o `workflow_dispatch` con choice de modelo.
+- **Runner**: `windows-latest`, Python 3.12, `uv sync --extra dev`.
+- **Cache**: `actions/cache@v4` con key `whisper-<MODEL>-v1` para no re-bajar el modelo Whisper de HuggingFace cada run.
+- **Steps**: checkout → setup-python → setup-uv → `uv sync --extra dev` → cache restore → `choco install innosetup --yes` → `pwsh installer/build_installer.ps1 -Model $env:MODEL` → upload artifact siempre.
+- **Release**: solo si tag, `softprops/action-gh-release@v2` con `generate_release_notes: true`.
+- **Concurrency**: `group: origin-release-${{ github.ref }}`, `cancel-in-progress: false` (tags distintos no se cancelan, manuales sobre la misma ref sí).
+- **Timeout**: 60 min (el build de `large-v3` puede tomar 40+ min entre download del modelo + compilación).
+
+Versionado: el `version` está duplicado en `pyproject.toml`, `origin/__init__.py` (`__version__`), y `installer/origin.iss` (`#define AppVersion`). Hay que actualizarlos los tres al bumpear.
 
 ## 15. Tests
 
-122 tests `def test_*` totales (output de `grep -c "def test_"`). División:
+119 tests `def test_*` distribuidos:
 
-- **Engine** (~78): `tests/engine/test_*.py`. Cobertura por módulo: `config` (incluyendo `test_config_v3`, `test_migration_v1_v2`), `intent`, `keypress`, `tts`, `llm`, `hotas`, `i18n_loader`, `profiles`, `runtime_regressions`, `script_executor`, `events`, `autostart_windows`, `preset`.
-- **UI** (~44, marcados `gui`): `tests/ui/test_*.py` con `pytest-qt`. Cubren `main_window`, `commands_editor`, `profiles_manager`, `script_editor`, `settings_language_toggle`, `settings_ptt_capture`, `tray`.
+- **Engine** (~78): `tests/engine/test_*.py`. Cobertura por módulo:
+  - `test_config.py` / `test_config_v3.py`: schema, validators, `with_settings`, `save_atomic` atomicity.
+  - `test_migration_v1_v2.py`: migraciones, backups idempotentes.
+  - `test_intent.py`: normalización, fuzzy score, filtrado por idioma.
+  - `test_keypress.py`: `parse_combo` con todos los aliases, `validate`, modificadores duplicados, combos solo-modificador.
+  - `test_tts.py`: spawn de piper mockeado, cancel, voice resolution (user > bundled).
+  - `test_llm.py`: prompt assembly, validación de respuesta, filtro de IDs inválidos, max_commands.
+  - `test_hotas.py`: enumeración, capture mode, binding parser.
+  - `test_i18n_loader.py`: fallback a {} cuando falta archivo.
+  - `test_profiles.py`: cycle, cache invalidation, replace_config con perfil activo desaparecido.
+  - `test_runtime_regressions.py`: bugs históricos (mic restart con captura en vuelo, state stuck tras Test, etc.).
+  - `test_script_executor.py`: eval_cond, goto a label inexistente, MAX_STEPS, repeat × times con cancel.
+  - `test_events.py`: subscribe/unsubscribe, listener excepción no rompe a otros.
+  - `test_autostart_windows.py`: skipea si no es Windows, mockea `winreg`.
+  - `test_preset.py`: el preset bundled valida contra el schema v3.
+- **UI** (~44, marker `gui`): `tests/ui/test_*.py` con `pytest-qt` + `QtBot`. Cubren `main_window`, `commands_editor`, `profiles_manager`, `script_editor`, `settings_language_toggle`, `settings_ptt_capture`, `tray`. Requieren `QT_QPA_PLATFORM=offscreen` para correr headless en CI.
 
-Correr todo: `pytest tests/`. Solo engine (sin display): `pytest tests/engine/`. Battery exploratoria/ad-hoc en `/tmp/ultra_audit.py` que recorre los flujos end-to-end (~50 escenarios) — no integrada en CI, usar para smoke pre-release.
+Comandos:
+
+```bash
+pytest tests/                    # todo (necesita display o offscreen)
+pytest tests/engine/             # solo engine, no necesita Qt
+pytest -m "not gui"              # excluye marker gui
+QT_QPA_PLATFORM=offscreen pytest tests/ui/
+pytest -k "test_intent" -v       # un módulo específico
+```
+
+Battery exploratoria/ad-hoc en `/tmp/ultra_audit.py` con ~50 escenarios end-to-end (PTT-down → audio sintético → match → dispatch → assert estado final). No corre en CI; sirve como smoke pre-release.
 
 Mocks típicos:
-- `pydirectinput` no instalado en Linux → `keypress.execute` loguea warning y skipea; los tests verifican el log o mockean `_get_pdi`.
-- `inputs` (HOTAS) — `tests/engine/test_hotas.py` inyecta un fake.
+- `pydirectinput` no instalado en Linux → `keypress._get_pdi()` retorna `None`, `execute` loguea warning y no envía; los tests verifican el log o mockean directamente `_get_pdi`.
+- `inputs` (HOTAS) — `tests/engine/test_hotas.py` inyecta un fake `gamepads` list con event streams custom.
 - `winreg` (autostart) — `test_autostart_windows.py` mockea o skipea si no es Windows.
-- `httpx` mockeado con `pytest-httpx` para LLM.
+- `httpx` mockeado con `pytest-httpx` para LLM (verifica request body, fake responses).
+- `sounddevice` mockeado con `unittest.mock` para no requerir PortAudio en CI.
+- `Whisper` raramente se carga en tests — `Transcriber` se mockea para que `transcribe` devuelva strings determinísticos.
 
 ## 16. Decisiones arquitectónicas con tradeoffs
 
@@ -411,6 +512,20 @@ Mocks típicos:
 | `save_atomic` (tmp + rename) | Si el proceso muere a mitad del write, el YAML viejo queda intacto. | Trivial overhead (`os.replace` es atómico en NTFS). |
 | Voces TTS y modelo Whisper **bundled** en el installer | Sin internet en el primer arranque, app usable inmediato. | Instalador pesa ~600 MB (small) hasta ~3.5 GB (large-v3). |
 
+## 16.1 Patrones recurrentes en el código
+
+Para no sorprenderte al leer:
+
+- **Imports lazy en funciones**: `pynput`, `sounddevice`, `faster_whisper`, `watchdog`, `pydirectinput`, `inputs`, `winreg` se importan dentro de la función que los usa (no a nivel módulo). Razón: permitir que el módulo cargue en CI Linux sin tener las deps nativas.
+- **`# lazy` comment** marca el import lazy.
+- **`# type: ignore[import-untyped]`** en deps sin stubs (`watchdog`, `pydirectinput`, `inputs`, `ctranslate2`).
+- **Mensajes de log estilo logfmt**: `"transcription_failed elapsed=%dms"` — fácil de grepear y parsear, soportado por el formatter JSON opcional.
+- **`_state_lock` es RLock**: para soportar reentradas. Ej: `_dispatch_command` corre dentro de un bloque que ya tomó el lock, y llama `_set_state` que lo toma de nuevo.
+- **`threading.Event` para cancel cooperativo**: `_script_cancel`, `_cancel` en TTS, `_stop` en HOTAS. Patrón uniforme: `event.set()` desde el cancelador, polling regular desde el worker.
+- **Métodos bound como callbacks**: en `_build_script_executor` se pasan `self._tts_say`, `self._tts_cancel_indirect` (no `self._tts.say` directo) — así si `self._tts` se rebuildea, el lookup en runtime sigue válido (`runtime.py:635`).
+- **`finally` para state cleanup**: cualquier método que cambia de state hace el revert en `finally` para sobrevivir excepciones (`execute_command_test`, `_dispatch_command`, `_say`).
+- **Emit de eventos siempre fuera del lock**: para no bloquear emisores mientras subscribers procesan.
+
 ## 17. Cosas que NO funcionan en Linux
 
 Origin es Windows-first. Estos módulos están condicionados o stubeados:
@@ -422,6 +537,48 @@ Origin es Windows-first. Estos módulos están condicionados o stubeados:
 - `winreg` — import condicional dentro de las funciones que lo necesitan.
 
 Imports lazy en `runtime.py`: `pynput.keyboard`, `sounddevice`, `watchdog`, `faster_whisper`. Esto permite que tests de configuración carguen sin tener las deps nativas instaladas.
+
+## 17.1 Páginas y widgets de la UI (mapa rápido)
+
+Para fixear un bug de GUI, este es el mapa de archivos:
+
+| Archivo | Rol |
+|---|---|
+| `origin/ui/app.py` | Bootstrap: QApplication, single-instance lock, instancia Orchestrator + EngineBridge + MainWindow + Tray, wire del hot-reload de tema/idioma. |
+| `origin/ui/main_window.py` | Sidebar + header (state dot, lang toggle, profile combo, pause btn) + `QStackedWidget` con las 6 páginas + banner de avisos. |
+| `origin/ui/tray.py` | `QSystemTrayIcon` + menú dinámico (perfil/idioma/pause se reflejan en vivo via signals). Icono pintado programáticamente con `QPainter` (sin assets externos). |
+| `origin/ui/engine_bridge.py` | QObject que subscribe al `EventBus` y re-emite Qt signals. Único punto de cruce thread→UI. |
+| `origin/ui/theme.py` | `apply_theme(app, "system"|"light"|"dark")` con QSS embebido. |
+| `origin/ui/pages/dashboard.py` | VU meter, transcription log, latencias últimos 10 STT/match, pause btn. |
+| `origin/ui/pages/commands_editor.py` | `QTableWidget` con auto-save por celda. Phrases y keys son comma-separated. Validación inline (borde rojo + tooltip). |
+| `origin/ui/pages/profiles_manager.py` | CRUD de perfiles, duplicate, set-active, import/export. |
+| `origin/ui/pages/settings.py` | Forms con todos los settings, agrupados (audio, whisper, ui, tts, hotas, llm, autostart). 623 líneas — el archivo más grande de la UI. |
+| `origin/ui/pages/logs_viewer.py` | Tail vivo de `origin.log` con filtro por level. |
+| `origin/ui/pages/about.py` | Version, links, build info. |
+| `origin/ui/widgets/vu_meter.py` | Barra de nivel logarítmica con peak hold. |
+| `origin/ui/widgets/fuzz_slider.py` | Slider de threshold + preview del top-5 matches en vivo contra una transcripción de prueba. |
+| `origin/ui/widgets/key_capture.py` | Captura una tecla / combo press desde el usuario (PTT key, profile hotkey). |
+| `origin/ui/widgets/script_editor.py` | Editor visual del DSL — step types planos. Para `if`/`repeat`, editar YAML. |
+| `origin/ui/widgets/transcription_log.py` | Lista de últimas N transcripciones con timestamp y score. |
+| `origin/ui/i18n/{es,en}.json` | Strings de la GUI. Key flat (`"sidebar.dashboard": "Dashboard"`). |
+| `origin/ui/i18n/tr.py` | `tr()`, `load()`, `retranslate_all()`. |
+
+## 17.2 Dónde tocar para... (mapa de cambios comunes)
+
+| Cambio | Archivos clave |
+|---|---|
+| Agregar un step type nuevo al DSL | `engine/config.py` (modelo + agregar al Union `Step`), `engine/script.py:_exec_one` (manejo), `ui/widgets/script_editor.py` (UI). Validar con un test en `tests/engine/test_script_executor.py`. |
+| Agregar un setting nuevo a `Settings` | `engine/config.py:Settings` (campo Pydantic) + `commands.preset.yaml` (valor default explícito) + `ui/pages/settings.py` (form widget). Si tiene efecto en runtime, agregar branch en `runtime.set_setting`. |
+| Agregar un EventType nuevo | `engine/events.py:EventType` (literal), `ui/engine_bridge.py` (Signal + subscriber), consumer en la página relevante. |
+| Soportar un juego nuevo | Cambiar el preset `commands.preset.yaml` (perfiles + comandos). El motor es game-agnostic, solo cambia el catálogo. Si requiere keybinds no-DirectInput, hay que extender `keypress`. |
+| Soportar una voz TTS nueva | Bajar `voice.onnx` + `voice.onnx.json` a `%APPDATA%/Origin/voices/` (override) o agregar al `build_installer.ps1` paso [0/3] (bundled). Configurar `tts.voice_es`/`voice_en` en settings. |
+| Cambiar el LLM | `settings.llm.model` + `ollama pull <model>`. Si el modelo no respeta `format: json`, ajustar `_prompt_system` para reforzar. Para usar otro provider distinto a Ollama, reescribir `OllamaClient.chat_json` con la API correspondiente. |
+| Bumpear versión | `pyproject.toml`, `origin/__init__.py`, `installer/origin.iss` (`#define AppVersion`). Tag `git tag origin-vX.Y.Z && git push --tags` dispara CI. |
+| Agregar una página a la UI | Crear `ui/pages/foo.py` con `class FooPage(QWidget)`. Agregar a `SIDEBAR` en `main_window.py` y al dict `_pages`. Strings en `i18n/{es,en}.json`. |
+| Cambiar el threshold default | `engine/config.py:Settings.fuzz_threshold = Field(default=75, ...)`. Existing users no se ven afectados (default solo aplica a configs nuevas). |
+| Investigar un bug "no envía teclas" | Verificar `keypress.execute` logs (`pydirectinput no disponible` o `dry_run keys=[...]`). Star Citizen en ventana sin foco no recibe input — DirectInput requiere foco activo. |
+| Investigar un bug "no transcribe" | Logs `model_load_failed`, `transcription_failed`, `cuda_failed_downgrading_to_cpu`. `Transcriber._warm_up` debe completar antes del primer PTT — si el state se queda en `LOADING` es eso. |
+| Investigar "PTT ignorado" | Logs `ptt_press_ignored state=X` o `ptt_busy state=X`. Estado `BUSY` o `PAUSED/LOADING/ERROR`. |
 
 ## 18. Limitaciones conocidas v0.3
 
