@@ -3,7 +3,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { FILTERS, type FilterId } from './filters';
 import {
-  DEFAULT_EDIT,
   renderEdited,
   type Crop,
   type EditState,
@@ -352,5 +351,3 @@ function Handle({
     />
   );
 }
-
-export { DEFAULT_EDIT };
