@@ -99,36 +99,43 @@ function boxBlurSeparable(
 ): Uint8ClampedArray {
   const tmp = new Uint8ClampedArray(w * h);
   const dst = new Uint8ClampedArray(w * h);
+  const window = 2 * r + 1;
 
-  // Horizontal.
+  // Horizontal pass. Sliding window con warmup explicito: la suma
+  // inicial cubre los (2r+1) pixeles clampeados en el borde izquierdo.
+  // Despues incrementamos: add src[x+r], sub src[x-r-1], ambos clampeados.
   for (let y = 0; y < h; y++) {
-    let sum = 0;
     const row = y * w;
-    for (let x = -r; x < w; x++) {
-      const addIdx = row + Math.min(w - 1, Math.max(0, x + r));
-      const subIdx = row + Math.min(w - 1, Math.max(0, x - r - 1));
-      sum += src[addIdx]!;
-      if (x >= 0) {
-        sum -= src[subIdx]!;
-        tmp[row + x] = sum / (2 * r + 1);
-      }
+    let sum = 0;
+    for (let k = -r; k <= r; k++) {
+      sum += src[row + Math.min(w - 1, Math.max(0, k))]!;
+    }
+    tmp[row] = sum / window;
+    for (let x = 1; x < w; x++) {
+      sum += src[row + Math.min(w - 1, x + r)]!;
+      sum -= src[row + Math.max(0, x - r - 1)]!;
+      tmp[row + x] = sum / window;
     }
   }
-  // Vertical.
+
+  // Vertical pass — misma logica, columna a columna.
   for (let x = 0; x < w; x++) {
     let sum = 0;
-    for (let y = -r; y < h; y++) {
-      const addIdx = Math.min(h - 1, Math.max(0, y + r)) * w + x;
-      const subIdx = Math.min(h - 1, Math.max(0, y - r - 1)) * w + x;
-      sum += tmp[addIdx]!;
-      if (y >= 0) {
-        sum -= tmp[subIdx]!;
-        dst[y * w + x] = sum / (2 * r + 1);
-      }
+    for (let k = -r; k <= r; k++) {
+      sum += tmp[Math.min(h - 1, Math.max(0, k)) * w + x]!;
+    }
+    dst[x] = sum / window;
+    for (let y = 1; y < h; y++) {
+      sum += tmp[Math.min(h - 1, y + r) * w + x]!;
+      sum -= tmp[Math.max(0, y - r - 1) * w + x]!;
+      dst[y * w + x] = sum / window;
     }
   }
   return dst;
 }
+
+// Exportado para tests unitarios — no usar fuera de este modulo.
+export const __test = { boxBlurSeparable };
 
 /**
  * "Magic" scan: mejora automatica tipo CamScanner. Sube brillo en las zonas
@@ -139,6 +146,9 @@ function magicScan(data: ImageData): ImageData {
   const px = data.data;
 
   // Auto-contraste por canal: clip al 1% y 99% del histograma.
+  // Usamos un flag explicito (loSet) para distinguir "lo todavia no
+  // asignado" de "lo asignado al valor 0" — sin esto, una imagen con
+  // muchos pixeles puros en bin 0 hacia overwrite continuo de lo[c].
   const lo = [0, 0, 0];
   const hi = [255, 255, 255];
   for (let c = 0; c < 3; c++) {
@@ -148,9 +158,13 @@ function magicScan(data: ImageData): ImageData {
     let cum = 0;
     const loTarget = total * 0.01;
     const hiTarget = total * 0.99;
+    let loSet = false;
     for (let v = 0; v < 256; v++) {
       cum += hist[v]!;
-      if (cum >= loTarget && lo[c] === 0) lo[c] = v;
+      if (!loSet && cum >= loTarget) {
+        lo[c] = v;
+        loSet = true;
+      }
       if (cum >= hiTarget) {
         hi[c] = v;
         break;

@@ -16,15 +16,28 @@ interface Props {
 export function CaptureView({ onCapture, onCancel }: Props): React.ReactElement {
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  // Token de cancelacion compartido entre el effect (mount/unmount) y el
+  // boton de reintento. Cada nueva invocacion a startCamera invalida el
+  // token anterior — asi cubrimos:
+  //   - StrictMode dev: el primer mount queda cancelado por el segundo.
+  //   - Retry: la llamada previa queda cancelada por la nueva.
+  //   - Unmount: el cleanup invalida el token activo.
+  const cancellationRef = useRef<{ cancelled: boolean }>({ cancelled: false });
   const [mode, setMode] = useState<'starting' | 'live' | 'fallback' | 'error'>('starting');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  const startCamera = useCallback(async () => {
+  const startCamera = useCallback(async (): Promise<void> => {
+    // Cancela cualquier startCamera previo en vuelo. La nueva llamada
+    // reclama el ref con su propio token.
+    cancellationRef.current.cancelled = true;
+    const cancellation = { cancelled: false };
+    cancellationRef.current = cancellation;
+
     setErrorMsg(null);
     setMode('starting');
 
     if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
-      setMode('fallback');
+      if (!cancellation.cancelled) setMode('fallback');
       return;
     }
 
@@ -37,14 +50,27 @@ export function CaptureView({ onCapture, onCancel }: Props): React.ReactElement 
         },
         audio: false,
       });
+
+      if (cancellation.cancelled) {
+        for (const track of stream.getTracks()) track.stop();
+        return;
+      }
+
+      // Si habia un stream previo todavia vivo, paralo antes de sustituirlo.
+      const prev = streamRef.current;
+      if (prev && prev !== stream) {
+        for (const track of prev.getTracks()) track.stop();
+      }
       streamRef.current = stream;
+
       const v = videoRef.current;
       if (v) {
         v.srcObject = stream;
         await v.play().catch(() => {});
       }
-      setMode('live');
+      if (!cancellation.cancelled) setMode('live');
     } catch (err) {
+      if (cancellation.cancelled) return;
       // Permiso denegado, sin camara, o el browser no permite getUserMedia
       // fuera de HTTPS. En todos los casos preferimos caer al input file
       // antes que bloquear la app.
@@ -56,12 +82,17 @@ export function CaptureView({ onCapture, onCancel }: Props): React.ReactElement 
   useEffect(() => {
     void startCamera();
     return () => {
+      cancellationRef.current.cancelled = true;
       const s = streamRef.current;
       if (s) {
         for (const track of s.getTracks()) track.stop();
         streamRef.current = null;
       }
     };
+  }, [startCamera]);
+
+  const handleRetry = useCallback((): void => {
+    void startCamera();
   }, [startCamera]);
 
   const handleShutter = useCallback(() => {
@@ -129,7 +160,7 @@ export function CaptureView({ onCapture, onCancel }: Props): React.ReactElement 
             </label>
             <button
               type="button"
-              onClick={() => void startCamera()}
+              onClick={handleRetry}
               className="text-xs text-ink-400 underline"
             >
               Reintentar camara
