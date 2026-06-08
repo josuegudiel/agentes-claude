@@ -16,7 +16,9 @@ permissions:
   contents: write
 
 concurrency:
-  # Builds de tag distintos no se cancelan entre sí; manuales sobre la misma ref sí.
+  # Builds de tag distintos NO se cancelan entre sí (cancel-in-progress: false)
+  # — un build largo de tag origin-v0.3.0 no debe abortar por un origin-v0.3.1.
+  # Manuales sobre la misma ref tampoco se cancelan; el segundo se encola.
   group: origin-release-${{ github.ref }}
   cancel-in-progress: false
 
@@ -44,19 +46,26 @@ jobs:
       - uses: astral-sh/setup-uv@v3
         with:
           enable-cache: true
-          cache-dependency-glob: 'origin/uv.lock'
+          # uv.lock está gitignored — usamos pyproject.toml como key fallback
+          # para que el cache funcione entre runs (sin esto setup-uv tira warning
+          # y no cachea nada).
+          cache-dependency-glob: 'origin/pyproject.toml'
 
       - name: Install deps (with dev extras for pyinstaller)
         run: uv sync --extra dev
 
       # Modelo Whisper: ~485 MB para small, hasta 3 GB para large-v3. Cacheamos
       # entre runs para no repetir el download desde HuggingFace cada vez.
+      # `restore-keys` permite reusar cache de versiones anteriores si la key
+      # exacta cambia (ej. bumpeo el v1 a v2 pero ya tengo download válido).
       - name: Cache Whisper model
         id: model-cache
         uses: actions/cache@v4
         with:
           path: origin/installer/models/Systran--faster-whisper-${{ env.MODEL }}
           key: whisper-${{ env.MODEL }}-v1
+          restore-keys: |
+            whisper-${{ env.MODEL }}-
 
       - name: Install Inno Setup 6
         shell: pwsh
@@ -67,7 +76,14 @@ jobs:
         run: pwsh installer/build_installer.ps1 -Model $env:MODEL
 
       - name: Show outputs
-        run: Get-ChildItem -Path dist -Recurse -File | Select-Object FullName, Length
+        # `always()` para ver outputs incluso si el build falló — útil para debug.
+        if: always()
+        run: |
+          if (Test-Path dist) {
+            Get-ChildItem -Path dist -Recurse -File | Select-Object FullName, Length
+          } else {
+            Write-Host "dist/ no existe — el build no llegó al stage de empaquetado"
+          }
 
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4
