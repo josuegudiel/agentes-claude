@@ -28,7 +28,7 @@ Write-Host "==> Build Origin v0.3 con modelo Whisper '$Model'" -ForegroundColor 
 
 # --- 0) Piper + voces ----------------------------------------------------
 if (-not $SkipPiper) {
-    Write-Host "==> [0/3] Descarga Piper + voces TTS" -ForegroundColor Cyan
+    Write-Host "==> [0/4] Descarga Piper + voces TTS" -ForegroundColor Cyan
     $PiperDir = Join-Path $Root "installer/piper"
     $VoicesDir = Join-Path $Root "installer/voices"
     New-Item -ItemType Directory -Force -Path $PiperDir, $VoicesDir | Out-Null
