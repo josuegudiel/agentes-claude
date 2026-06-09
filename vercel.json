@@ -9,6 +9,9 @@
     "web/app/api/predict/route.ts": {
       "maxDuration": 60
     },
+    "web/app/api/auditor/route.ts": {
+      "maxDuration": 60
+    },
     "web/app/api/health/route.ts": {
       "maxDuration": 10
     }

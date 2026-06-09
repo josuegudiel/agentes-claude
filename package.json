@@ -19,6 +19,7 @@
     "seed:demo": "tsx scripts/seed-demo.ts",
     "agent:run": "tsx scripts/run-agent.ts",
     "agent:predict": "tsx scripts/run-predictive-agent.ts",
+    "audit:geo": "tsx scripts/run-geo-audit.ts",
     "predict:up": "cd predictive-service && uv run uvicorn predictive_service.main:app --port 8765",
     "web:dev": "pnpm --filter agentes-claude-web dev",
     "web:build": "pnpm --filter agentes-claude-web build",
@@ -34,6 +35,7 @@
     "@ai-sdk/anthropic": "^1.0.0",
     "ai": "^4.0.0",
     "dotenv": "^16.4.5",
+    "node-html-parser": "^7.1.0",
     "pino": "^9.5.0",
     "pino-pretty": "^11.3.0",
     "zod": "^3.23.8"
