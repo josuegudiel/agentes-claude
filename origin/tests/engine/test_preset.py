@@ -56,6 +56,32 @@ def test_preset_command_ids_unique_within_profile():
         assert len(ids) == len(set(ids)), f"perfil {p.id} tiene ids duplicados"
 
 
+def test_preset_no_misrouted_phrases():
+    """REGRESSION (7ma auditoría): cada frase del preset, dicha EXACTA, debe
+    rutear a SU comando — no a otro del mismo perfil.
+
+    Antes del fix del matcher (desempate por fuzz.ratio), 27 frases ruteaban
+    al comando equivocado porque token_set_ratio da 100 cuando una frase es
+    subconjunto de tokens de otra: 'cierra mobiglas' ejecutaba open_mobiglas.
+    """
+    from origin.engine.intent import IntentMatcher
+
+    cf = cfgmod.load(PRESET)
+    threshold = cf.settings.fuzz_threshold
+    misroutes = []
+    for prof in cf.profiles:
+        matcher = IntentMatcher(prof.commands)
+        for cmd in prof.commands:
+            for lang in ("es", "en"):
+                for phrase in cmd.phrases_for(lang):
+                    r = matcher.match(phrase, lang, threshold)
+                    if r.command is None:
+                        misroutes.append((prof.id, cmd.id, lang, phrase, "NO_MATCH"))
+                    elif r.command.id != cmd.id:
+                        misroutes.append((prof.id, cmd.id, lang, phrase, f"->{r.command.id}"))
+    assert not misroutes, f"{len(misroutes)} frases mal ruteadas: {misroutes[:8]}"
+
+
 def test_preset_tts_phrases_keys_exist():
     """Si algún comando usa say_key, debe existir en tts_phrases_es.json."""
     import json

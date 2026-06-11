@@ -74,3 +74,29 @@ def test_empty_input_returns_no_match():
     m = IntentMatcher(_cmds())
     r = m.match("", "es", 75)
     assert r.command is None and r.score == 0.0
+
+
+def test_subset_phrase_prefers_most_specific_command():
+    """REGRESSION (7ma auditoría): cuando una frase es subconjunto de tokens
+    de otra, token_set_ratio da 100 para ambas. El desempate por fuzz.ratio
+    tiene que elegir la frase MÁS específica, no el primer comando del YAML.
+
+    Caso real del preset: 'cierra mobiglas' ruteaba a open_mobiglas porque
+    'mobiglas' ⊂ {'cierra', 'mobiglas'}."""
+    cmds = [
+        cfgmod.Command(id="open_thing", phrases_es=["mobiglas"], keys=["f1"]),
+        cfgmod.Command(id="close_thing", phrases_es=["cierra mobiglas"], keys=["escape"]),
+    ]
+    m = IntentMatcher(cmds)
+    r_close = m.match("cierra mobiglas", "es", 75)
+    assert r_close.command is not None and r_close.command.id == "close_thing"
+    r_open = m.match("mobiglas", "es", 75)
+    assert r_open.command is not None and r_open.command.id == "open_thing"
+
+
+def test_filler_words_still_match_via_token_set():
+    """El desempate por ratio NO debe romper la tolerancia a relleno:
+    'por favor pide hangar' sigue matcheando 'pide hangar'."""
+    m = IntentMatcher(_cmds())
+    r = m.match("por favor pide hangar ahora", "es", 75)
+    assert r.command is not None and r.command.id == "request_landing"

@@ -74,7 +74,7 @@ target.mkdir(parents=True, exist_ok=True)
 if any(target.iterdir()):
     print('modelo ya presente, saltando descarga')
 else:
-    snapshot_download(repo_id=f'Systran/faster-whisper-$Model', local_dir=str(target), local_dir_use_symlinks=False)
+    snapshot_download(repo_id=f'Systran/faster-whisper-$Model', local_dir=str(target))
 print('OK', target)
 "@
 

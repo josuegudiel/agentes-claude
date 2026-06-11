@@ -2,7 +2,11 @@
 
 - Normaliza con NFKD + drop combining + lowercase + collapse whitespace + strip puntuación.
   → "Pide HÁNGAR!" y "pide hangar" matchean perfecto.
-- Scoring con `rapidfuzz.fuzz.token_set_ratio` (resistente a orden + palabras extra).
+- Scoring lexicográfico: `token_set_ratio` primario (tolera palabras de relleno
+  del usuario: "por favor pide hangar" sigue matcheando "pide hangar"), con
+  desempate por `fuzz.ratio` (similitud cruda). Sin el desempate, una frase
+  que es subconjunto de otra empata en 100 y gana el primer comando del YAML:
+  "cierra mobiglas" rutearía a `open_mobiglas` porque "mobiglas" ⊂ tokens.
 - Filtrado por idioma activo: solo evalúa `phrases_es` o `phrases_en`.
 """
 from __future__ import annotations
@@ -34,11 +38,19 @@ class MatchResult:
     score: float  # 0..100; el "mejor score visto" incluso si no llegó al threshold
 
 
+def _score_pair(norm_input: str, phrase_norm: str) -> tuple[float, float]:
+    """(token_set_ratio, ratio) — par lexicográfico para comparación de candidatos."""
+    return (
+        fuzz.token_set_ratio(norm_input, phrase_norm),
+        fuzz.ratio(norm_input, phrase_norm),
+    )
+
+
 class IntentMatcher:
     """Indexa frases normalizadas por idioma de un set de comandos y matchea texto."""
 
     def __init__(self, commands: list[Command]) -> None:
-        # (cmd, phrase_raw, phrase_norm, lang)
+        # (cmd, phrase_raw, phrase_norm)
         self._es: list[tuple[Command, str, str]] = []
         self._en: list[tuple[Command, str, str]] = []
         for c in commands:
@@ -54,26 +66,28 @@ class IntentMatcher:
         norm_input = normalize(text)
         best_cmd: Command | None = None
         best_phrase: str | None = None
-        best_score: float = 0.0
+        best_pair: tuple[float, float] = (0.0, 0.0)
         for cmd, phrase_raw, phrase_norm in pool:
-            s = fuzz.token_set_ratio(norm_input, phrase_norm)
-            if s > best_score:
-                best_score = s
+            pair = _score_pair(norm_input, phrase_norm)
+            if pair > best_pair:
+                best_pair = pair
                 best_cmd = cmd
                 best_phrase = phrase_raw
+        # El score visible/umbralizable sigue siendo el token_set_ratio.
+        best_score = best_pair[0]
         if best_score >= threshold:
             return MatchResult(best_cmd, best_phrase, best_score)
         return MatchResult(None, None, best_score)
 
     def preview(self, text: str, lang: str, top_n: int = 5) -> list[tuple[Command, str, float]]:
-        """Top-N matches con score, ordenados desc. Útil para el slider de threshold."""
+        """Top-N matches con score, ordenados con el mismo criterio que `match()`."""
         pool = self._en if lang == "en" else self._es
         if not pool or not text:
             return []
         norm_input = normalize(text)
-        scored: list[tuple[Command, str, float]] = [
-            (cmd, phrase, float(fuzz.token_set_ratio(norm_input, phrase_norm)))
+        scored: list[tuple[tuple[float, float], Command, str]] = [
+            (_score_pair(norm_input, phrase_norm), cmd, phrase)
             for cmd, phrase, phrase_norm in pool
         ]
-        scored.sort(key=lambda t: t[2], reverse=True)
-        return scored[:top_n]
+        scored.sort(key=lambda t: t[0], reverse=True)
+        return [(cmd, phrase, pair[0]) for pair, cmd, phrase in scored[:top_n]]
