@@ -111,7 +111,11 @@ class PiperTTS:
                     [
                         str(self._piper),
                         "--model", str(onnx),
-                        "--output-raw",
+                        # Forma canónica del help de piper. El binario acepta
+                        # --output-raw como alias, pero su parser ignora flags
+                        # desconocidas en silencio — usar la canónica nos protege
+                        # si el alias desaparece en una versión futura.
+                        "--output_raw",
                         "--length_scale", f"{length_scale:.3f}",
                     ],
                     stdin=subprocess.PIPE,
@@ -145,9 +149,18 @@ class PiperTTS:
             logger.warning("tts_no_sounddevice")
             stdout.read()
             return False
-        # Procesamos en chunks pequeños para chequear cancel frecuentemente.
-        stream = sd.RawOutputStream(samplerate=SAMPLE_RATE, channels=CHANNELS, dtype=DTYPE)
-        stream.start()
+        try:
+            # Procesamos en chunks pequeños para chequear cancel frecuentemente.
+            stream = sd.RawOutputStream(samplerate=SAMPLE_RATE, channels=CHANNELS, dtype=DTYPE)
+            stream.start()
+        except Exception as e:
+            # Sin output device (headset desconectado, PC sin parlantes) — degradar
+            # limpio: drenamos stdout para que piper no se bloquee con el pipe
+            # lleno y dejamos que say() termine normal. Sin este guard, cada
+            # comando spameaba un traceback y mataba a piper a mitad de síntesis.
+            logger.warning("tts_no_output_device err=%s", e)
+            stdout.read()
+            return False
         cancelled = False
         try:
             while True:

@@ -41,15 +41,31 @@ if voices_dir.exists():
 hiddenimports = [
     "ctranslate2",
     "faster_whisper",
+    "sounddevice",
     "sounddevice._sounddevice",
     "pydirectinput",
+    # pynput completo — los backends _win32 se resuelven dinámicamente en
+    # runtime y PyInstaller pierde algunos si solo listamos submódulos.
+    "pynput",
     "pynput.keyboard._win32",
     "pynput.mouse._win32",
     "tokenizers",
+    "rapidfuzz",
     "watchdog.observers.read_directory_changes",
     "watchdog.observers.winapi",
+    # httpx y su cadena: httpcore resuelve el backend (h11) por import dinámico,
+    # que el análisis estático de PyInstaller puede perder.
     "httpx",
+    "httpcore",
+    "h11",
+    "anyio",
+    "sniffio",
+    "certifi",
     "inputs",
+    # pydantic v2: el core compilado a veces requiere hint explícito.
+    "pydantic",
+    "pydantic_core",
+    "yaml",
 ]
 
 a = Analysis(
