@@ -2,18 +2,27 @@
 
 import type { Finding, Severity } from '../../lib/auditor-types';
 
-const SEVERITY_META: Record<Severity, { label: string; classes: string }> = {
+const SEVERITY_META: Record<
+  Severity,
+  { label: string; chip: string; accent: string; icon: string }
+> = {
   critical: {
     label: 'Critico',
-    classes: 'border-rose-700/40 bg-rose-900/20 text-rose-300',
+    chip: 'border-rose-500/40 bg-rose-500/10 text-rose-300',
+    accent: 'from-rose-500 to-rose-500/10',
+    icon: '▲',
   },
   important: {
     label: 'Importante',
-    classes: 'border-amber-700/40 bg-amber-900/20 text-amber-300',
+    chip: 'border-amber-500/40 bg-amber-500/10 text-amber-300',
+    accent: 'from-amber-400 to-amber-400/10',
+    icon: '◆',
   },
   improvement: {
     label: 'Mejora',
-    classes: 'border-ink-700 bg-ink-800 text-ink-300',
+    chip: 'border-sky-500/40 bg-sky-500/10 text-sky-300',
+    accent: 'from-sky-400 to-sky-400/10',
+    icon: '●',
   },
 };
 
@@ -24,7 +33,7 @@ interface Props {
 export function FindingsList({ findings }: Props): React.ReactElement {
   if (findings.length === 0) {
     return (
-      <div className="rounded-md border border-emerald-700/40 bg-emerald-900/20 p-4 text-sm text-emerald-200">
+      <div className="card-glass rounded-2xl p-5 text-sm text-emerald-200">
         Sin hallazgos: todos los checks aplicables pasaron. 🎉
       </div>
     );
@@ -32,21 +41,38 @@ export function FindingsList({ findings }: Props): React.ReactElement {
 
   return (
     <ul className="flex flex-col gap-3">
-      {findings.map((finding) => {
+      {findings.map((finding, i) => {
         const meta = SEVERITY_META[finding.severity];
         return (
-          <li key={finding.checkId} className="rounded-md border border-ink-800 bg-ink-900 p-4">
-            <div className="mb-1 flex flex-wrap items-center gap-2">
+          <li
+            key={finding.checkId}
+            className="finding-card card-glass animate-fade-in-up relative overflow-hidden rounded-2xl p-5 pl-6"
+            style={{ animationDelay: `${Math.min(i * 60, 420)}ms` }}
+          >
+            <span
+              aria-hidden
+              className={`absolute inset-y-0 left-0 w-[3px] bg-gradient-to-b ${meta.accent}`}
+            />
+            <div className="mb-1.5 flex flex-wrap items-center gap-2.5">
               <span
-                className={`rounded border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${meta.classes}`}
+                className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] ${meta.chip}`}
               >
+                <span aria-hidden className="text-[8px]">
+                  {meta.icon}
+                </span>
                 {meta.label}
               </span>
-              <span className="text-sm font-medium text-ink-100">{finding.title}</span>
+              <span className="text-sm font-semibold text-ink-100">{finding.title}</span>
             </div>
-            <p className="text-sm text-ink-300">{finding.detail}</p>
-            <p className="mt-2 text-sm text-emerald-300">
-              <span className="font-medium">Solucion:</span> {finding.recommendation}
+            <p className="text-sm leading-relaxed text-ink-400">{finding.detail}</p>
+            <p className="mt-2.5 flex gap-2 text-sm leading-relaxed text-emerald-300/90">
+              <span aria-hidden className="mt-0.5 shrink-0 text-emerald-400">
+                ✓
+              </span>
+              <span>
+                <span className="font-semibold text-emerald-300">Solucion:</span>{' '}
+                {finding.recommendation}
+              </span>
             </p>
           </li>
         );

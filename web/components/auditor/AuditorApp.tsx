@@ -73,7 +73,10 @@ export function AuditorApp(): React.ReactElement {
   return (
     <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_380px]">
       <section className="flex flex-col gap-6">
-        <div className="rounded-md border border-ink-800 bg-ink-900 p-4">
+        <div
+          className="card-glass animate-rise rounded-2xl p-6 sm:p-7"
+          style={{ animationDelay: '120ms' }}
+        >
           <AuditorForm onSubmit={handleSubmit} disabled={running} />
         </div>
 
@@ -82,31 +85,44 @@ export function AuditorApp(): React.ReactElement {
             <ScoreCards scores={report.scores} />
 
             {report.executiveSummary && (
-              <div className="rounded-md border border-emerald-700/40 bg-emerald-900/20 p-4">
-                <h2 className="mb-1 text-sm font-semibold text-emerald-300">Resumen ejecutivo</h2>
-                <p className="whitespace-pre-wrap text-sm text-ink-100">
+              <div
+                className="card-glass animate-rise relative overflow-hidden rounded-2xl p-6"
+                style={{ animationDelay: '150ms' }}
+              >
+                <span
+                  aria-hidden
+                  className="absolute inset-y-0 left-0 w-[3px] bg-gradient-to-b from-emerald-400 to-emerald-400/10"
+                />
+                <h2 className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.16em] text-emerald-300">
+                  <span aria-hidden>❝</span> Resumen ejecutivo
+                </h2>
+                <p className="whitespace-pre-wrap text-sm leading-relaxed text-ink-100">
                   {report.executiveSummary}
                 </p>
               </div>
             )}
 
-            <div className="flex items-center justify-between">
-              <h2 className="text-sm font-semibold text-ink-300">
+            <div
+              className="animate-rise flex items-center justify-between"
+              style={{ animationDelay: '200ms' }}
+            >
+              <h2 className="text-sm font-semibold uppercase tracking-[0.14em] text-ink-300">
                 Hallazgos priorizados ({report.findings.length})
               </h2>
               <button
                 type="button"
                 onClick={handleExport}
                 disabled={exporting}
-                className="rounded-md border border-ink-700 bg-ink-800 px-3 py-1.5 text-xs text-ink-200 transition hover:bg-ink-700 disabled:cursor-not-allowed disabled:text-ink-500"
+                className="card-glass inline-flex items-center gap-2 rounded-xl px-4 py-2 text-xs font-medium text-ink-100 transition duration-200 hover:border-emerald-400/40 hover:text-emerald-300 disabled:cursor-not-allowed disabled:text-ink-500"
               >
+                <span aria-hidden>⬇</span>
                 {exporting ? 'Generando PDF...' : 'Descargar PDF'}
               </button>
             </div>
             <FindingsList findings={report.findings} />
 
             {report.warnings.length > 0 && (
-              <div className="rounded-md border border-amber-700/40 bg-amber-900/20 p-3 text-xs text-amber-200">
+              <div className="rounded-2xl border border-amber-500/20 bg-amber-500/5 p-4 text-xs leading-relaxed text-amber-200/90">
                 {report.warnings.map((warning, i) => (
                   <p key={i}>• {warning}</p>
                 ))}
@@ -116,14 +132,27 @@ export function AuditorApp(): React.ReactElement {
         )}
 
         {errorMsg && (
-          <div className="rounded-md border border-rose-700/40 bg-rose-900/20 p-4 text-sm text-rose-200">
-            <strong>Error:</strong> {errorMsg}
+          <div className="animate-rise flex items-start gap-3 rounded-2xl border border-rose-500/25 bg-rose-500/5 p-5 text-sm text-rose-200">
+            <span
+              aria-hidden
+              className="mt-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-rose-500/15 text-[11px] font-bold text-rose-300"
+            >
+              !
+            </span>
+            <span>
+              <strong>Error:</strong> {errorMsg}
+            </span>
           </div>
         )}
       </section>
 
-      <aside className="lg:max-h-[calc(100vh-8rem)] lg:overflow-auto">
-        <h2 className="mb-2 text-sm font-semibold text-ink-300">Progreso</h2>
+      <aside
+        className="animate-rise lg:sticky lg:top-6 lg:max-h-[calc(100vh-3rem)] lg:self-start lg:overflow-auto"
+        style={{ animationDelay: '220ms' }}
+      >
+        <h2 className="mb-2.5 text-xs font-semibold uppercase tracking-[0.16em] text-ink-400">
+          Progreso en vivo
+        </h2>
         <AuditProgress events={events} running={running} />
       </aside>
     </div>
