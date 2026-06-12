@@ -78,8 +78,12 @@ function renderEvent(event: AuditorSSEEvent): React.ReactElement | null {
           Scores calculados — global {event.scores.overall}/100
         </div>
       );
+    case 'error':
+      // El detalle del error vive en el panel principal; aqui solo se marca
+      // que la auditoria termino mal para que el log no quede "colgado".
+      return <div className="px-3 py-1 text-xs text-rose-400">✘ La auditoria se detuvo</div>;
     default:
-      // 'done' y 'error' se muestran en el panel principal, no en el log.
+      // 'done' se muestra en el panel principal, no en el log.
       return null;
   }
 }

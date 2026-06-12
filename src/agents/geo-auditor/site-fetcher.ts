@@ -77,7 +77,9 @@ export async function fetchSite(
   assertPublicHost(url);
 
   const { html, finalUrl, truncated } = await fetchHtml(url, timeoutMs);
-  log.info({ url: url.href, finalUrl, bytes: html.length, truncated }, 'HTML descargado');
+  // debug y no info: el CLI escribe su propio progreso en stdout y un INFO
+  // de pino por cada fetch se intercalaria en medio de esas lineas.
+  log.debug({ url: url.href, finalUrl, bytes: html.length, truncated }, 'HTML descargado');
 
   // Los auxiliares se buscan en el origen FINAL (tras redirects www/https).
   const origin = new URL(finalUrl).origin;
