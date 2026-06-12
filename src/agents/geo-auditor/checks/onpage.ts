@@ -17,16 +17,112 @@ export function runOnpageChecks(input: OnpageInput): CheckResult[] {
   const { site, finalUrl, sitemap } = input;
   return [
     httpsCheck(finalUrl),
+    noindexCheck(site),
     titleCheck(site),
     metaDescriptionCheck(site),
     h1Check(site),
     headingStructureCheck(site),
+    viewportCheck(site),
     canonicalCheck(site),
     ogCheck(site),
     imgAltCheck(site),
     textRatioCheck(site),
+    internalLinksCheck(site),
+    langCheck(site),
+    faviconCheck(site),
     sitemapCheck(sitemap),
   ];
+}
+
+function noindexCheck(site: ParsedSite): CheckResult {
+  const robots = site.robotsMeta?.toLowerCase() ?? '';
+  const blocked = /\b(noindex|none)\b/.test(robots);
+  return {
+    id: 'onpage.noindex',
+    category: 'onpage',
+    status: blocked ? 'fail' : 'pass',
+    weight: 4,
+    title: 'Pagina indexable (sin noindex)',
+    detail: blocked
+      ? `La pagina tiene <meta name="robots" content="${site.robotsMeta}">: le pide a Google y a los motores de IA que NO la muestren. El negocio es invisible a proposito.`
+      : site.robotsMeta
+        ? `Meta robots presente ("${site.robotsMeta}") sin bloquear la indexacion.`
+        : 'Sin meta robots restrictivo: la pagina es indexable.',
+    recommendation: blocked
+      ? 'Quitar el noindex de la pagina principal de inmediato — suele quedar activado por error al salir de "modo borrador" del constructor web.'
+      : undefined,
+  };
+}
+
+function viewportCheck(site: ParsedSite): CheckResult {
+  return {
+    id: 'onpage.viewport',
+    category: 'onpage',
+    status: site.hasViewport ? 'pass' : 'fail',
+    weight: 3,
+    title: 'Adaptado a moviles (meta viewport)',
+    detail: site.hasViewport
+      ? 'Meta viewport presente: la pagina se adapta a pantallas moviles.'
+      : 'Sin meta viewport: en el celular la pagina se ve como escritorio en miniatura. La mayoria de busquedas locales son desde el celular.',
+    recommendation: site.hasViewport
+      ? undefined
+      : 'Agregar <meta name="viewport" content="width=device-width, initial-scale=1"> y revisar el diseno responsive.',
+  };
+}
+
+function internalLinksCheck(site: ParsedSite): CheckResult {
+  const n = site.links.internalCount;
+  let status: CheckResult['status'];
+  if (n >= 5) status = 'pass';
+  else if (n >= 1) status = 'warn';
+  else status = 'fail';
+  return {
+    id: 'onpage.internal_links',
+    category: 'onpage',
+    status,
+    weight: 1,
+    title: 'Enlaces internos',
+    detail:
+      n > 0
+        ? `${n} enlaces internos en la pagina.`
+        : 'La pagina no enlaza a ninguna otra seccion del sitio (pagina huerfana o single-page sin anclas).',
+    recommendation:
+      status === 'pass'
+        ? undefined
+        : 'Enlazar las secciones clave (servicios, contacto, precios) desde la pagina principal para que crawlers y visitantes las descubran.',
+  };
+}
+
+function langCheck(site: ParsedSite): CheckResult {
+  return {
+    id: 'onpage.lang',
+    category: 'onpage',
+    status: site.htmlLang ? 'pass' : 'warn',
+    weight: 1,
+    title: 'Idioma declarado (<html lang>)',
+    detail: site.htmlLang
+      ? `Idioma declarado: "${site.htmlLang}".`
+      : 'El <html> no declara idioma; ayuda a buscadores y lectores de pantalla a clasificar el contenido.',
+    recommendation: site.htmlLang
+      ? undefined
+      : 'Agregar lang="es" (o el idioma del sitio) a la etiqueta <html>.',
+  };
+}
+
+function faviconCheck(site: ParsedSite): CheckResult {
+  return {
+    id: 'onpage.favicon',
+    category: 'onpage',
+    status: site.hasFavicon ? 'pass' : 'warn',
+    weight: 1,
+    title: 'Favicon',
+    detail: site.hasFavicon
+      ? 'Favicon declarado.'
+      : 'Sin favicon: la pestana y los resultados de busqueda muestran un icono generico (resta confianza).',
+    recommendation: site.hasFavicon
+      ? undefined
+      : 'Agregar un favicon con el logo del negocio (<link rel="icon" ...>).',
+  };
 }
 
 function httpsCheck(finalUrl: string): CheckResult {

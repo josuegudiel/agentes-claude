@@ -143,6 +143,7 @@ async function main(): Promise<void> {
 
   const chat = args.noLlm ? null : makeChatClient();
   const summary: Array<{ name: string; score: string; status: string; file: string }> = [];
+  const csvRows: Array<Record<string, string>> = [];
 
   // Secuencial a proposito: cuida las cuotas gratuitas de Groq y Tavily.
   for (const business of businesses) {
@@ -164,11 +165,28 @@ async function main(): Promise<void> {
         status: 'ok',
         file: files.join(', '),
       });
+      csvRows.push(csvRow(business, report));
     } catch (err) {
       console.log(`FALLO: ${(err as Error).message}`);
       summary.push({ name: business.name, score: '-', status: 'fallo', file: '-' });
+      csvRows.push({
+        nombre: business.name,
+        ciudad: business.city,
+        url: business.url,
+        estado: 'fallo',
+        global: '',
+        seo: '',
+        geo: '',
+        presencia: '',
+        criticos: '',
+        problema_principal: (err as Error).message,
+      });
     }
   }
+
+  // CSV de prospeccion: una fila por negocio, listo para hoja de calculo.
+  const csvPath = join(args.out, '_resumen.csv');
+  writeFileSync(csvPath, toCsv(csvRows), 'utf8');
 
   console.log('\n=== Resumen del lote ===');
   for (const row of summary) {
@@ -176,10 +194,39 @@ async function main(): Promise<void> {
       `${row.status === 'ok' ? '✅' : '❌'} ${row.name.padEnd(32)} ${row.score.padEnd(8)} ${row.file}`,
     );
   }
+  console.log(`\nCSV de prospeccion: ${csvPath}`);
   const failed = summary.filter((r) => r.status !== 'ok').length;
   if (failed > 0) {
-    console.log(`\n${failed} negocio(s) fallaron; el resto se audito normalmente.`);
+    console.log(`${failed} negocio(s) fallaron; el resto se audito normalmente.`);
   }
+}
+
+function csvRow(business: Business, report: AuditReport): Record<string, string> {
+  const criticos = report.findings.filter((f) => f.severity === 'critical');
+  return {
+    nombre: business.name,
+    ciudad: business.city,
+    url: report.meta.finalUrl,
+    estado: 'ok',
+    global: String(report.scores.overall),
+    seo: String(report.scores.onpage),
+    geo: String(report.scores.geo),
+    presencia: report.scores.presence === null ? 'no medida' : String(report.scores.presence),
+    criticos: String(criticos.length),
+    problema_principal: report.findings[0]?.title ?? '',
+  };
+}
+
+export function toCsv(rows: Array<Record<string, string>>): string {
+  if (rows.length === 0) return '';
+  const headers = Object.keys(rows[0] ?? {});
+  const escape = (value: string): string =>
+    /[",\n]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
+  const lines = [headers.join(',')];
+  for (const row of rows) {
+    lines.push(headers.map((h) => escape(row[h] ?? '')).join(','));
+  }
+  return lines.join('\n') + '\n';
 }
 
 function writeReports(args: ParsedArgs, slug: string, report: AuditReport): string[] {

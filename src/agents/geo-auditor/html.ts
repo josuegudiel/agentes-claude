@@ -17,6 +17,17 @@ export interface JsonLdBlock {
   raw: unknown;
 }
 
+export interface LinkSignals {
+  /** Anchors que apuntan al mismo host o a rutas relativas. */
+  internalCount: number;
+  /** href tel: encontrados (click-to-call). */
+  telLinks: string[];
+  /** Links a WhatsApp (wa.me / api.whatsapp.com / whatsapp:). */
+  whatsappLinks: string[];
+  /** Hosts de redes sociales enlazados (facebook, instagram, ...). */
+  socialHosts: string[];
+}
+
 export interface ParsedSite {
   title: string | null;
   metaDescription: string | null;
@@ -30,9 +41,28 @@ export interface ParsedSite {
   /** Texto visible (sin scripts/estilos), espacios colapsados. */
   visibleText: string;
   htmlBytes: number;
+  /** Atributo lang de <html> (ej. "es"), null si falta. */
+  htmlLang: string | null;
+  /** true si existe <meta name="viewport">. */
+  hasViewport: boolean;
+  /** Contenido de <meta name="robots">, null si no hay. */
+  robotsMeta: string | null;
+  /** true si hay <link rel*="icon">. */
+  hasFavicon: boolean;
+  links: LinkSignals;
 }
 
-export function parseSiteHtml(html: string): ParsedSite {
+const SOCIAL_HOSTS = [
+  'facebook.com',
+  'instagram.com',
+  'tiktok.com',
+  'youtube.com',
+  'twitter.com',
+  'x.com',
+  'linkedin.com',
+] as const;
+
+export function parseSiteHtml(html: string, opts?: { baseHost?: string }): ParsedSite {
   const root = parse(html, {
     blockTextElements: { script: true, style: true, noscript: true, pre: true },
   });
@@ -62,6 +92,14 @@ export function parseSiteHtml(html: string): ParsedSite {
 
   const { jsonLd, jsonLdErrors } = extractJsonLd(root);
 
+  const htmlLang = attrOrNull(root.querySelector('html'), 'lang');
+  const hasViewport = root.querySelector('meta[name="viewport" i]') !== null;
+  const robotsMeta = attrOrNull(root.querySelector('meta[name="robots" i]'), 'content');
+  const hasFavicon =
+    root.querySelector(
+      'link[rel="icon" i], link[rel="shortcut icon" i], link[rel="apple-touch-icon" i]',
+    ) !== null;
+
   return {
     title,
     metaDescription,
@@ -74,6 +112,66 @@ export function parseSiteHtml(html: string): ParsedSite {
     jsonLdErrors,
     visibleText: extractVisibleText(root),
     htmlBytes: Buffer.byteLength(html, 'utf8'),
+    htmlLang,
+    hasViewport,
+    robotsMeta,
+    hasFavicon,
+    links: extractLinkSignals(root, opts?.baseHost),
+  };
+}
+
+function extractLinkSignals(root: HTMLElement, baseHost?: string): LinkSignals {
+  const telLinks: string[] = [];
+  const whatsappLinks: string[] = [];
+  const socialFound = new Set<string>();
+  let internalCount = 0;
+
+  for (const a of root.querySelectorAll('a[href]')) {
+    const href = a.getAttribute('href')?.trim();
+    if (!href) continue;
+    const lower = href.toLowerCase();
+
+    if (lower.startsWith('tel:')) {
+      telLinks.push(href);
+      continue;
+    }
+    if (
+      lower.startsWith('whatsapp:') ||
+      lower.includes('wa.me/') ||
+      lower.includes('api.whatsapp.com')
+    ) {
+      whatsappLinks.push(href);
+      continue;
+    }
+
+    if (lower.startsWith('#') || lower.startsWith('mailto:') || lower.startsWith('javascript:')) {
+      continue;
+    }
+
+    if (lower.startsWith('http://') || lower.startsWith('https://')) {
+      let host = '';
+      try {
+        host = new URL(href).hostname.toLowerCase().replace(/^www\./, '');
+      } catch {
+        continue;
+      }
+      const social = SOCIAL_HOSTS.find((s) => host === s || host.endsWith(`.${s}`));
+      if (social) {
+        socialFound.add(social);
+      } else if (baseHost && host === baseHost.toLowerCase().replace(/^www\./, '')) {
+        internalCount++;
+      }
+    } else {
+      // Rutas relativas (/contacto, servicios.html) cuentan como internas.
+      internalCount++;
+    }
+  }
+
+  return {
+    internalCount,
+    telLinks,
+    whatsappLinks,
+    socialHosts: [...socialFound],
   };
 }
 
