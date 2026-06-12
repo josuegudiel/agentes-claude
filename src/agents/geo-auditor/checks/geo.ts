@@ -60,8 +60,97 @@ export function runGeoChecks(input: GeoInput): CheckResult[] {
     directAnswerCheck(input.site, input.businessName),
     citableDataCheck(input.site),
     napCheck(input.site, input.city),
+    cityInTitleCheck(input.site, input.city),
+    clickToCallCheck(input.site),
+    whatsappCheck(input.site),
+    socialLinksCheck(input.site),
     llmsTxtCheck(input.llmsTxt),
   ];
+}
+
+function cityInTitleCheck(site: ParsedSite, city: string): CheckResult {
+  const cityLower = city.toLowerCase();
+  const inTitle = Boolean(site.title?.toLowerCase().includes(cityLower));
+  const h1 = site.headings.find((h) => h.level === 1)?.text.toLowerCase() ?? '';
+  const inH1 = h1.includes(cityLower);
+
+  let status: CheckResult['status'];
+  if (inTitle) status = 'pass';
+  else if (inH1) status = 'warn';
+  else status = 'fail';
+  return {
+    id: 'geo.city_in_title',
+    category: 'geo',
+    status,
+    weight: 3,
+    title: 'Ciudad en el title / H1',
+    detail: inTitle
+      ? `El title menciona "${city}": la senal local mas directa para "cerca de mi" y busquedas con IA.`
+      : inH1
+        ? `"${city}" aparece en el H1 pero no en el title.`
+        : `Ni el title ni el H1 mencionan "${city}". Para un negocio local, la ciudad en el title es la senal de relevancia geografica mas barata que existe.`,
+    recommendation:
+      status === 'pass'
+        ? undefined
+        : `Incluir la ciudad en el title (ej. "Servicio X en ${city}") y reforzarla en el H1.`,
+  };
+}
+
+function clickToCallCheck(site: ParsedSite): CheckResult {
+  const n = site.links.telLinks.length;
+  return {
+    id: 'geo.click_to_call',
+    category: 'geo',
+    status: n > 0 ? 'pass' : 'warn',
+    weight: 2,
+    title: 'Telefono con un toque (tel:)',
+    detail:
+      n > 0
+        ? `${n} enlace(s) tel: — el cliente puede llamar con un toque desde el celular.`
+        : 'El telefono (si existe) es solo texto: en el celular, cada paso extra para llamar pierde leads.',
+    recommendation:
+      n > 0
+        ? undefined
+        : 'Convertir el numero en enlace clicable: <a href="tel:+502...">. Es la conversion mas directa de una busqueda local.',
+  };
+}
+
+function whatsappCheck(site: ParsedSite): CheckResult {
+  const n = site.links.whatsappLinks.length;
+  return {
+    id: 'geo.whatsapp',
+    category: 'geo',
+    status: n > 0 ? 'pass' : 'warn',
+    weight: 2,
+    title: 'Boton de WhatsApp',
+    detail:
+      n > 0
+        ? `Enlace directo a WhatsApp presente (${n}).`
+        : 'No hay enlace a WhatsApp (wa.me). En Latinoamerica es el canal #1 por el que un lead local escribe.',
+    recommendation:
+      n > 0
+        ? undefined
+        : 'Agregar un boton wa.me/<numero> con mensaje predefinido (ej. "Hola, vi su sitio web...").',
+  };
+}
+
+function socialLinksCheck(site: ParsedSite): CheckResult {
+  const hosts = site.links.socialHosts;
+  return {
+    id: 'geo.social_links',
+    category: 'geo',
+    status: hosts.length > 0 ? 'pass' : 'warn',
+    weight: 1,
+    title: 'Perfiles sociales enlazados',
+    detail:
+      hosts.length > 0
+        ? `Enlaza a: ${hosts.join(', ')}. Los motores de IA corroboran la existencia del negocio con estas senales.`
+        : 'No enlaza ningun perfil social; los motores de IA usan esas senales para corroborar que el negocio existe y esta activo.',
+    recommendation:
+      hosts.length > 0
+        ? undefined
+        : 'Enlazar los perfiles activos del negocio (Facebook/Instagram) desde el sitio, y viceversa.',
+  };
 }
 
 function jsonLdLocalCheck(site: ParsedSite): CheckResult {

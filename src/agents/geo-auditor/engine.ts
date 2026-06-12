@@ -53,7 +53,9 @@ export async function runGeoAudit(
   // --- 1. Fetch del sitio (si esto falla, falla la auditoria entera) ---
   emit({ type: 'phase', phase: 'fetch', status: 'running' });
   const fetched = await fetchSite(req.url);
-  const site = parseSiteHtml(fetched.html);
+  const site = parseSiteHtml(fetched.html, {
+    baseHost: new URL(fetched.finalUrl).hostname,
+  });
   if (fetched.truncated) {
     warnings.push('El HTML supero 2MB y se analizo truncado.');
   }

@@ -1,12 +1,22 @@
 'use client';
 
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { AuditorForm } from './AuditorForm';
 import { AuditProgress } from './AuditProgress';
 import { ScoreCards } from './ScoreCards';
 import { FindingsList } from './FindingsList';
+import { AuditHistory, DeltaBadge } from './AuditHistory';
 import { exportReportPdf } from './export';
 import { IconDownload, IconHexAlert, IconQuote } from './icons';
+import {
+  appendEntry,
+  clearHistory,
+  entryFromReport,
+  loadHistory,
+  persistHistory,
+  type AuditHistoryEntry,
+} from '../../lib/auditor-history';
+import { buildSalesSummary } from '../../lib/sales-summary';
 import type { AuditorRequest, AuditorSSEEvent, AuditReport } from '../../lib/auditor-types';
 
 export function AuditorApp(): React.ReactElement {
@@ -15,50 +25,101 @@ export function AuditorApp(): React.ReactElement {
   const [report, setReport] = useState<AuditReport | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
+  const [history, setHistory] = useState<AuditHistoryEntry[]>([]);
+  const [delta, setDelta] = useState<number | null>(null);
+  const [copied, setCopied] = useState(false);
+  const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const handleSubmit = useCallback(async (params: AuditorRequest) => {
-    setEvents([]);
-    setReport(null);
-    setErrorMsg(null);
-    setRunning(true);
+  useEffect(() => {
+    setHistory(loadHistory());
+    return () => {
+      if (copyTimer.current) clearTimeout(copyTimer.current);
+    };
+  }, []);
 
-    try {
-      const res = await fetch('/api/auditor', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(params),
-      });
-      if (!res.ok || !res.body) {
-        const text = await res.text();
-        setErrorMsg(extractError(text) ?? `HTTP ${res.status}`);
-        setRunning(false);
-        return;
-      }
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const parts = buffer.split('\n\n');
-        buffer = parts.pop() ?? '';
-        for (const part of parts) {
-          const event = parseSSEFrame(part);
-          if (!event) continue;
-          setEvents((prev) => [...prev, event]);
-          if (event.type === 'done') {
-            setReport(event.report);
-          } else if (event.type === 'error') {
-            setErrorMsg(event.message);
+  const recordAudit = useCallback((done: AuditReport) => {
+    const entry = entryFromReport(done);
+    setHistory((prev) => {
+      const { list, previous } = appendEntry(prev, entry);
+      persistHistory(list);
+      setDelta(previous ? entry.scores.overall - previous.scores.overall : null);
+      return list;
+    });
+  }, []);
+
+  const handleSubmit = useCallback(
+    async (params: AuditorRequest) => {
+      setEvents([]);
+      setReport(null);
+      setErrorMsg(null);
+      setDelta(null);
+      setCopied(false);
+      setRunning(true);
+
+      try {
+        const res = await fetch('/api/auditor', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(params),
+        });
+        if (!res.ok || !res.body) {
+          const text = await res.text();
+          setErrorMsg(extractError(text) ?? `HTTP ${res.status}`);
+          setRunning(false);
+          return;
+        }
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const parts = buffer.split('\n\n');
+          buffer = parts.pop() ?? '';
+          for (const part of parts) {
+            const event = parseSSEFrame(part);
+            if (!event) continue;
+            setEvents((prev) => [...prev, event]);
+            if (event.type === 'done') {
+              setReport(event.report);
+              recordAudit(event.report);
+            } else if (event.type === 'error') {
+              setErrorMsg(event.message);
+            }
           }
         }
+      } catch (err) {
+        setErrorMsg(err instanceof Error ? err.message : String(err));
+      } finally {
+        setRunning(false);
       }
-    } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : String(err));
-    } finally {
-      setRunning(false);
+    },
+    [recordAudit],
+  );
+
+  const handleCopySummary = useCallback(async () => {
+    if (!report) return;
+    const text = buildSalesSummary(report);
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      // Fallback para contextos sin Clipboard API (http, permisos).
+      const area = document.createElement('textarea');
+      area.value = text;
+      document.body.appendChild(area);
+      area.select();
+      document.execCommand('copy');
+      area.remove();
     }
+    setCopied(true);
+    if (copyTimer.current) clearTimeout(copyTimer.current);
+    copyTimer.current = setTimeout(() => setCopied(false), 2200);
+  }, [report]);
+
+  const handleClearHistory = useCallback(() => {
+    clearHistory();
+    setHistory([]);
   }, []);
 
   const handleExport = useCallback(async () => {
@@ -83,6 +144,24 @@ export function AuditorApp(): React.ReactElement {
 
         {report && (
           <>
+            {delta !== null && (
+              <div
+                className={`animate-rise flex items-center gap-2.5 border p-3 text-xs font-medium ${
+                  delta >= 0
+                    ? 'border-lime-300/25 bg-lime-400/[0.06] text-lime-200'
+                    : 'border-rose-400/25 bg-rose-500/[0.06] text-rose-200'
+                }`}
+              >
+                <DeltaBadge delta={delta} />
+                <span>
+                  {delta > 0
+                    ? `El sitio mejoró ${delta} punto(s) desde la auditoría anterior.`
+                    : delta < 0
+                      ? `El sitio bajó ${Math.abs(delta)} punto(s) desde la auditoría anterior.`
+                      : 'Mismo score que la auditoría anterior de este sitio.'}
+                </span>
+              </div>
+            )}
             <ScoreCards scores={report.scores} />
 
             {report.executiveSummary && (
@@ -103,15 +182,24 @@ export function AuditorApp(): React.ReactElement {
               <h2 className="text-sm font-semibold uppercase tracking-[0.14em] text-violet-200/75">
                 Hallazgos priorizados ({report.findings.length})
               </h2>
-              <button
-                type="button"
-                onClick={handleExport}
-                disabled={exporting}
-                className="holo-card inline-flex items-center gap-2 px-4 py-2 text-xs font-medium text-violet-100 transition duration-200 hover:border-fuchsia-400/50 hover:text-fuchsia-300 disabled:cursor-not-allowed disabled:text-violet-300/30"
-              >
-                <IconDownload className="h-4 w-4" />
-                {exporting ? 'Generando PDF...' : 'Descargar PDF'}
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleCopySummary}
+                  className="holo-card inline-flex items-center gap-2 px-4 py-2 text-xs font-medium text-violet-100 transition duration-200 hover:border-cyan-300/50 hover:text-cyan-300"
+                >
+                  {copied ? 'Copiado ✓' : 'Copiar resumen'}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleExport}
+                  disabled={exporting}
+                  className="holo-card inline-flex items-center gap-2 px-4 py-2 text-xs font-medium text-violet-100 transition duration-200 hover:border-fuchsia-400/50 hover:text-fuchsia-300 disabled:cursor-not-allowed disabled:text-violet-300/30"
+                >
+                  <IconDownload className="h-4 w-4" />
+                  {exporting ? 'Generando PDF...' : 'Descargar PDF'}
+                </button>
+              </div>
             </div>
             <FindingsList findings={report.findings} />
 
@@ -143,6 +231,7 @@ export function AuditorApp(): React.ReactElement {
           Progreso en vivo
         </h2>
         <AuditProgress events={events} running={running} />
+        <AuditHistory history={history} onClear={handleClearHistory} />
       </aside>
     </div>
   );
