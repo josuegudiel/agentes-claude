@@ -36,7 +36,11 @@ export function runOnpageChecks(input: OnpageInput): CheckResult[] {
 
 function noindexCheck(site: ParsedSite): CheckResult {
   const robots = site.robotsMeta?.toLowerCase() ?? '';
-  const blocked = /\b(noindex|none)\b/.test(robots);
+  // Parsear directivas separadas por comas y comparar tokens EXACTOS. Un
+  // token "none" o "noindex" bloquea; pero "max-image-preview:none" (patron
+  // habitual e indexable) NO debe contar: 'none' ahi es sub-token, no directiva.
+  const directives = robots.split(',').map((d) => d.trim());
+  const blocked = directives.some((d) => d === 'noindex' || d === 'none');
   return {
     id: 'onpage.noindex',
     category: 'onpage',

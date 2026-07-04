@@ -1,5 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { runGeoAudit } from '../engine.js';
+
+// El fetcher resuelve DNS para el guard anti-SSRF; en tests devolvemos una IP
+// publica fija para no depender de la red.
+vi.mock('node:dns/promises', () => ({
+  lookup: async () => [{ address: '93.184.216.34', family: 4 }],
+}));
+
+const { runGeoAudit } = await import('../engine.js');
 import type { TavilyClient } from '../tavily-client.js';
 import type { ChatClient } from '../../predictive/chat-client.js';
 import type { AuditEvent, AuditRequest } from '../schema.js';

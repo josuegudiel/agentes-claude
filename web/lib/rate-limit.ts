@@ -2,8 +2,10 @@
  * Rate limiter en memoria. Suficiente para una sola instancia Vercel hobby
  * (las funciones serverless reusan el proceso por unos minutos).
  *
- * Si la app crece a multi-instance / multi-region, cambiar el backend a
- * Vercel KV / Upstash Redis. La firma de checkRateLimit() queda igual.
+ * LIMITACION conocida: bajo varias instancias concurrentes o tras un cold
+ * start, el contador NO es global — el limite anunciado es best-effort, no
+ * estricto. Para un limite duro pasar el backend a Vercel KV / Upstash Redis
+ * (la firma de checkRateLimit() queda igual).
  */
 
 interface Bucket {
@@ -55,15 +57,23 @@ export function checkRateLimit(key: string, opts: RateLimitOptions = {}): RateLi
 }
 
 /**
- * Extrae el identificador del cliente para usar como key del rate limit.
- * Prefiere x-forwarded-for (Vercel proxy) sobre cualquier otro.
+ * Extrae el identificador del cliente para el rate limit.
+ *
+ * Seguridad: NO se usa el primer valor de x-forwarded-for — el cliente lo
+ * controla y puede rotar IPs falsas para evadir el limite. Se prefieren las
+ * cabeceras que inyecta el proxy de confianza (Vercel/plataforma) y, si solo
+ * hay x-forwarded-for, se toma el ULTIMO hop (el que anadio el proxy), que no
+ * es spoofeable por el cliente.
  */
 export function clientKey(req: Request): string {
   const h = req.headers;
+  const trusted = h.get('x-real-ip') ?? h.get('x-vercel-forwarded-for');
+  if (trusted) return trusted.trim();
   const xff = h.get('x-forwarded-for');
-  if (xff) return xff.split(',')[0]!.trim();
-  const real = h.get('x-real-ip');
-  if (real) return real;
+  if (xff) {
+    const hops = xff.split(',').map((s) => s.trim()).filter(Boolean);
+    if (hops.length > 0) return hops[hops.length - 1]!;
+  }
   return 'unknown';
 }
 

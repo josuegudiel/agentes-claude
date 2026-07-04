@@ -50,16 +50,26 @@ describe('checkRateLimit', () => {
 });
 
 describe('clientKey', () => {
-  it('extrae el primer IP de x-forwarded-for', () => {
+  it('prefiere x-real-ip (cabecera del proxy de confianza)', () => {
+    const req = new Request('http://x', {
+      headers: { 'x-real-ip': '5.6.7.8', 'x-forwarded-for': '1.2.3.4, 9.9.9.9' },
+    });
+    expect(clientKey(req)).toBe('5.6.7.8');
+  });
+
+  it('usa el ULTIMO hop de x-forwarded-for (no el primero, que es spoofeable)', () => {
     const req = new Request('http://x', {
       headers: { 'x-forwarded-for': '1.2.3.4, 10.0.0.1' },
     });
-    expect(clientKey(req)).toBe('1.2.3.4');
+    expect(clientKey(req)).toBe('10.0.0.1');
   });
 
-  it('cae a x-real-ip si no hay XFF', () => {
-    const req = new Request('http://x', { headers: { 'x-real-ip': '5.6.7.8' } });
-    expect(clientKey(req)).toBe('5.6.7.8');
+  it('un atacante que falsea el primer XFF no controla la key', () => {
+    // El cliente inyecta 'evil-fake'; el proxy anade su IP real al final.
+    const req = new Request('http://x', {
+      headers: { 'x-forwarded-for': 'evil-fake, 203.0.113.9' },
+    });
+    expect(clientKey(req)).toBe('203.0.113.9');
   });
 
   it('devuelve "unknown" si no hay headers', () => {

@@ -1,4 +1,5 @@
 import type { CheckResult, TavilySearchResult } from '../schema.js';
+import { isSameSite } from './text-match.js';
 
 /**
  * Checks de presencia online a partir de resultados de busqueda (Tavily).
@@ -38,7 +39,13 @@ const GBP_HINTS = [
 const BEST_OF_PATTERN = /\b(best|mejores|top\s?\d+|los \d+ mejores|guia|guía)\b/i;
 
 export function runPresenceChecks(input: PresenceInput): CheckResult[] {
-  const external = input.results.filter((r) => !hostOf(r.url).includes(input.ownHost));
+  // Excluir el propio sitio (incluye www y subdominios) por igualdad de dominio,
+  // no por substring: 'example.com'.includes('www.example.com') daba false y
+  // contaba la home propia como "mencion de terceros".
+  const external = input.results.filter((r) => {
+    const host = hostOf(r.url);
+    return host !== '' && !isSameSite(host, input.ownHost);
+  });
   const nameLower = input.businessName.toLowerCase();
   const mentioning = external.filter(
     (r) => r.title.toLowerCase().includes(nameLower) || r.content.toLowerCase().includes(nameLower),

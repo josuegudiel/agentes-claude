@@ -102,6 +102,20 @@ describe('checks on-page nuevos', () => {
     expect(checks.get('onpage.favicon')?.status).toBe('warn');
     expect(checks.get('onpage.internal_links')?.status).toBe('fail');
   });
+
+  it('robots meta con "none" en un valor (max-image-preview:none) NO es noindex', () => {
+    const page =
+      '<html><head><title>Pagina indexable de prueba</title>' +
+      '<meta name="robots" content="max-snippet:-1, max-image-preview:none, max-video-preview:-1">' +
+      '</head><body><h1>Hola</h1></body></html>';
+    expect(onpageMap(page).get('onpage.noindex')?.status).toBe('pass');
+  });
+
+  it('directiva "none" como token exacto SI es noindex', () => {
+    const page =
+      '<html><head><title>Pagina de prueba</title><meta name="robots" content="none"></head><body></body></html>';
+    expect(onpageMap(page).get('onpage.noindex')?.status).toBe('fail');
+  });
 });
 
 describe('checks geo locales nuevos', () => {
@@ -128,4 +142,64 @@ describe('checks geo locales nuevos', () => {
     expect(checks.get('geo.whatsapp')?.status).toBe('warn');
     expect(checks.get('geo.social_links')?.status).toBe('warn');
   });
+
+  it('city_in_title no da falso positivo con substring ("Leon" en "Napoleon")', () => {
+    const checks = geoMapCity(
+      '<html><head><title>Gimnasio Napoleon Fitness</title></head><body><h1>Napoleon</h1></body></html>',
+      'Leon',
+    );
+    expect(checks.get('geo.city_in_title')?.status).toBe('fail');
+  });
+
+  it('city_in_title tolera acentos (city "León" vs title "Leon")', () => {
+    const checks = geoMapCity(
+      '<html><head><title>Muebleria en Leon Centro</title></head><body></body></html>',
+      'León',
+    );
+    expect(checks.get('geo.city_in_title')?.status).toBe('pass');
+  });
+
+  it('NAP: numero grande sin formato ("1500000 clientes") no cuenta como telefono', () => {
+    const page =
+      '<html><body><p>Servimos a mas de 1500000 clientes cada año con dedicacion total y calidad.</p></body></html>';
+    const checks = geoMapCity(page, 'Quetzaltenango');
+    expect(checks.get('geo.nap')?.detail).toContain('telefono NO visible');
+  });
+
+  it('NAP: "comida local" no cuenta como direccion, pero "local 5" si', () => {
+    const noAddr = geoMapCity(
+      '<html><body><p>Ofrecemos comida local y de temporada en tu zona preferida siempre.</p></body></html>',
+      'Xela',
+    );
+    expect(noAddr.get('geo.nap')?.detail).toContain('direccion NO aparente');
+    const withAddr = geoMapCity(
+      '<html><body><p>Nos ubicamos en el local 5 del centro comercial, te esperamos.</p></body></html>',
+      'Xela',
+    );
+    expect(withAddr.get('geo.nap')?.detail).toContain('direccion aparente');
+  });
+
+  it('enlaces protocol-relative: instagram social detectado, cdn no cuenta como interno', () => {
+    const page =
+      '<html><body>' +
+      '<a href="//www.instagram.com/marca">IG</a>' +
+      '<a href="//cdn.tercero.com/x.js">cdn</a>' +
+      '<a href="https://blog.tallerlopez.gt/post">blog</a>' +
+      '</body></html>';
+    const site = parseSiteHtml(page, { baseHost: 'tallerlopez.gt' });
+    expect(site.links.socialHosts).toContain('instagram.com');
+    // El subdominio propio cuenta como interno; el cdn de terceros no.
+    expect(site.links.internalCount).toBe(1);
+  });
 });
+
+function geoMapCity(html: string, city: string) {
+  const results = runGeoChecks({
+    site: parseSiteHtml(html, { baseHost: 'tallerlopez.gt' }),
+    robotsTxt: { status: 'missing' },
+    llmsTxt: 'missing',
+    businessName: 'Taller Lopez',
+    city,
+  });
+  return new Map(results.map((r) => [r.id, r]));
+}

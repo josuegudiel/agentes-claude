@@ -148,18 +148,28 @@ function extractLinkSignals(root: HTMLElement, baseHost?: string): LinkSignals {
       continue;
     }
 
-    if (lower.startsWith('http://') || lower.startsWith('https://')) {
+    // Protocol-relative (//host/...) es absoluto: normalizar con https antes
+    // de clasificar, si no cae en el else y se cuenta mal como interno.
+    const absolute = lower.startsWith('//')
+      ? `https:${href}`
+      : lower.startsWith('http://') || lower.startsWith('https://')
+        ? href
+        : null;
+
+    if (absolute) {
       let host = '';
       try {
-        host = new URL(href).hostname.toLowerCase().replace(/^www\./, '');
+        host = new URL(absolute).hostname.toLowerCase().replace(/^www\./, '');
       } catch {
         continue;
       }
       const social = SOCIAL_HOSTS.find((s) => host === s || host.endsWith(`.${s}`));
       if (social) {
         socialFound.add(social);
-      } else if (baseHost && host === baseHost.toLowerCase().replace(/^www\./, '')) {
-        internalCount++;
+      } else if (baseHost) {
+        const base = baseHost.toLowerCase().replace(/^www\./, '');
+        // Interno si es el mismo dominio o un subdominio propio (blog.mi-sitio).
+        if (host === base || host.endsWith(`.${base}`)) internalCount++;
       }
     } else {
       // Rutas relativas (/contacto, servicios.html) cuentan como internas.
