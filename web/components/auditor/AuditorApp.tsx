@@ -138,6 +138,7 @@ export function AuditorApp(): React.ReactElement {
 
   const handleClearHistory = useCallback(() => {
     clearHistory();
+    historyRef.current = [];
     setHistory([]);
   }, []);
 
