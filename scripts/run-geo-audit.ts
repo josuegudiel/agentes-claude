@@ -15,6 +15,7 @@
  */
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { z } from 'zod';
 import { logger } from '../src/core/logger.js';
 import { makeChatClient } from '../src/agents/predictive/chat-client-factory.js';
@@ -138,6 +139,11 @@ export function parseCsvRows(raw: string): string[][] {
     } else {
       field += ch;
     }
+  }
+  // Comilla sin cerrar: el archivo esta mal formado; fallar claro en vez de
+  // absorber el resto del CSV en un solo campo.
+  if (inQuotes) {
+    throw new Error('CSV mal formado: hay una comilla sin cerrar');
   }
   // Última fila sin salto final.
   if (field.length > 0 || row.length > 0) {
@@ -329,8 +335,11 @@ function printUsage(): void {
 }
 
 // Solo ejecuta el CLI cuando se corre directamente (no al importarlo en tests).
+// pathToFileURL maneja rutas con espacios/caracteres no-ASCII (percent-encoding)
+// que una interpolacion `file://${path}` no encodearia igual que import.meta.url.
 const invokedDirectly =
-  typeof process.argv[1] === 'string' && import.meta.url === `file://${process.argv[1]}`;
+  typeof process.argv[1] === 'string' &&
+  import.meta.url === pathToFileURL(process.argv[1]).href;
 if (invokedDirectly) {
   main().catch((err) => {
     logger.error({ err: (err as Error).message }, 'Auditoria en lote fallo');

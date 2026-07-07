@@ -30,6 +30,12 @@ describe('parseCsvRows', () => {
     const rows = parseCsvRows('a,b\nx,y');
     expect(rows[1]).toEqual(['x', 'y']);
   });
+
+  it('falla claro ante una comilla sin cerrar (no absorbe el resto del archivo)', () => {
+    expect(() => parseCsvRows('name,city,url\nAcme",Madrid,http://a.com\nBeta,Leon,http://b.com')).toThrow(
+      /comilla sin cerrar/,
+    );
+  });
 });
 
 describe('toCsv — anti CSV-injection', () => {

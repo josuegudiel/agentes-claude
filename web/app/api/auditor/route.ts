@@ -62,15 +62,26 @@ export async function POST(req: Request): Promise<Response> {
     });
   }
 
-  // Aborta la auditoria (fetch del sitio, Tavily, Groq) si el cliente cierra
-  // la conexion, para no gastar cuota/CPU en un resultado que nadie recibira.
+  // Aborta la auditoria (fetch del sitio, Tavily) si el cliente cierra la
+  // conexion, para no gastar cuota/CPU en un resultado que nadie recibira.
   const ac = new AbortController();
   req.signal.addEventListener('abort', () => ac.abort());
+  // Cubre el caso en que el cliente ya se desconecto ANTES de que corra start().
+  if (req.signal.aborted) ac.abort();
 
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       const encoder = new TextEncoder();
       let closed = false;
+      // Si ya venia abortado, no arrancar la auditoria.
+      if (ac.signal.aborted) {
+        try {
+          controller.close();
+        } catch {
+          /* ya cerrado */
+        }
+        return;
+      }
       const send = (event: AuditorSSEEvent): void => {
         if (closed) return;
         try {

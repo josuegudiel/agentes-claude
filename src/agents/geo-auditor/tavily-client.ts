@@ -43,12 +43,17 @@ export class TavilyClient {
     this.timeoutMs = opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   }
 
-  async search(query: string, opts?: { maxResults?: number }): Promise<TavilyResponse> {
-    const json = await withRetry(() => this.request(query, opts?.maxResults ?? 8), {
+  async search(
+    query: string,
+    opts?: { maxResults?: number; signal?: AbortSignal },
+  ): Promise<TavilyResponse> {
+    const json = await withRetry(() => this.request(query, opts?.maxResults ?? 8, opts?.signal), {
       retries: 2,
       minDelayMs: 750,
       maxDelayMs: 5_000,
       shouldRetry: (err) => {
+        // No reintentar si el llamante aborto (cliente desconectado).
+        if (opts?.signal?.aborted) return false;
         if (!(err instanceof TavilyError)) return true;
         return err.status >= 500 || err.status === 0;
       },
@@ -56,9 +61,18 @@ export class TavilyClient {
     return TavilyResponseSchema.parse(json);
   }
 
-  private async request(query: string, maxResults: number): Promise<unknown> {
+  private async request(
+    query: string,
+    maxResults: number,
+    externalSignal?: AbortSignal,
+  ): Promise<unknown> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    const onAbort = (): void => controller.abort();
+    if (externalSignal) {
+      if (externalSignal.aborted) controller.abort();
+      else externalSignal.addEventListener('abort', onAbort, { once: true });
+    }
 
     try {
       const res = await fetch(TAVILY_URL, {
@@ -94,6 +108,7 @@ export class TavilyClient {
       });
     } finally {
       clearTimeout(timer);
+      externalSignal?.removeEventListener('abort', onAbort);
     }
   }
 }

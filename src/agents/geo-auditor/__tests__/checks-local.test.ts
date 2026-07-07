@@ -116,6 +116,15 @@ describe('checks on-page nuevos', () => {
       '<html><head><title>Pagina de prueba</title><meta name="robots" content="none"></head><body></body></html>';
     expect(onpageMap(page).get('onpage.noindex')?.status).toBe('fail');
   });
+
+  it('noindex detectado con separadores no-coma: espacio y punto y coma', () => {
+    const espacio =
+      '<html><head><title>Pagina x</title><meta name="robots" content="noindex nofollow"></head><body></body></html>';
+    expect(onpageMap(espacio).get('onpage.noindex')?.status).toBe('fail');
+    const puntoComa =
+      '<html><head><title>Pagina x</title><meta name="robots" content="noindex;nofollow"></head><body></body></html>';
+    expect(onpageMap(puntoComa).get('onpage.noindex')?.status).toBe('fail');
+  });
 });
 
 describe('checks geo locales nuevos', () => {
@@ -159,11 +168,18 @@ describe('checks geo locales nuevos', () => {
     expect(checks.get('geo.city_in_title')?.status).toBe('pass');
   });
 
-  it('NAP: numero grande sin formato ("1500000 clientes") no cuenta como telefono', () => {
+  it('NAP: numero de 7 digitos ("1500000 clientes") no cuenta como telefono', () => {
     const page =
       '<html><body><p>Servimos a mas de 1500000 clientes cada año con dedicacion total y calidad.</p></body></html>';
     const checks = geoMapCity(page, 'Quetzaltenango');
     expect(checks.get('geo.nap')?.detail).toContain('telefono NO visible');
+  });
+
+  it('NAP: telefono LatAm de 8 digitos sin separador ("77611234") SI cuenta', () => {
+    const page =
+      '<html><body><p>Llamanos hoy mismo al 77611234 para agendar tu cita sin compromiso.</p></body></html>';
+    const checks = geoMapCity(page, 'Quetzaltenango');
+    expect(checks.get('geo.nap')?.detail).toContain('telefono visible');
   });
 
   it('NAP: "comida local" no cuenta como direccion, pero "local 5" si', () => {

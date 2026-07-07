@@ -399,10 +399,12 @@ function citableDataCheck(site: ParsedSite): CheckResult {
   };
 }
 
-// Telefono: exige separador/parentesis/prefijo internacional entre bloques,
-// para no matchear una corrida de digitos como "1500000 clientes".
+// Telefono: (a) numero con separador/parentesis/prefijo internacional entre
+// bloques, o (b) una corrida contigua de EXACTAMENTE 8 digitos (formato movil/
+// fijo comun en LatAm, ej. "77611234"). El "exactamente 8" evita matchear
+// cifras de 7 digitos como "1500000 clientes" o corridas mas largas.
 const PHONE_PATTERN =
-  /(?:\+\d{1,3}[\s.-]?)?(?:\(\d{2,4}\)|\d{2,4})[\s.-]\d{3,4}(?:[\s.-]\d{2,4})?/;
+  /(?:\+\d{1,3}[\s.-]?)?(?:\(\d{2,4}\)|\d{2,4})[\s.-]\d{3,4}(?:[\s.-]\d{2,4})?|\b\d{8}\b/;
 // Direccion: palabras fuertes por si solas, o palabras debiles seguidas de un
 // numero (asi "comida local" no cuenta como direccion, pero "local 5" si).
 const ADDRESS_STRONG = /\b(calle|avenida|av\.|boulevard|blvd|carretera|colonia|edificio|street)\b/i;

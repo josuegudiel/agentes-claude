@@ -36,10 +36,11 @@ export function runOnpageChecks(input: OnpageInput): CheckResult[] {
 
 function noindexCheck(site: ParsedSite): CheckResult {
   const robots = site.robotsMeta?.toLowerCase() ?? '';
-  // Parsear directivas separadas por comas y comparar tokens EXACTOS. Un
-  // token "none" o "noindex" bloquea; pero "max-image-preview:none" (patron
-  // habitual e indexable) NO debe contar: 'none' ahi es sub-token, no directiva.
-  const directives = robots.split(',').map((d) => d.trim());
+  // Tokenizar por coma, punto y coma o espacios (los tres separadores que se
+  // ven en la practica: "noindex,nofollow", "noindex; nofollow",
+  // "noindex nofollow"). Se comparan tokens EXACTOS: "max-image-preview:none"
+  // (indexable) NO cuenta, porque 'none' ahi es sub-token, no directiva.
+  const directives = robots.split(/[,;\s]+/).filter(Boolean);
   const blocked = directives.some((d) => d === 'noindex' || d === 'none');
   return {
     id: 'onpage.noindex',

@@ -31,7 +31,12 @@ export interface GeoAuditOptions {
   /** Inyectable para tests; default TavilyClient si hay API key. */
   tavily?: TavilyClient | null;
   onEvent?: (event: AuditEvent) => void;
-  /** Aborta la auditoria (fetch/Tavily/LLM) si el cliente desconecta. */
+  /**
+   * Aborta la auditoria si el cliente desconecta. Corta el fetch del sitio y
+   * las busquedas de Tavily en vuelo, y se comprueba entre fases. La llamada
+   * final al LLM (resumen, la fase mas corta) no se cancela a mitad, pero se
+   * omite si el abort llega antes de iniciarla.
+   */
   signal?: AbortSignal;
 }
 
@@ -193,9 +198,10 @@ async function runPresencePhase(
 
   emit({ type: 'phase', phase: 'presence', status: 'running' });
   try {
+    const searchOpts = opts.signal ? { signal: opts.signal } : undefined;
     const [general, reviews] = await Promise.all([
-      tavily.search(`"${req.businessName}" ${req.city}`),
-      tavily.search(`${req.businessName} ${req.city} opiniones reseñas`),
+      tavily.search(`"${req.businessName}" ${req.city}`, searchOpts),
+      tavily.search(`${req.businessName} ${req.city} opiniones reseñas`, searchOpts),
     ]);
     const results = dedupeByUrl([...general.results, ...reviews.results]);
     emitChecks(
