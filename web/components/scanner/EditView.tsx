@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { detectDocumentQuad, DETECT_MAX_SIDE } from './edge-detect';
 import { FILTERS, type FilterId } from './filters';
 import { renderEdited, type EditState } from './pipeline';
 import {
@@ -68,12 +69,36 @@ export function EditView({ image, onConfirm, onBack }: Props): React.ReactElemen
     return () => window.removeEventListener('resize', onResize);
   }, []);
 
+  // Deteccion automatica de bordes al montar y al rotar. Corre sobre una
+  // version reducida (<=256px) de la imagen rotada — es O(n) y a ese
+  // tamano tarda ~1ms. Si no encuentra un quad confiable, deja el margen
+  // sugerido y el usuario ajusta a mano.
+  const [autoDetected, setAutoDetected] = useState<boolean | null>(null);
+  useEffect(() => {
+    const detected = detectQuadForImage(image, rotation);
+    if (detected) {
+      setQuad(detected);
+      setAutoDetected(true);
+    } else {
+      setQuad(cloneQuad(INSET_QUAD));
+      setAutoDetected(false);
+    }
+  }, [image, rotation]);
+
   const handleRotate = useCallback(() => {
+    // El effect de deteccion re-posiciona el quad para la nueva rotacion.
     setRotation((r) => (r + 90) % 360);
-    // Las coordenadas del quad son relativas a la imagen rotada; tras
-    // rotar dejan de corresponder al documento. Reset al margen sugerido.
-    setQuad(cloneQuad(INSET_QUAD));
   }, []);
+
+  const handleDetect = useCallback(() => {
+    const detected = detectQuadForImage(image, rotation);
+    if (detected) {
+      setQuad(detected);
+      setAutoDetected(true);
+    } else {
+      setAutoDetected(false);
+    }
+  }, [image, rotation]);
 
   const handleResetQuad = useCallback(() => {
     setQuad(cloneQuad(FULL_QUAD));
@@ -156,9 +181,11 @@ export function EditView({ image, onConfirm, onBack }: Props): React.ReactElemen
       </div>
 
       <p className="text-xs text-ink-500">
-        Arrastra las 4 esquinas hasta los bordes del documento. Si el quad no
-        es rectangular, se endereza automaticamente (correccion de
-        perspectiva).
+        {autoDetected
+          ? 'Bordes detectados automaticamente — ajusta las esquinas si hace falta.'
+          : 'Arrastra las 4 esquinas hasta los bordes del documento.'}{' '}
+        Si el quad no es rectangular, se endereza automaticamente (correccion
+        de perspectiva).
       </p>
 
       {/* Controles */}
@@ -169,6 +196,13 @@ export function EditView({ image, onConfirm, onBack }: Props): React.ReactElemen
           className="rounded-md border border-ink-700 bg-ink-800 px-3 py-2 text-sm hover:bg-ink-700"
         >
           Rotar 90deg
+        </button>
+        <button
+          type="button"
+          onClick={handleDetect}
+          className="rounded-md border border-ink-700 bg-ink-800 px-3 py-2 text-sm hover:bg-ink-700"
+        >
+          Detectar bordes
         </button>
         <button
           type="button"
@@ -234,6 +268,46 @@ const CORNER_LABELS = ['esquina superior izquierda', 'esquina superior derecha',
 
 function clamp01(v: number): number {
   return v < 0 ? 0 : v > 1 ? 1 : v;
+}
+
+/**
+ * Dibuja la imagen rotada a tamano reducido (<=DETECT_MAX_SIDE) y corre la
+ * deteccion de bordes. Devuelve el quad en coordenadas normalizadas (que
+ * son invariantes al escalado, asi que valen directo sobre la imagen
+ * rotada a resolucion completa) o null.
+ */
+function detectQuadForImage(image: HTMLImageElement, rotation: number): Quad | null {
+  const srcW = image.naturalWidth;
+  const srcH = image.naturalHeight;
+  if (!srcW || !srcH) return null;
+
+  const rot = ((rotation % 360) + 360) % 360;
+  const swapped = rot === 90 || rot === 270;
+  const rotW = swapped ? srcH : srcW;
+  const rotH = swapped ? srcW : srcH;
+
+  const scale = Math.min(1, DETECT_MAX_SIDE / Math.max(rotW, rotH));
+  const w = Math.max(1, Math.round(rotW * scale));
+  const h = Math.max(1, Math.round(rotH * scale));
+
+  const c = document.createElement('canvas');
+  c.width = w;
+  c.height = h;
+  const ctx = c.getContext('2d');
+  if (!ctx) return null;
+
+  ctx.save();
+  ctx.translate(w / 2, h / 2);
+  ctx.rotate((rot * Math.PI) / 180);
+  ctx.drawImage(image, (-srcW * scale) / 2, (-srcH * scale) / 2, srcW * scale, srcH * scale);
+  ctx.restore();
+
+  try {
+    return detectDocumentQuad(ctx.getImageData(0, 0, w, h));
+  } catch {
+    // getImageData puede lanzar con imagenes cross-origin "tainted".
+    return null;
+  }
 }
 
 /**
