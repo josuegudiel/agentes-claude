@@ -2,11 +2,14 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { FILTERS, type FilterId } from './filters';
+import { renderEdited, type EditState } from './pipeline';
 import {
-  renderEdited,
-  type Crop,
-  type EditState,
-} from './pipeline';
+  cloneQuad,
+  FULL_QUAD,
+  INSET_QUAD,
+  type Point,
+  type Quad,
+} from './perspective';
 
 interface Props {
   image: HTMLImageElement;
@@ -14,26 +17,26 @@ interface Props {
   onBack: () => void;
 }
 
-type Corner = 'tl' | 'tr' | 'br' | 'bl';
-
 /**
- * Editor: rotacion, crop con 4 handles, y filtros. El render es derivado:
- * cada cambio re-deriva el canvas final desde la imagen original via
- * `renderEdited`, asi nunca acumulamos perdida de calidad al toggle de
- * filtros.
+ * Editor: rotacion, seleccion de 4 esquinas independientes (como
+ * CamScanner) y filtros. El render es derivado: cada cambio re-deriva el
+ * canvas final desde la imagen original via `renderEdited`, asi nunca
+ * acumulamos perdida de calidad al toggle de filtros.
  *
- * El crop se almacena en coordenadas normalizadas (0..1) sobre la imagen
- * rotada — asi no se rompe al rotar mientras hay crop activo.
+ * Las esquinas se almacenan en coordenadas normalizadas (0..1) sobre la
+ * imagen rotada. Si el quad no es un rectangulo alineado, al confirmar se
+ * aplica correccion de perspectiva (warp) que "aplana" el documento.
  */
 export function EditView({ image, onConfirm, onBack }: Props): React.ReactElement {
   const [rotation, setRotation] = useState(0);
   const [filter, setFilter] = useState<FilterId>('magic');
-  const [crop, setCrop] = useState<Crop | null>({ x: 0.05, y: 0.05, width: 0.9, height: 0.9 });
+  const [quad, setQuad] = useState<Quad>(() => cloneQuad(INSET_QUAD));
   const [previewKey, setPreviewKey] = useState(0);
+  const [confirming, setConfirming] = useState(false);
 
-  // Canvas para mostrar la vista rotada+filtrada (sin el crop aplicado —
-  // dibujamos el crop como overlay encima). Tener el preview SIN crop nos
-  // permite ajustar los handles sobre la imagen completa.
+  // Canvas para mostrar la vista rotada+filtrada (sin el quad aplicado —
+  // dibujamos el quad como overlay encima). Tener el preview SIN warp nos
+  // permite ajustar las esquinas sobre la imagen completa.
   const previewRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [previewSize, setPreviewSize] = useState({ w: 0, h: 0 });
@@ -42,7 +45,7 @@ export function EditView({ image, onConfirm, onBack }: Props): React.ReactElemen
   useEffect(() => {
     const c = previewRef.current;
     if (!c) return;
-    const state: EditState = { rotation, filter, crop: null };
+    const state: EditState = { rotation, filter, quad: null };
     const out = renderEdited(image, state);
 
     // Escalamos el canvas mostrado al ancho disponible — el canvas real
@@ -67,24 +70,24 @@ export function EditView({ image, onConfirm, onBack }: Props): React.ReactElemen
 
   const handleRotate = useCallback(() => {
     setRotation((r) => (r + 90) % 360);
-    // Al rotar, mantenemos el crop normalizado pero "rotado" — para no
-    // confundir al usuario, lo reseteamos a un margen razonable.
-    setCrop({ x: 0.05, y: 0.05, width: 0.9, height: 0.9 });
+    // Las coordenadas del quad son relativas a la imagen rotada; tras
+    // rotar dejan de corresponder al documento. Reset al margen sugerido.
+    setQuad(cloneQuad(INSET_QUAD));
   }, []);
 
-  const handleResetCrop = useCallback(() => {
-    setCrop({ x: 0, y: 0, width: 1, height: 1 });
+  const handleResetQuad = useCallback(() => {
+    setQuad(cloneQuad(FULL_QUAD));
   }, []);
 
-  const handleAutoCrop = useCallback(() => {
-    setCrop({ x: 0.05, y: 0.05, width: 0.9, height: 0.9 });
+  const handleSuggestQuad = useCallback(() => {
+    setQuad(cloneQuad(INSET_QUAD));
   }, []);
 
-  // --- Drag de handles -----------------------------------------------------
-  const draggingRef = useRef<{ corner: Corner; rect: DOMRect } | null>(null);
+  // --- Drag de esquinas ----------------------------------------------------
+  const draggingRef = useRef<{ corner: number; rect: DOMRect } | null>(null);
 
   const onPointerDown = useCallback(
-    (corner: Corner) => (e: React.PointerEvent<HTMLDivElement>) => {
+    (corner: number) => (e: React.PointerEvent<HTMLDivElement>) => {
       e.preventDefault();
       const overlay = e.currentTarget.parentElement;
       if (!overlay) return;
@@ -97,49 +100,35 @@ export function EditView({ image, onConfirm, onBack }: Props): React.ReactElemen
 
   const onPointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     const drag = draggingRef.current;
-    if (!drag || !crop) return;
+    if (!drag) return;
     const { corner, rect } = drag;
     const x = clamp01((e.clientX - rect.left) / rect.width);
     const y = clamp01((e.clientY - rect.top) / rect.height);
-
-    let { x: cx, y: cy, width: cw, height: ch } = crop;
-    const right = cx + cw;
-    const bottom = cy + ch;
-
-    switch (corner) {
-      case 'tl':
-        cw = Math.max(0.05, right - x);
-        ch = Math.max(0.05, bottom - y);
-        cx = right - cw;
-        cy = bottom - ch;
-        break;
-      case 'tr':
-        cw = Math.max(0.05, x - cx);
-        ch = Math.max(0.05, bottom - y);
-        cy = bottom - ch;
-        break;
-      case 'br':
-        cw = Math.max(0.05, x - cx);
-        ch = Math.max(0.05, y - cy);
-        break;
-      case 'bl':
-        cw = Math.max(0.05, right - x);
-        ch = Math.max(0.05, y - cy);
-        cx = right - cw;
-        break;
-    }
-    setCrop({ x: cx, y: cy, width: cw, height: ch });
-  }, [crop]);
+    setQuad((prev) => {
+      const next = cloneQuad(prev);
+      next[corner] = { x, y };
+      return next;
+    });
+  }, []);
 
   const onPointerUp = useCallback(() => {
     draggingRef.current = null;
   }, []);
 
   const handleConfirm = useCallback(() => {
-    const state: EditState = { rotation, filter, crop };
-    const final = renderEdited(image, state);
-    onConfirm(final, state);
-  }, [image, rotation, filter, crop, onConfirm]);
+    // El warp sobre una imagen grande puede tomar unos cientos de ms —
+    // deshabilitamos el boton y dejamos que el browser pinte antes.
+    setConfirming(true);
+    requestAnimationFrame(() => {
+      try {
+        const state: EditState = { rotation, filter, quad };
+        const final = renderEdited(image, state);
+        onConfirm(final, state);
+      } finally {
+        setConfirming(false);
+      }
+    });
+  }, [image, rotation, filter, quad, onConfirm]);
 
   return (
     <div className="flex flex-col gap-4">
@@ -150,41 +139,27 @@ export function EditView({ image, onConfirm, onBack }: Props): React.ReactElemen
       >
         <canvas ref={previewRef} className="block max-w-full" />
 
-        {/* Crop overlay */}
-        {crop && previewSize.w > 0 && (
+        {/* Overlay del quad */}
+        {previewSize.w > 0 && (
           <div
             className="absolute inset-0"
             onPointerMove={onPointerMove}
             onPointerUp={onPointerUp}
             onPointerCancel={onPointerUp}
           >
-            {/* Mascara: oscurecemos lo que esta fuera del crop. Usamos 4
-                divs en vez de un SVG con clip-path porque es mas barato y
-                respeta el aspect ratio del canvas escalado. */}
-            <Mask crop={crop} size={previewSize} />
-
-            {/* Marco del crop */}
-            <div
-              className="pointer-events-none absolute border-2 border-emerald-400"
-              style={{
-                left: `${crop.x * 100}%`,
-                top: `${crop.y * 100}%`,
-                width: `${crop.width * 100}%`,
-                height: `${crop.height * 100}%`,
-              }}
-            />
-
-            {(['tl', 'tr', 'bl', 'br'] as const).map((c) => (
-              <Handle
-                key={c}
-                corner={c}
-                crop={crop}
-                onDown={onPointerDown(c)}
-              />
+            <QuadOverlay quad={quad} />
+            {quad.map((p, i) => (
+              <Handle key={i} point={p} onDown={onPointerDown(i)} label={CORNER_LABELS[i]!} />
             ))}
           </div>
         )}
       </div>
+
+      <p className="text-xs text-ink-500">
+        Arrastra las 4 esquinas hasta los bordes del documento. Si el quad no
+        es rectangular, se endereza automaticamente (correccion de
+        perspectiva).
+      </p>
 
       {/* Controles */}
       <div className="flex flex-wrap items-center gap-2">
@@ -197,17 +172,17 @@ export function EditView({ image, onConfirm, onBack }: Props): React.ReactElemen
         </button>
         <button
           type="button"
-          onClick={handleAutoCrop}
+          onClick={handleSuggestQuad}
           className="rounded-md border border-ink-700 bg-ink-800 px-3 py-2 text-sm hover:bg-ink-700"
         >
           Crop sugerido
         </button>
         <button
           type="button"
-          onClick={handleResetCrop}
+          onClick={handleResetQuad}
           className="rounded-md border border-ink-700 bg-ink-800 px-3 py-2 text-sm hover:bg-ink-700"
         >
-          Sin crop
+          Pagina completa
         </button>
       </div>
 
@@ -245,109 +220,76 @@ export function EditView({ image, onConfirm, onBack }: Props): React.ReactElemen
         <button
           type="button"
           onClick={handleConfirm}
-          className="rounded-md bg-emerald-500 px-5 py-2 text-sm font-semibold text-emerald-950 hover:bg-emerald-400"
+          disabled={confirming}
+          className="rounded-md bg-emerald-500 px-5 py-2 text-sm font-semibold text-emerald-950 hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-60"
         >
-          Aplicar y continuar
+          {confirming ? 'Procesando...' : 'Aplicar y continuar'}
         </button>
       </div>
     </div>
   );
 }
 
+const CORNER_LABELS = ['esquina superior izquierda', 'esquina superior derecha', 'esquina inferior derecha', 'esquina inferior izquierda'];
+
 function clamp01(v: number): number {
   return v < 0 ? 0 : v > 1 ? 1 : v;
 }
 
-function Mask({
-  crop,
-  size,
-}: {
-  crop: Crop;
-  size: { w: number; h: number };
-}): React.ReactElement {
-  void size;
-  // 4 rectangulos alrededor del crop. Usamos rgba con pointer-events:none
-  // para no robar drag a los handles.
-  const bg = 'rgba(0,0,0,0.55)';
+/**
+ * Mascara + contorno del quad en un solo SVG. La mascara usa fill-rule
+ * evenodd: rect exterior + poligono interior = solo lo de afuera queda
+ * oscurecido. viewBox 0-100 con preserveAspectRatio none para que las
+ * coordenadas normalizadas mapeen directo a porcentajes.
+ */
+function QuadOverlay({ quad }: { quad: Quad }): React.ReactElement {
+  const pts = quad.map((p) => `${p.x * 100},${p.y * 100}`).join(' ');
+  const innerPath = quad
+    .map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x * 100} ${p.y * 100}`)
+    .join(' ');
   return (
-    <>
-      <div
-        className="pointer-events-none absolute"
-        style={{ background: bg, left: 0, top: 0, right: 0, height: `${crop.y * 100}%` }}
+    <svg
+      className="pointer-events-none absolute inset-0 h-full w-full"
+      viewBox="0 0 100 100"
+      preserveAspectRatio="none"
+      aria-hidden
+    >
+      <path
+        d={`M0 0 H100 V100 H0 Z ${innerPath} Z`}
+        fillRule="evenodd"
+        fill="rgba(0,0,0,0.55)"
       />
-      <div
-        className="pointer-events-none absolute"
-        style={{
-          background: bg,
-          left: 0,
-          top: `${crop.y * 100}%`,
-          width: `${crop.x * 100}%`,
-          height: `${crop.height * 100}%`,
-        }}
+      <polygon
+        points={pts}
+        fill="none"
+        stroke="#34d399"
+        strokeWidth="0.6"
+        vectorEffect="non-scaling-stroke"
       />
-      <div
-        className="pointer-events-none absolute"
-        style={{
-          background: bg,
-          left: `${(crop.x + crop.width) * 100}%`,
-          top: `${crop.y * 100}%`,
-          right: 0,
-          height: `${crop.height * 100}%`,
-        }}
-      />
-      <div
-        className="pointer-events-none absolute"
-        style={{
-          background: bg,
-          left: 0,
-          top: `${(crop.y + crop.height) * 100}%`,
-          right: 0,
-          bottom: 0,
-        }}
-      />
-    </>
+    </svg>
   );
 }
 
 function Handle({
-  corner,
-  crop,
+  point,
   onDown,
+  label,
 }: {
-  corner: Corner;
-  crop: Crop;
+  point: Point;
   onDown: (e: React.PointerEvent<HTMLDivElement>) => void;
+  label: string;
 }): React.ReactElement {
-  const positions: Record<Corner, { left: string; top: string; cursor: string }> = {
-    tl: {
-      left: `${crop.x * 100}%`,
-      top: `${crop.y * 100}%`,
-      cursor: 'nwse-resize',
-    },
-    tr: {
-      left: `${(crop.x + crop.width) * 100}%`,
-      top: `${crop.y * 100}%`,
-      cursor: 'nesw-resize',
-    },
-    br: {
-      left: `${(crop.x + crop.width) * 100}%`,
-      top: `${(crop.y + crop.height) * 100}%`,
-      cursor: 'nwse-resize',
-    },
-    bl: {
-      left: `${crop.x * 100}%`,
-      top: `${(crop.y + crop.height) * 100}%`,
-      cursor: 'nesw-resize',
-    },
-  };
-  const p = positions[corner];
   return (
     <div
       role="slider"
-      aria-label={`Handle ${corner}`}
+      aria-label={label}
       onPointerDown={onDown}
-      className="absolute h-6 w-6 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white bg-emerald-500 shadow-md"
-      style={{ left: p.left, top: p.top, cursor: p.cursor, touchAction: 'none' }}
+      className="absolute h-7 w-7 -translate-x-1/2 -translate-y-1/2 cursor-move rounded-full border-2 border-white bg-emerald-500 shadow-md"
+      style={{
+        left: `${point.x * 100}%`,
+        top: `${point.y * 100}%`,
+        touchAction: 'none',
+      }}
     />
   );
 }

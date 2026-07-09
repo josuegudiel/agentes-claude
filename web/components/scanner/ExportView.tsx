@@ -16,6 +16,7 @@ interface Props {
   pages: Page[];
   onAddPage: () => void;
   onRemovePage: (index: number) => void;
+  onMovePage: (index: number, delta: -1 | 1) => void;
   onRestart: () => void;
 }
 
@@ -25,7 +26,7 @@ const FORMATS: { id: ExportFormat; label: string; hint: string }[] = [
   { id: 'png', label: 'PNG', hint: 'Imagen sin perdida' },
 ];
 
-export function ExportView({ pages, onAddPage, onRemovePage, onRestart }: Props): React.ReactElement {
+export function ExportView({ pages, onAddPage, onRemovePage, onMovePage, onRestart }: Props): React.ReactElement {
   const [format, setFormat] = useState<ExportFormat>('pdf');
   const [filename, setFilename] = useState<string>('escaneo');
   const [exporting, setExporting] = useState(false);
@@ -85,6 +86,28 @@ export function ExportView({ pages, onAddPage, onRemovePage, onRestart }: Props)
                 >
                   X
                 </button>
+              )}
+              {pages.length > 1 && (
+                <div className="absolute inset-x-0 bottom-0 flex justify-between bg-black/60 px-1 py-0.5">
+                  <button
+                    type="button"
+                    aria-label={`Mover pagina ${i + 1} a la izquierda`}
+                    onClick={() => onMovePage(i, -1)}
+                    disabled={i === 0}
+                    className="px-1 text-xs text-white disabled:opacity-30"
+                  >
+                    {'<'}
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={`Mover pagina ${i + 1} a la derecha`}
+                    onClick={() => onMovePage(i, 1)}
+                    disabled={i === pages.length - 1}
+                    className="px-1 text-xs text-white disabled:opacity-30"
+                  >
+                    {'>'}
+                  </button>
+                </div>
               )}
             </div>
           ))}

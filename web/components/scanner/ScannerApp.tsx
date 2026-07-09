@@ -57,6 +57,17 @@ export function ScannerApp(): React.ReactElement {
     setPages((prev) => prev.filter((_, i) => i !== index));
   }, []);
 
+  const handleMovePage = useCallback((index: number, delta: -1 | 1) => {
+    setPages((prev) => {
+      const target = index + delta;
+      if (target < 0 || target >= prev.length) return prev;
+      const next = [...prev];
+      const [moved] = next.splice(index, 1);
+      next.splice(target, 0, moved!);
+      return next;
+    });
+  }, []);
+
   const handleRestart = useCallback(() => {
     setPages([]);
     setPendingImage(null);
@@ -97,6 +108,7 @@ export function ScannerApp(): React.ReactElement {
           pages={pages}
           onAddPage={handleAddPage}
           onRemovePage={handleRemovePage}
+          onMovePage={handleMovePage}
           onRestart={handleRestart}
         />
       )}
