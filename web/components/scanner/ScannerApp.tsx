@@ -26,12 +26,21 @@ interface Page {
  * Las paginas se persisten en IndexedDB: al recargar la pestana se
  * restauran y la app arranca directo en la vista de export.
  */
+interface PendingImage {
+  id: number;
+  img: HTMLImageElement;
+}
+
 export function ScannerApp(): React.ReactElement {
   const [stage, setStage] = useState<Stage>('capture');
-  const [pendingImage, setPendingImage] = useState<HTMLImageElement | null>(null);
+  // Cola de imagenes por editar (>1 cuando el usuario capturo en rafaga o
+  // subio varios archivos). Se editan una a una, en orden.
+  const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
+  const [pendingTotal, setPendingTotal] = useState(0);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [pages, setPages] = useState<Page[]>([]);
   const [restoredCount, setRestoredCount] = useState(0);
+  const nextIdRef = useRef(1);
 
   // hydrated evita que el effect de persistencia escriba [] en IndexedDB
   // antes de que la restauracion inicial termine (borraria la sesion).
@@ -86,11 +95,17 @@ export function ScannerApp(): React.ReactElement {
     };
   }, [pages]);
 
-  const handleCapture = useCallback(async (file: File) => {
+  const handleCapture = useCallback(async (files: File[]) => {
     setLoadError(null);
     try {
-      const img = await loadImageFromFile(file);
-      setPendingImage(img);
+      const loaded: PendingImage[] = [];
+      for (const file of files) {
+        const img = await loadImageFromFile(file);
+        loaded.push({ id: nextIdRef.current++, img });
+      }
+      if (loaded.length === 0) return;
+      setPendingImages(loaded);
+      setPendingTotal(loaded.length);
       setStage('edit');
     } catch (err) {
       setLoadError(err instanceof Error ? err.message : String(err));
@@ -101,11 +116,20 @@ export function ScannerApp(): React.ReactElement {
     (canvas: HTMLCanvasElement) => {
       const thumb = canvas.toDataURL('image/jpeg', 0.6);
       setPages((prev) => [...prev, { canvas, thumb }]);
-      setPendingImage(null);
-      setStage('export');
+      // Avanza la cola; el effect de abajo decide a que stage ir cuando
+      // se vacia.
+      setPendingImages((prev) => prev.slice(1));
     },
     [],
   );
+
+  // Cuando la cola de edicion se vacia, pasa a export (o a capture si no
+  // hay ninguna pagina — p.ej. el usuario cancelo la unica edicion).
+  useEffect(() => {
+    if (stage !== 'edit' || pendingImages.length > 0) return;
+    setStage(pages.length > 0 ? 'export' : 'capture');
+    setPendingTotal(0);
+  }, [stage, pendingImages, pages.length]);
 
   const handleAddPage = useCallback(() => {
     setStage('capture');
@@ -128,7 +152,8 @@ export function ScannerApp(): React.ReactElement {
 
   const handleRestart = useCallback(() => {
     setPages([]);
-    setPendingImage(null);
+    setPendingImages([]);
+    setPendingTotal(0);
     setLoadError(null);
     setRestoredCount(0);
     setStage('capture');
@@ -167,15 +192,27 @@ export function ScannerApp(): React.ReactElement {
         />
       )}
 
-      {stage === 'edit' && pendingImage && (
-        <EditView
-          image={pendingImage}
-          onConfirm={handleConfirm}
-          onBack={() => {
-            setPendingImage(null);
-            setStage(pages.length > 0 ? 'export' : 'capture');
-          }}
-        />
+      {stage === 'edit' && pendingImages.length > 0 && (
+        <>
+          {pendingTotal > 1 && (
+            <p className="text-xs font-semibold text-ink-400">
+              Editando pagina {pendingTotal - pendingImages.length + 1} de {pendingTotal}
+            </p>
+          )}
+          <EditView
+            // key fuerza el reset del estado del editor (quad, filtro,
+            // rotacion) al pasar a la siguiente imagen de la cola.
+            key={pendingImages[0]!.id}
+            image={pendingImages[0]!.img}
+            onConfirm={handleConfirm}
+            onBack={() => {
+              // Descarta la cola completa.
+              setPendingImages([]);
+              setPendingTotal(0);
+              setStage(pages.length > 0 ? 'export' : 'capture');
+            }}
+          />
+        </>
       )}
 
       {stage === 'export' && (

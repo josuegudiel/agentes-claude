@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { detectDocumentQuad, DETECT_MAX_SIDE } from './edge-detect';
 import { FILTERS, type FilterId } from './filters';
+import { loupePlacement, loupeRects } from './loupe';
 import { renderEdited, type EditState } from './pipeline';
 import {
   cloneQuad,
@@ -110,6 +111,8 @@ export function EditView({ image, onConfirm, onBack }: Props): React.ReactElemen
 
   // --- Drag de esquinas ----------------------------------------------------
   const draggingRef = useRef<{ corner: number; rect: DOMRect } | null>(null);
+  // Esquina activa como estado (no solo ref): dispara el render de la lupa.
+  const [dragCorner, setDragCorner] = useState<number | null>(null);
 
   const onPointerDown = useCallback(
     (corner: number) => (e: React.PointerEvent<HTMLDivElement>) => {
@@ -118,6 +121,7 @@ export function EditView({ image, onConfirm, onBack }: Props): React.ReactElemen
       if (!overlay) return;
       const rect = overlay.getBoundingClientRect();
       draggingRef.current = { corner, rect };
+      setDragCorner(corner);
       (e.target as HTMLElement).setPointerCapture(e.pointerId);
     },
     [],
@@ -138,7 +142,46 @@ export function EditView({ image, onConfirm, onBack }: Props): React.ReactElemen
 
   const onPointerUp = useCallback(() => {
     draggingRef.current = null;
+    setDragCorner(null);
   }, []);
+
+  // --- Lupa de precision ----------------------------------------------------
+  // Mientras se arrastra una esquina, muestra la zona bajo el dedo ampliada
+  // con una cruz en el punto exacto. Se dibuja desde el canvas de preview
+  // (ya filtrado y escalado), asi que es barata: un drawImage por move.
+  const loupeRef = useRef<HTMLCanvasElement>(null);
+  useEffect(() => {
+    if (dragCorner === null) return;
+    const loupe = loupeRef.current;
+    const preview = previewRef.current;
+    if (!loupe || !preview) return;
+    const ctx = loupe.getContext('2d');
+    if (!ctx) return;
+
+    const p = quad[dragCorner]!;
+    const cx = p.x * preview.width;
+    const cy = p.y * preview.height;
+
+    loupe.width = LOUPE_SIZE;
+    loupe.height = LOUPE_SIZE;
+    ctx.fillStyle = '#020617';
+    ctx.fillRect(0, 0, LOUPE_SIZE, LOUPE_SIZE);
+
+    const r = loupeRects(cx, cy, preview.width, preview.height, LOUPE_SIZE, LOUPE_ZOOM);
+    if (r.sw > 0 && r.sh > 0) {
+      ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(preview, r.sx, r.sy, r.sw, r.sh, r.dx, r.dy, r.dw, r.dh);
+    }
+
+    ctx.strokeStyle = 'rgba(52,211,153,0.9)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(LOUPE_SIZE / 2, 0);
+    ctx.lineTo(LOUPE_SIZE / 2, LOUPE_SIZE);
+    ctx.moveTo(0, LOUPE_SIZE / 2);
+    ctx.lineTo(LOUPE_SIZE, LOUPE_SIZE / 2);
+    ctx.stroke();
+  }, [dragCorner, quad]);
 
   const handleConfirm = useCallback(() => {
     // El warp sobre una imagen grande puede tomar unos cientos de ms —
@@ -176,6 +219,20 @@ export function EditView({ image, onConfirm, onBack }: Props): React.ReactElemen
             {quad.map((p, i) => (
               <Handle key={i} point={p} onDown={onPointerDown(i)} label={CORNER_LABELS[i]!} />
             ))}
+          </div>
+        )}
+
+        {/* Lupa: visible solo mientras se arrastra una esquina. Se coloca
+            del lado contrario a la esquina para que el dedo no la tape. */}
+        {dragCorner !== null && (
+          <div
+            className={`pointer-events-none absolute top-2 overflow-hidden rounded-full border-2 border-emerald-400 shadow-lg ${
+              loupePlacement(quad[dragCorner]!.x) === 'right' ? 'right-2' : 'left-2'
+            }`}
+            style={{ width: LOUPE_SIZE, height: LOUPE_SIZE }}
+            aria-hidden
+          >
+            <canvas ref={loupeRef} className="block" />
           </div>
         )}
       </div>
@@ -265,6 +322,9 @@ export function EditView({ image, onConfirm, onBack }: Props): React.ReactElemen
 }
 
 const CORNER_LABELS = ['esquina superior izquierda', 'esquina superior derecha', 'esquina inferior derecha', 'esquina inferior izquierda'];
+
+const LOUPE_SIZE = 112;
+const LOUPE_ZOOM = 3;
 
 function clamp01(v: number): number {
   return v < 0 ? 0 : v > 1 ? 1 : v;
