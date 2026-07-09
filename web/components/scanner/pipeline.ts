@@ -1,8 +1,14 @@
 import { applyFilter, type FilterId } from './filters';
+import {
+  isAxisAlignedRect,
+  warpPerspective,
+  type Quad,
+} from './perspective';
 
 /**
- * Pipeline canonico de procesamiento: imagen original -> rotacion -> crop ->
- * filtro -> ImageBitmap final que se renderiza y se exporta.
+ * Pipeline canonico de procesamiento: imagen original -> rotacion ->
+ * correccion de perspectiva (quad de 4 esquinas) -> filtro -> canvas final
+ * que se renderiza y se exporta.
  *
  * Mantenemos un solo source-of-truth (la imagen original, en HTMLImageElement)
  * y un objeto `EditState` con los parametros. Re-renderizamos derivando
@@ -10,25 +16,22 @@ import { applyFilter, type FilterId } from './filters';
  * volver a color".
  */
 
-export interface Crop {
-  /** Coordenadas normalizadas 0..1 sobre la imagen rotada. */
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}
-
 export interface EditState {
   /** 0, 90, 180, 270. */
   rotation: number;
-  /** Crop opcional. Si es null, exportamos la imagen completa. */
-  crop: Crop | null;
+  /**
+   * 4 esquinas del documento en coordenadas normalizadas 0..1 sobre la
+   * imagen rotada (orden tl, tr, br, bl). null = imagen completa.
+   * Si el quad es un rectangulo alineado se hace crop directo; si no,
+   * warp de perspectiva.
+   */
+  quad: Quad | null;
   filter: FilterId;
 }
 
 export const DEFAULT_EDIT: EditState = {
   rotation: 0,
-  crop: null,
+  quad: null,
   filter: 'original',
 };
 
@@ -58,15 +61,8 @@ export function renderEdited(
   const rotW = swapped ? srcH : srcW;
   const rotH = swapped ? srcW : srcH;
 
-  // Crop (en pixeles, post-rotacion).
-  const crop = state.crop ?? { x: 0, y: 0, width: 1, height: 1 };
-  const cx = Math.max(0, Math.round(crop.x * rotW));
-  const cy = Math.max(0, Math.round(crop.y * rotH));
-  const cw = Math.max(1, Math.round(crop.width * rotW));
-  const ch = Math.max(1, Math.round(crop.height * rotH));
-
-  // Canvas intermedio del tamano rotado para poder leer ImageData crudo del
-  // recorte (mas simple que truquear transforms sobre el output final).
+  // Canvas intermedio del tamano rotado para poder leer ImageData crudo
+  // (mas simple que truquear transforms sobre el output final).
   const inter = document.createElement('canvas');
   inter.width = rotW;
   inter.height = rotH;
@@ -79,23 +75,80 @@ export function renderEdited(
   ictx.drawImage(source, -srcW / 2, -srcH / 2, srcW, srcH);
   ictx.restore();
 
+  const processed = extractQuad(ictx, rotW, rotH, state.quad);
+  const filtered = applyFilter(processed, state.filter);
+
   const out = document.createElement('canvas');
-  out.width = cw;
-  out.height = ch;
+  out.width = filtered.width;
+  out.height = filtered.height;
   const octx = out.getContext('2d');
   if (!octx) throw new Error('canvas 2d no disponible');
-
-  const cropped = ictx.getImageData(cx, cy, cw, ch);
-  const filtered = applyFilter(cropped, state.filter);
   octx.putImageData(filtered, 0, 0);
   return out;
 }
 
 /**
+ * Extrae la region del quad como ImageData listo para filtrar.
+ *
+ *   - quad null: la imagen rotada completa.
+ *   - quad rectangular alineado: getImageData directo (fast path, sin warp).
+ *   - quad arbitrario: warp de perspectiva. Si el warp falla (quad
+ *     degenerado, esquinas colineales) caemos a crop del bounding box —
+ *     mejor un crop imperfecto que una excepcion en la cara del usuario.
+ */
+function extractQuad(
+  ictx: CanvasRenderingContext2D,
+  rotW: number,
+  rotH: number,
+  quad: Quad | null,
+): ImageData {
+  if (!quad) return ictx.getImageData(0, 0, rotW, rotH);
+
+  const quadPx: Quad = [
+    { x: quad[0].x * rotW, y: quad[0].y * rotH },
+    { x: quad[1].x * rotW, y: quad[1].y * rotH },
+    { x: quad[2].x * rotW, y: quad[2].y * rotH },
+    { x: quad[3].x * rotW, y: quad[3].y * rotH },
+  ];
+
+  if (isAxisAlignedRect(quad)) {
+    return cropBoundingBox(ictx, rotW, rotH, quadPx);
+  }
+
+  const full = ictx.getImageData(0, 0, rotW, rotH);
+  const warped = warpPerspective(full, quadPx);
+  if (!warped) return cropBoundingBox(ictx, rotW, rotH, quadPx);
+
+  // Copiamos al buffer del ImageData en vez de pasarlo al constructor:
+  // el constructor exige Uint8ClampedArray<ArrayBuffer> estricto y el
+  // buffer del warp esta tipado como ArrayBufferLike.
+  const img = new ImageData(warped.width, warped.height);
+  img.data.set(warped.data);
+  return img;
+}
+
+function cropBoundingBox(
+  ictx: CanvasRenderingContext2D,
+  rotW: number,
+  rotH: number,
+  quadPx: Quad,
+): ImageData {
+  const xs = quadPx.map((p) => p.x);
+  const ys = quadPx.map((p) => p.y);
+  const x0 = Math.max(0, Math.round(Math.min(...xs)));
+  const y0 = Math.max(0, Math.round(Math.min(...ys)));
+  const x1 = Math.min(rotW, Math.round(Math.max(...xs)));
+  const y1 = Math.min(rotH, Math.round(Math.max(...ys)));
+  const w = Math.max(1, x1 - x0);
+  const h = Math.max(1, y1 - y0);
+  return ictx.getImageData(x0, y0, w, h);
+}
+
+/**
  * Toma un File (camera o input) y lo carga como HTMLImageElement listo
  * para usar en `renderEdited`. Si la imagen es enorme (>4096 lado mayor),
- * la pre-escala — Claude vision tampoco necesita mas resolucion, y los
- * filtros corren O(n) en pixeles.
+ * la pre-escala — los filtros y el warp corren O(n) en pixeles y en un
+ * movil de gama media 16MP ya se siente.
  */
 export async function loadImageFromFile(file: File): Promise<HTMLImageElement> {
   const url = URL.createObjectURL(file);
