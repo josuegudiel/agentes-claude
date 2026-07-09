@@ -3,7 +3,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 interface Props {
-  onCapture: (file: File) => void;
+  /** Recibe 1..N archivos: 1 en captura normal, N en modo rafaga o al
+   * seleccionar varios archivos en el picker. */
+  onCapture: (files: File[]) => void;
   onCancel?: (() => void) | undefined;
 }
 
@@ -95,6 +97,12 @@ export function CaptureView({ onCapture, onCancel }: Props): React.ReactElement 
     void startCamera();
   }, [startCamera]);
 
+  // Modo rafaga: las capturas se acumulan y se editan todas juntas al
+  // final — el flujo multi-pagina de CamScanner.
+  const [batchMode, setBatchMode] = useState(false);
+  const [shots, setShots] = useState<File[]>([]);
+  const [flash, setFlash] = useState(false);
+
   const handleShutter = useCallback(() => {
     const v = videoRef.current;
     if (!v || v.readyState < 2) return;
@@ -110,17 +118,31 @@ export function CaptureView({ onCapture, onCancel }: Props): React.ReactElement 
         const file = new File([blob], `capture-${Date.now()}.jpg`, {
           type: 'image/jpeg',
         });
-        onCapture(file);
+        if (batchMode) {
+          setShots((prev) => [...prev, file]);
+          // Feedback visual breve de que la captura entro.
+          setFlash(true);
+          setTimeout(() => setFlash(false), 150);
+        } else {
+          onCapture([file]);
+        }
       },
       'image/jpeg',
       0.92,
     );
-  }, [onCapture]);
+  }, [onCapture, batchMode]);
+
+  const handleBatchDone = useCallback(() => {
+    if (shots.length === 0) return;
+    const files = shots;
+    setShots([]);
+    onCapture(files);
+  }, [shots, onCapture]);
 
   const handleFile = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
-      const file = e.target.files?.[0];
-      if (file) onCapture(file);
+      const files = Array.from(e.target.files ?? []);
+      if (files.length > 0) onCapture(files);
       e.target.value = '';
     },
     [onCapture],
@@ -175,6 +197,18 @@ export function CaptureView({ onCapture, onCancel }: Props): React.ReactElement 
             className="pointer-events-none absolute inset-6 rounded-md border-2 border-white/40"
           />
         )}
+
+        {/* Flash de confirmacion en modo rafaga. */}
+        {flash && (
+          <div aria-hidden className="pointer-events-none absolute inset-0 bg-white/60" />
+        )}
+
+        {/* Contador de capturas acumuladas en rafaga. */}
+        {batchMode && shots.length > 0 && (
+          <div className="absolute right-2 top-2 rounded-full bg-emerald-500 px-2.5 py-1 text-xs font-bold text-emerald-950">
+            {shots.length}
+          </div>
+        )}
       </div>
 
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -189,22 +223,46 @@ export function CaptureView({ onCapture, onCancel }: Props): React.ReactElement 
         )}
 
         {mode === 'live' && (
-          <button
-            type="button"
-            onClick={handleShutter}
-            className="ml-auto inline-flex items-center gap-2 rounded-full bg-emerald-500 px-6 py-3 text-sm font-semibold text-emerald-950 shadow-lg hover:bg-emerald-400"
-            aria-label="Capturar"
-          >
-            <span className="inline-block h-3 w-3 rounded-full bg-emerald-950" />
-            Capturar
-          </button>
+          <>
+            <button
+              type="button"
+              onClick={() => setBatchMode((b) => !b)}
+              className={`rounded-md border px-3 py-2 text-sm ${
+                batchMode
+                  ? 'border-emerald-500 bg-emerald-500/10 text-emerald-300'
+                  : 'border-ink-700 bg-ink-800 text-ink-200 hover:bg-ink-700'
+              }`}
+              aria-pressed={batchMode}
+            >
+              Rafaga {batchMode ? 'ON' : 'OFF'}
+            </button>
+            <button
+              type="button"
+              onClick={handleShutter}
+              className="ml-auto inline-flex items-center gap-2 rounded-full bg-emerald-500 px-6 py-3 text-sm font-semibold text-emerald-950 shadow-lg hover:bg-emerald-400"
+              aria-label="Capturar"
+            >
+              <span className="inline-block h-3 w-3 rounded-full bg-emerald-950" />
+              Capturar
+            </button>
+            {batchMode && shots.length > 0 && (
+              <button
+                type="button"
+                onClick={handleBatchDone}
+                className="rounded-md border border-emerald-500 bg-emerald-500/10 px-3 py-2 text-sm font-semibold text-emerald-300 hover:bg-emerald-500/20"
+              >
+                Editar {shots.length} {shots.length === 1 ? 'captura' : 'capturas'}
+              </button>
+            )}
+          </>
         )}
 
         <label className="cursor-pointer rounded-md border border-ink-700 bg-ink-800 px-3 py-2 text-sm hover:bg-ink-700">
-          Subir archivo
+          Subir archivos
           <input
             type="file"
             accept="image/*"
+            multiple
             className="hidden"
             onChange={handleFile}
           />
