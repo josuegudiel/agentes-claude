@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { applyFilter, __test } from '../filters';
+import { applyFilter, FILTERS, __test } from '../filters';
 
 /**
  * Tests unitarios de los filtros. Trabajamos con ImageData-shape objetos
@@ -146,27 +146,117 @@ describe('applyFilter', () => {
     expect(out.data[cornerIdx]).toBeGreaterThanOrEqual(128);
   });
 
-  it('color: preserva color neutro (gris) sin saturar', () => {
+  it('vivid: preserva color neutro (gris medio) casi sin cambios', () => {
     const img = makeImageData(4, 4, () => [128, 128, 128, 255]);
-    const out = applyFilter(img, 'color');
-    // Gris puro -> la saturacion no cambia nada (R=G=B=Y). Solo el
-    // contraste alrededor de 128 que no mueve este valor.
+    const out = applyFilter(img, 'vivid');
+    // Gris puro -> la saturacion no cambia nada (R=G=B=Y) y la curva S
+    // en el punto medio es ~neutra.
     for (let i = 0; i < out.data.length; i += 4) {
-      expect(out.data[i]).toBe(128);
-      expect(out.data[i + 1]).toBe(128);
-      expect(out.data[i + 2]).toBe(128);
+      expect(Math.abs(out.data[i]! - 128)).toBeLessThanOrEqual(2);
+      expect(Math.abs(out.data[i + 1]! - 128)).toBeLessThanOrEqual(2);
+      expect(Math.abs(out.data[i + 2]! - 128)).toBeLessThanOrEqual(2);
     }
   });
 
-  it('color: aumenta saturacion en color puro', () => {
+  it('vivid: aumenta saturacion en color puro', () => {
     // Pixel rojo medio (180,80,80) -> el boost de saturacion debe alejar
     // el R del luma y acercar G/B mas al luma.
     const img = makeImageData(2, 2, () => [180, 80, 80, 255]);
-    const out = applyFilter(img, 'color');
+    const out = applyFilter(img, 'vivid');
     // R aumenta, G y B bajan.
     expect(out.data[0]!).toBeGreaterThan(180);
     expect(out.data[1]!).toBeLessThan(80);
     expect(out.data[2]!).toBeLessThan(80);
+  });
+
+  it('doc: elimina iluminacion despareja — el papel queda blanco parejo', () => {
+    // Papel con gradiente de luz (140 a la izquierda, 230 a la derecha)
+    // y un bloque de "texto" oscuro en el centro.
+    const w = 96;
+    const h = 64;
+    const img = makeImageData(w, h, (x, y) => {
+      const paper = 140 + Math.round((x / (w - 1)) * 90);
+      const inText = x >= 40 && x < 56 && y >= 26 && y < 38;
+      const v = inText ? 25 : paper;
+      return [v, v, v, 255];
+    });
+    const out = applyFilter(img, 'doc');
+
+    // El papel de AMBOS lados debe quedar igual de blanco (>=225) —
+    // antes del filtro el lado izquierdo estaba en 140.
+    const leftPaper = out.data[(32 * w + 6) * 4]!;
+    const rightPaper = out.data[(32 * w + (w - 6)) * 4]!;
+    expect(leftPaper).toBeGreaterThanOrEqual(225);
+    expect(rightPaper).toBeGreaterThanOrEqual(225);
+    expect(Math.abs(leftPaper - rightPaper)).toBeLessThanOrEqual(15);
+
+    // El texto sigue oscuro.
+    const text = out.data[(32 * w + 48) * 4]!;
+    expect(text).toBeLessThan(110);
+  });
+
+  it('receipt: realza texto desvanecido — el contraste aumenta', () => {
+    // Ticket termico: papel 215 con texto gris apenas visible (150).
+    const w = 64;
+    const h = 64;
+    const img = makeImageData(w, h, (x, y) => {
+      const inText = y >= 24 && y < 40 && x >= 12 && x < 52 && y % 6 < 3;
+      const v = inText ? 150 : 215;
+      return [v, v, v, 255];
+    });
+    const before = 215 - 150;
+    const out = applyFilter(img, 'receipt');
+
+    const paper = out.data[(6 * w + 6) * 4]!;
+    const text = out.data[(25 * w + 30) * 4]!;
+    expect(paper).toBeGreaterThanOrEqual(240);
+    expect(text).toBeLessThan(110);
+    expect(paper - text).toBeGreaterThan(before * 2);
+  });
+
+  it('sharpen: aumenta el contraste local en un borde', () => {
+    // Step vertical 100|150 en el centro.
+    const w = 16;
+    const h = 8;
+    const img = makeImageData(w, h, (x) => {
+      const v = x < 8 ? 100 : 150;
+      return [v, v, v, 255];
+    });
+    const out = applyFilter(img, 'sharpen');
+
+    // Junto al borde: el lado oscuro se oscurece y el claro se aclara.
+    const darkEdge = out.data[(4 * w + 7) * 4]!;
+    const brightEdge = out.data[(4 * w + 8) * 4]!;
+    expect(darkEdge).toBeLessThan(100);
+    expect(brightEdge).toBeGreaterThan(150);
+
+    // Lejos del borde, sin cambios (blur == valor).
+    expect(out.data[(4 * w + 2) * 4]).toBe(100);
+    expect(out.data[(4 * w + 13) * 4]).toBe(150);
+  });
+
+  it('photo: el balance de blancos corrige una dominante de color', () => {
+    // Imagen con dominante azul: los canales deben converger.
+    const img = makeImageData(16, 16, () => [100, 120, 180, 255]);
+    const before = 180 - 100;
+    const out = applyFilter(img, 'photo');
+    const diff = Math.abs(out.data[2]! - out.data[0]!);
+    expect(diff).toBeLessThan(before / 2);
+  });
+
+  it('todos los filtros corren sin lanzar y preservan dimensiones', () => {
+    for (const f of FILTERS) {
+      const img = makeImageData(24, 18, (x, y) => [
+        (x * 37) % 256,
+        (y * 53) % 256,
+        ((x + y) * 29) % 256,
+        255,
+      ]);
+      const out = applyFilter(img, f.id);
+      expect(out.width).toBe(24);
+      expect(out.height).toBe(18);
+      expect(out.data.length).toBe(24 * 18 * 4);
+    }
   });
 
   it('magic: clipea histograma y centra en el rango (0..255)', () => {
