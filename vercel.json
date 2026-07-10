@@ -1,8 +1,8 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "buildCommand": "pnpm --filter agentes-claude-web build",
+  "buildCommand": "npx --yes pnpm@10.33.0 --filter agentes-claude-web build",
   "devCommand": "pnpm --filter agentes-claude-web dev",
-  "installCommand": "pnpm install --frozen-lockfile=false",
+  "installCommand": "npx --yes pnpm@10.33.0 install --frozen-lockfile=false",
   "framework": "nextjs",
   "outputDirectory": "web/.next"
 }
