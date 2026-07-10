@@ -94,6 +94,22 @@ export function CaptureView({ onCapture, onCancel }: Props): React.ReactElement 
     };
   }, [startCamera]);
 
+  // Cinturon de seguridad: si por cualquier carrera el stream existe pero
+  // el <video> aun no lo tiene atado (p.ej. remount), re-atalo al entrar
+  // en modo live. El bug clasico aqui es montar el <video> condicionado a
+  // mode==='live' — el ref es null cuando llega el stream y la pantalla
+  // queda negra. Por eso el <video> se monta SIEMPRE (invisible fuera de
+  // live) y ademas sincronizamos aca.
+  useEffect(() => {
+    if (mode !== 'live') return;
+    const v = videoRef.current;
+    const s = streamRef.current;
+    if (v && s && v.srcObject !== s) {
+      v.srcObject = s;
+      void v.play().catch(() => {});
+    }
+  }, [mode]);
+
   const handleRetry = useCallback((): void => {
     void startCamera();
   }, [startCamera]);
@@ -153,24 +169,27 @@ export function CaptureView({ onCapture, onCancel }: Props): React.ReactElement 
     <div className="stage-in flex flex-col gap-3">
       {/* Visor */}
       <div className="relative aspect-[3/4] w-full overflow-hidden rounded-3xl bg-black shadow-card ring-1 ring-carbon-700/60 sm:aspect-[4/3]">
-        {mode === 'live' && (
-          <video
-            ref={videoRef}
-            playsInline
-            muted
-            className="h-full w-full object-cover"
-          />
-        )}
+        {/* El <video> vive SIEMPRE en el DOM (solo cambia la visibilidad):
+            asi videoRef.current existe cuando getUserMedia resuelve y el
+            stream se ata de inmediato. Montarlo condicionado a live dejaba
+            el ref en null -> video sin srcObject -> pantalla negra. */}
+        <video
+          ref={videoRef}
+          autoPlay
+          playsInline
+          muted
+          className={`h-full w-full object-cover ${mode === 'live' ? 'visible' : 'invisible'}`}
+        />
 
         {mode === 'starting' && (
-          <div className="flex h-full flex-col items-center justify-center gap-3 text-carbon-400">
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black text-carbon-400">
             <IconCamera className="h-8 w-8 animate-pulse text-scan-400" />
             <span className="text-sm">Iniciando camara...</span>
           </div>
         )}
 
         {mode === 'fallback' && (
-          <div className="flex h-full flex-col items-center justify-center gap-4 p-6 text-center">
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-black p-6 text-center">
             <div className="flex h-16 w-16 items-center justify-center rounded-3xl bg-carbon-800 ring-1 ring-carbon-700">
               <IconCamera className="h-8 w-8 text-carbon-400" />
             </div>
