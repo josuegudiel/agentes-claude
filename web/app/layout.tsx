@@ -2,9 +2,9 @@ import type { Metadata } from 'next';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: 'Predictive Agent — TimesFM + Ollama',
+  title: 'Scanner — escanea documentos desde tu celular',
   description:
-    'UI para el agente predictivo: forecast con TimesFM y razonamiento con Ollama, todo open source.',
+    'Escanea documentos con la camara: deteccion de bordes, correccion de perspectiva, filtros y export a JPG, PNG o PDF. Todo en tu navegador.',
 };
 
 export default function RootLayout({
