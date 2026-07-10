@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { detectDocumentQuad, DETECT_MAX_SIDE } from './edge-detect';
-import { FILTERS, type FilterId } from './filters';
+import { applyFilter, FILTERS, type FilterId } from './filters';
+import { IconChevronLeft, IconExpand, IconFrame, IconRotate, IconWand } from './icons';
 import { loupePlacement, loupeRects } from './loupe';
 import { renderEdited, type EditState } from './pipeline';
 import {
@@ -21,9 +22,10 @@ interface Props {
 
 /**
  * Editor: rotacion, seleccion de 4 esquinas independientes (como
- * CamScanner) y filtros. El render es derivado: cada cambio re-deriva el
- * canvas final desde la imagen original via `renderEdited`, asi nunca
- * acumulamos perdida de calidad al toggle de filtros.
+ * CamScanner) y filtros con preview real en miniatura. El render es
+ * derivado: cada cambio re-deriva el canvas final desde la imagen
+ * original via `renderEdited`, asi nunca acumulamos perdida de calidad
+ * al toggle de filtros.
  *
  * Las esquinas se almacenan en coordenadas normalizadas (0..1) sobre la
  * imagen rotada. Si el quad no es un rectangulo alineado, al confirmar se
@@ -69,6 +71,52 @@ export function EditView({ image, onConfirm, onBack }: Props): React.ReactElemen
     window.addEventListener('resize', onResize);
     return () => window.removeEventListener('resize', onResize);
   }, []);
+
+  // Miniaturas de preview por filtro: version diminuta de la imagen
+  // rotada con cada filtro aplicado de verdad. Es barato (~112px de lado
+  // x 5 filtros) y le muestra al usuario que hace cada filtro ANTES de
+  // tocarlo — como la fila de filtros de CamScanner.
+  const [filterThumbs, setFilterThumbs] = useState<Partial<Record<FilterId, string>>>({});
+  useEffect(() => {
+    const srcW = image.naturalWidth;
+    const srcH = image.naturalHeight;
+    if (!srcW || !srcH) return;
+
+    const rot = ((rotation % 360) + 360) % 360;
+    const swapped = rot === 90 || rot === 270;
+    const rotW = swapped ? srcH : srcW;
+    const rotH = swapped ? srcW : srcH;
+    const scale = Math.min(1, 112 / Math.max(rotW, rotH));
+    const w = Math.max(1, Math.round(rotW * scale));
+    const h = Math.max(1, Math.round(rotH * scale));
+
+    const c = document.createElement('canvas');
+    c.width = w;
+    c.height = h;
+    const ctx = c.getContext('2d');
+    if (!ctx) return;
+    ctx.save();
+    ctx.translate(w / 2, h / 2);
+    ctx.rotate((rot * Math.PI) / 180);
+    ctx.drawImage(image, (-srcW * scale) / 2, (-srcH * scale) / 2, srcW * scale, srcH * scale);
+    ctx.restore();
+
+    const base = ctx.getImageData(0, 0, w, h);
+    const thumbs: Partial<Record<FilterId, string>> = {};
+    for (const f of FILTERS) {
+      const copy = new ImageData(w, h);
+      copy.data.set(base.data);
+      const out = applyFilter(copy, f.id);
+      const oc = document.createElement('canvas');
+      oc.width = w;
+      oc.height = h;
+      const octx = oc.getContext('2d');
+      if (!octx) continue;
+      octx.putImageData(out, 0, 0);
+      thumbs[f.id] = oc.toDataURL('image/jpeg', 0.75);
+    }
+    setFilterThumbs(thumbs);
+  }, [image, rotation]);
 
   // Deteccion automatica de bordes al montar y al rotar. Corre sobre una
   // version reducida (<=256px) de la imagen rotada — es O(n) y a ese
@@ -164,7 +212,7 @@ export function EditView({ image, onConfirm, onBack }: Props): React.ReactElemen
 
     loupe.width = LOUPE_SIZE;
     loupe.height = LOUPE_SIZE;
-    ctx.fillStyle = '#020617';
+    ctx.fillStyle = '#06080e';
     ctx.fillRect(0, 0, LOUPE_SIZE, LOUPE_SIZE);
 
     const r = loupeRects(cx, cy, preview.width, preview.height, LOUPE_SIZE, LOUPE_ZOOM);
@@ -173,7 +221,7 @@ export function EditView({ image, onConfirm, onBack }: Props): React.ReactElemen
       ctx.drawImage(preview, r.sx, r.sy, r.sw, r.sh, r.dx, r.dy, r.dw, r.dh);
     }
 
-    ctx.strokeStyle = 'rgba(52,211,153,0.9)';
+    ctx.strokeStyle = 'rgba(45,212,191,0.9)';
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.moveTo(LOUPE_SIZE / 2, 0);
@@ -199,15 +247,15 @@ export function EditView({ image, onConfirm, onBack }: Props): React.ReactElemen
   }, [image, rotation, filter, quad, onConfirm]);
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="stage-in flex flex-col gap-3">
+      {/* Lienzo con overlay del quad */}
       <div
         ref={containerRef}
-        className="relative w-full overflow-hidden rounded-lg bg-ink-950"
+        className="relative w-full overflow-hidden rounded-3xl bg-carbon-950 shadow-card ring-1 ring-carbon-700/60"
         style={{ touchAction: 'none' }}
       >
-        <canvas ref={previewRef} className="block max-w-full" />
+        <canvas ref={previewRef} className="mx-auto block max-w-full" />
 
-        {/* Overlay del quad */}
         {previewSize.w > 0 && (
           <div
             className="absolute inset-0"
@@ -226,7 +274,7 @@ export function EditView({ image, onConfirm, onBack }: Props): React.ReactElemen
             del lado contrario a la esquina para que el dedo no la tape. */}
         {dragCorner !== null && (
           <div
-            className={`pointer-events-none absolute top-2 overflow-hidden rounded-full border-2 border-emerald-400 shadow-lg ${
+            className={`pointer-events-none absolute top-2 overflow-hidden rounded-full border-2 border-scan-400 shadow-glow ${
               loupePlacement(quad[dragCorner]!.x) === 'right' ? 'right-2' : 'left-2'
             }`}
             style={{ width: LOUPE_SIZE, height: LOUPE_SIZE }}
@@ -237,87 +285,111 @@ export function EditView({ image, onConfirm, onBack }: Props): React.ReactElemen
         )}
       </div>
 
-      <p className="text-xs text-ink-500">
-        {autoDetected
-          ? 'Bordes detectados automaticamente — ajusta las esquinas si hace falta.'
-          : 'Arrastra las 4 esquinas hasta los bordes del documento.'}{' '}
-        Si el quad no es rectangular, se endereza automaticamente (correccion
-        de perspectiva).
+      {/* Estado de la deteccion */}
+      <p className="flex items-center justify-center gap-1.5 text-center text-[11px] text-carbon-400">
+        {autoDetected ? (
+          <>
+            <IconWand className="h-3.5 w-3.5 text-scan-400" />
+            Bordes detectados automaticamente — ajusta las esquinas si hace falta.
+          </>
+        ) : (
+          'Arrastra las 4 esquinas hasta los bordes del documento.'
+        )}
       </p>
 
-      {/* Controles */}
-      <div className="flex flex-wrap items-center gap-2">
-        <button
-          type="button"
-          onClick={handleRotate}
-          className="rounded-md border border-ink-700 bg-ink-800 px-3 py-2 text-sm hover:bg-ink-700"
-        >
-          Rotar 90deg
-        </button>
-        <button
-          type="button"
-          onClick={handleDetect}
-          className="rounded-md border border-ink-700 bg-ink-800 px-3 py-2 text-sm hover:bg-ink-700"
-        >
-          Detectar bordes
-        </button>
-        <button
-          type="button"
-          onClick={handleSuggestQuad}
-          className="rounded-md border border-ink-700 bg-ink-800 px-3 py-2 text-sm hover:bg-ink-700"
-        >
-          Crop sugerido
-        </button>
-        <button
-          type="button"
-          onClick={handleResetQuad}
-          className="rounded-md border border-ink-700 bg-ink-800 px-3 py-2 text-sm hover:bg-ink-700"
-        >
-          Pagina completa
-        </button>
+      {/* Herramientas */}
+      <div className="grid grid-cols-4 gap-2">
+        <ToolButton icon={<IconRotate className="h-5 w-5" />} label="Rotar" onClick={handleRotate} />
+        <ToolButton icon={<IconWand className="h-5 w-5" />} label="Detectar" onClick={handleDetect} />
+        <ToolButton icon={<IconFrame className="h-5 w-5" />} label="Sugerido" onClick={handleSuggestQuad} />
+        <ToolButton icon={<IconExpand className="h-5 w-5" />} label="Completa" onClick={handleResetQuad} />
       </div>
 
+      {/* Filtros con preview real */}
       <div>
-        <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-ink-400">
+        <div className="mb-1.5 px-1 font-display text-[11px] font-semibold uppercase tracking-widest text-carbon-500">
           Filtro
         </div>
-        <div className="flex flex-wrap gap-2">
-          {FILTERS.map((f) => (
-            <button
-              key={f.id}
-              type="button"
-              onClick={() => setFilter(f.id)}
-              title={f.hint}
-              className={`rounded-md border px-3 py-2 text-sm ${
-                filter === f.id
-                  ? 'border-emerald-500 bg-emerald-500/10 text-emerald-300'
-                  : 'border-ink-700 bg-ink-800 text-ink-200 hover:bg-ink-700'
-              }`}
-            >
-              {f.label}
-            </button>
-          ))}
+        <div className="no-scrollbar -mx-1 flex gap-2 overflow-x-auto px-1 pb-1">
+          {FILTERS.map((f) => {
+            const selected = filter === f.id;
+            const thumb = filterThumbs[f.id];
+            return (
+              <button
+                key={f.id}
+                type="button"
+                onClick={() => setFilter(f.id)}
+                title={f.hint}
+                aria-pressed={selected}
+                className={`flex shrink-0 flex-col items-center gap-1 rounded-2xl border border-carbon-700/70 bg-carbon-850 p-1.5 transition-transform active:scale-95 ${
+                  selected ? 'chip-selected' : ''
+                }`}
+              >
+                <span className="block h-16 w-14 overflow-hidden rounded-xl bg-carbon-900">
+                  {thumb && (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      src={thumb}
+                      alt=""
+                      aria-hidden
+                      className="h-full w-full object-cover"
+                    />
+                  )}
+                </span>
+                <span
+                  className={`text-[10px] font-medium ${
+                    selected ? 'text-scan-300' : 'text-carbon-400'
+                  }`}
+                >
+                  {f.label}
+                </span>
+              </button>
+            );
+          })}
         </div>
       </div>
 
-      <div className="flex flex-wrap justify-between gap-2 pt-2">
+      {/* CTA */}
+      <div className="safe-bottom flex items-center gap-2 pt-1">
         <button
           type="button"
           onClick={onBack}
-          className="rounded-md border border-ink-700 px-4 py-2 text-sm text-ink-200 hover:bg-ink-800"
+          className="btn-ghost flex min-h-[52px] items-center justify-center gap-1 rounded-2xl px-4 text-sm font-medium text-carbon-300"
         >
-          Volver a capturar
+          <IconChevronLeft className="h-4 w-4" />
+          Volver
         </button>
         <button
           type="button"
           onClick={handleConfirm}
           disabled={confirming}
-          className="rounded-md bg-emerald-500 px-5 py-2 text-sm font-semibold text-emerald-950 hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-60"
+          className="btn-scan flex min-h-[52px] flex-1 items-center justify-center rounded-2xl px-5 font-display text-sm font-semibold"
         >
           {confirming ? 'Procesando...' : 'Aplicar y continuar'}
         </button>
       </div>
     </div>
+  );
+}
+
+function ToolButton({
+  icon,
+  label,
+  onClick,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  onClick: () => void;
+}): React.ReactElement {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="btn-ghost flex min-h-[58px] flex-col items-center justify-center gap-1 rounded-2xl px-1 py-2 text-scan-300"
+    >
+      {icon}
+      <span className="text-[10px] font-medium text-carbon-400">{label}</span>
+    </button>
   );
 }
 
@@ -391,12 +463,12 @@ function QuadOverlay({ quad }: { quad: Quad }): React.ReactElement {
       <path
         d={`M0 0 H100 V100 H0 Z ${innerPath} Z`}
         fillRule="evenodd"
-        fill="rgba(0,0,0,0.55)"
+        fill="rgba(3, 6, 12, 0.6)"
       />
       <polygon
         points={pts}
         fill="none"
-        stroke="#34d399"
+        stroke="#2dd4bf"
         strokeWidth="0.6"
         vectorEffect="non-scaling-stroke"
       />
@@ -418,7 +490,7 @@ function Handle({
       role="slider"
       aria-label={label}
       onPointerDown={onDown}
-      className="absolute h-7 w-7 -translate-x-1/2 -translate-y-1/2 cursor-move rounded-full border-2 border-white bg-emerald-500 shadow-md"
+      className="absolute h-8 w-8 -translate-x-1/2 -translate-y-1/2 cursor-move rounded-full border-[3px] border-paper bg-scan-400 shadow-glow-sm"
       style={{
         left: `${point.x * 100}%`,
         top: `${point.y * 100}%`,
