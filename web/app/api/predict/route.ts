@@ -10,6 +10,9 @@ import type { SSEEvent, ForecastSummaryClient } from '../../../lib/types';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
+// maxDuration como config de segmento (Vercel lo respeta sin depender del
+// glob de `functions` en vercel.json, que no matchea en monorepos).
+export const maxDuration = 60;
 
 const RequestSchema = z.object({
   series: z.array(z.number().finite()).min(8),

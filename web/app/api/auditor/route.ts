@@ -6,6 +6,9 @@ import type { AuditorSSEEvent } from '../../../lib/auditor-types';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
+// maxDuration como config de segmento (Vercel lo respeta sin depender del
+// glob de `functions` en vercel.json, que no matchea en monorepos).
+export const maxDuration = 60;
 
 // Mas estricto que /api/predict: cada auditoria hace varios fetch externos
 // y (si hay claves) consume cuota de Tavily y Groq.
