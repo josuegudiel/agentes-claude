@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { IconBolt, IconCamera, IconChevronLeft, IconRefresh, IconUpload } from './icons';
 
 interface Props {
   /** Recibe 1..N archivos: 1 en captura normal, N en modo rafaga o al
@@ -101,7 +102,7 @@ export function CaptureView({ onCapture, onCancel }: Props): React.ReactElement 
   // final — el flujo multi-pagina de CamScanner.
   const [batchMode, setBatchMode] = useState(false);
   const [shots, setShots] = useState<File[]>([]);
-  const [flash, setFlash] = useState(false);
+  const [flash, setFlash] = useState(0);
 
   const handleShutter = useCallback(() => {
     const v = videoRef.current;
@@ -120,9 +121,9 @@ export function CaptureView({ onCapture, onCancel }: Props): React.ReactElement 
         });
         if (batchMode) {
           setShots((prev) => [...prev, file]);
-          // Feedback visual breve de que la captura entro.
-          setFlash(true);
-          setTimeout(() => setFlash(false), 150);
+          // Feedback visual breve de que la captura entro (key remonta el
+          // overlay para reiniciar la animacion CSS).
+          setFlash((f) => f + 1);
         } else {
           onCapture([file]);
         }
@@ -149,8 +150,9 @@ export function CaptureView({ onCapture, onCancel }: Props): React.ReactElement 
   );
 
   return (
-    <div className="flex flex-col gap-4">
-      <div className="relative aspect-[3/4] w-full overflow-hidden rounded-lg bg-black sm:aspect-video">
+    <div className="stage-in flex flex-col gap-3">
+      {/* Visor */}
+      <div className="relative aspect-[3/4] w-full overflow-hidden rounded-3xl bg-black shadow-card ring-1 ring-carbon-700/60 sm:aspect-[4/3]">
         {mode === 'live' && (
           <video
             ref={videoRef}
@@ -159,18 +161,29 @@ export function CaptureView({ onCapture, onCancel }: Props): React.ReactElement 
             className="h-full w-full object-cover"
           />
         )}
+
         {mode === 'starting' && (
-          <div className="flex h-full items-center justify-center text-ink-400">
-            Iniciando camara...
+          <div className="flex h-full flex-col items-center justify-center gap-3 text-carbon-400">
+            <IconCamera className="h-8 w-8 animate-pulse text-scan-400" />
+            <span className="text-sm">Iniciando camara...</span>
           </div>
         )}
+
         {mode === 'fallback' && (
-          <div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center text-ink-300">
-            <p className="text-sm">
+          <div className="flex h-full flex-col items-center justify-center gap-4 p-6 text-center">
+            <div className="flex h-16 w-16 items-center justify-center rounded-3xl bg-carbon-800 ring-1 ring-carbon-700">
+              <IconCamera className="h-8 w-8 text-carbon-400" />
+            </div>
+            <p className="max-w-xs text-sm leading-relaxed text-carbon-300">
               No pudimos abrir la camara
-              {errorMsg ? `: ${errorMsg}` : '.'}
+              {errorMsg ? (
+                <span className="block text-xs text-carbon-500">{errorMsg}</span>
+              ) : (
+                '.'
+              )}
             </p>
-            <label className="cursor-pointer rounded-md border border-ink-700 bg-ink-800 px-4 py-2 text-sm hover:bg-ink-700">
+            <label className="btn-scan flex min-h-[48px] cursor-pointer items-center gap-2 rounded-full px-6 py-3 text-sm font-semibold">
+              <IconUpload className="h-4 w-4" />
               Elegir imagen del dispositivo
               <input
                 type="file"
@@ -183,81 +196,99 @@ export function CaptureView({ onCapture, onCancel }: Props): React.ReactElement 
             <button
               type="button"
               onClick={handleRetry}
-              className="text-xs text-ink-400 underline"
+              className="flex items-center gap-1.5 text-xs text-carbon-400 underline underline-offset-4"
             >
+              <IconRefresh className="h-3.5 w-3.5" />
               Reintentar camara
             </button>
           </div>
         )}
 
-        {/* Guide overlay solo cuando estamos en live, para encuadrar mejor. */}
+        {/* Overlays del visor en vivo */}
         {mode === 'live' && (
-          <div
-            aria-hidden
-            className="pointer-events-none absolute inset-6 rounded-md border-2 border-white/40"
-          />
+          <>
+            <div className="viewfinder-vignette" aria-hidden />
+            <span className="viewfinder-corner tl" aria-hidden />
+            <span className="viewfinder-corner tr" aria-hidden />
+            <span className="viewfinder-corner br" aria-hidden />
+            <span className="viewfinder-corner bl" aria-hidden />
+            <span className="scan-line" aria-hidden />
+            <p className="pointer-events-none absolute inset-x-0 top-4 text-center text-[11px] font-medium tracking-wide text-white/70">
+              Encuadra el documento
+            </p>
+          </>
         )}
 
-        {/* Flash de confirmacion en modo rafaga. */}
-        {flash && (
-          <div aria-hidden className="pointer-events-none absolute inset-0 bg-white/60" />
+        {/* Flash de confirmacion en modo rafaga */}
+        {flash > 0 && (
+          <div key={flash} aria-hidden className="shot-flash pointer-events-none absolute inset-0 bg-white" />
         )}
 
-        {/* Contador de capturas acumuladas en rafaga. */}
+        {/* Contador de capturas acumuladas en rafaga */}
         {batchMode && shots.length > 0 && (
-          <div className="absolute right-2 top-2 rounded-full bg-emerald-500 px-2.5 py-1 text-xs font-bold text-emerald-950">
+          <div className="absolute right-3 top-3 flex h-8 min-w-8 items-center justify-center rounded-full bg-scan-400 px-2 font-display text-sm font-bold text-carbon-950 shadow-glow-sm">
             {shots.length}
           </div>
         )}
-      </div>
 
-      <div className="flex flex-wrap items-center justify-between gap-3">
+        {/* Volver a export si ya hay paginas */}
         {onCancel && (
           <button
             type="button"
             onClick={onCancel}
-            className="rounded-md border border-ink-700 px-3 py-2 text-sm text-ink-300 hover:bg-ink-800"
+            className="absolute left-3 top-3 flex h-9 items-center gap-1 rounded-full bg-black/50 px-3 text-xs font-medium text-white backdrop-blur-sm"
           >
-            Cancelar
+            <IconChevronLeft className="h-4 w-4" />
+            Mis paginas
           </button>
         )}
+      </div>
 
-        {mode === 'live' && (
-          <>
-            <button
-              type="button"
-              onClick={() => setBatchMode((b) => !b)}
-              className={`rounded-md border px-3 py-2 text-sm ${
+      {/* Controles: rafaga | shutter | subir — como una app de camara */}
+      <div className="flex items-center justify-between gap-2 px-1">
+        {mode === 'live' ? (
+          <button
+            type="button"
+            onClick={() => setBatchMode((b) => !b)}
+            aria-pressed={batchMode}
+            className={`flex min-h-[44px] flex-col items-center justify-center gap-0.5 rounded-2xl px-3 py-1.5 text-[11px] font-medium transition-colors ${
+              batchMode
+                ? 'text-scan-300'
+                : 'text-carbon-400'
+            }`}
+          >
+            <span
+              className={`flex h-8 w-8 items-center justify-center rounded-full border transition-all ${
                 batchMode
-                  ? 'border-emerald-500 bg-emerald-500/10 text-emerald-300'
-                  : 'border-ink-700 bg-ink-800 text-ink-200 hover:bg-ink-700'
+                  ? 'border-scan-500/70 bg-scan-500/15 shadow-glow-sm'
+                  : 'border-carbon-700 bg-carbon-850'
               }`}
-              aria-pressed={batchMode}
             >
-              Rafaga {batchMode ? 'ON' : 'OFF'}
-            </button>
-            <button
-              type="button"
-              onClick={handleShutter}
-              className="ml-auto inline-flex items-center gap-2 rounded-full bg-emerald-500 px-6 py-3 text-sm font-semibold text-emerald-950 shadow-lg hover:bg-emerald-400"
-              aria-label="Capturar"
-            >
-              <span className="inline-block h-3 w-3 rounded-full bg-emerald-950" />
-              Capturar
-            </button>
-            {batchMode && shots.length > 0 && (
-              <button
-                type="button"
-                onClick={handleBatchDone}
-                className="rounded-md border border-emerald-500 bg-emerald-500/10 px-3 py-2 text-sm font-semibold text-emerald-300 hover:bg-emerald-500/20"
-              >
-                Editar {shots.length} {shots.length === 1 ? 'captura' : 'capturas'}
-              </button>
-            )}
-          </>
+              <IconBolt className="h-4 w-4" />
+            </span>
+            Rafaga {batchMode ? 'ON' : 'OFF'}
+          </button>
+        ) : (
+          <span className="w-[68px]" aria-hidden />
         )}
 
-        <label className="cursor-pointer rounded-md border border-ink-700 bg-ink-800 px-3 py-2 text-sm hover:bg-ink-700">
+        {mode === 'live' ? (
+          <button
+            type="button"
+            onClick={handleShutter}
+            className="shutter shrink-0"
+            aria-label="Capturar"
+          >
+            <span className="shutter-inner block" />
+          </button>
+        ) : (
+          <span aria-hidden />
+        )}
+
+        <label className="flex min-h-[44px] cursor-pointer flex-col items-center justify-center gap-0.5 rounded-2xl px-3 py-1.5 text-[11px] font-medium text-carbon-400">
+          <span className="flex h-8 w-8 items-center justify-center rounded-full border border-carbon-700 bg-carbon-850">
+            <IconUpload className="h-4 w-4" />
+          </span>
           Subir archivos
           <input
             type="file"
@@ -268,6 +299,17 @@ export function CaptureView({ onCapture, onCancel }: Props): React.ReactElement 
           />
         </label>
       </div>
+
+      {/* CTA de fin de rafaga */}
+      {batchMode && shots.length > 0 && (
+        <button
+          type="button"
+          onClick={handleBatchDone}
+          className="btn-scan flex min-h-[52px] w-full items-center justify-center gap-2 rounded-2xl px-5 py-3 font-display text-sm font-semibold"
+        >
+          Editar {shots.length} {shots.length === 1 ? 'captura' : 'capturas'}
+        </button>
+      )}
     </div>
   );
 }

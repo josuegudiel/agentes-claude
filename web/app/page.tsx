@@ -8,32 +8,38 @@ export const metadata: Metadata = {
 };
 
 /**
- * Home del deploy: el scanner. Este deploy de Vercel es exclusivamente
- * para el agente scanner — los demas agentes (predictivo, auditor) estan
- * estacionados en carpetas privadas (_predictive/, _auditor/) y tendran
- * su propia pagina/deploy mas adelante.
+ * Home del deploy: el scanner. Mobile-first — header minimo para que el
+ * visor de camara quede arriba del fold en un telefono.
  */
 export default function HomePage(): React.ReactElement {
   return (
-    <main className="mx-auto flex min-h-screen max-w-3xl flex-col gap-6 px-4 py-6 sm:px-6">
-      <header>
-        <h1 className="text-xl font-semibold tracking-tight">
-          Scanner
-        </h1>
-        <p className="text-sm text-ink-400">
-          Captura, edita y exporta documentos. Deteccion automatica de
-          bordes y correccion de perspectiva.
-        </p>
+    <main className="mx-auto flex min-h-screen w-full max-w-lg flex-col gap-4 px-4 pt-5 sm:max-w-2xl sm:px-6 sm:pt-8">
+      <header className="flex items-center gap-3">
+        {/* Marca: documento con la linea de escaneo */}
+        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-carbon-800 shadow-glow-sm ring-1 ring-scan-500/30">
+          <svg viewBox="0 0 32 32" className="h-6 w-6" aria-hidden>
+            <path
+              d="M9 5h11l5 5v16a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 9 26z"
+              fill="#f4f1e7"
+            />
+            <path d="M20 5l5 5h-4a1 1 0 0 1-1-1z" fill="#9aa7c2" />
+            <rect x="5" y="14.4" width="22" height="2" rx="1" fill="#2dd4bf" />
+          </svg>
+        </div>
+        <div className="min-w-0">
+          <h1 className="font-display text-xl font-semibold tracking-tight text-paper">
+            Scanner<span className="text-scanlight">.</span>
+          </h1>
+          <p className="truncate text-xs text-carbon-400">
+            Escanea, endereza y exporta — todo en tu telefono.
+          </p>
+        </div>
       </header>
 
-      <section className="rounded-md border border-ink-800 bg-ink-900 p-4">
-        <ScannerApp />
-      </section>
+      <ScannerApp />
 
-      <footer className="mt-auto border-t border-ink-800 pt-4 text-xs text-ink-500">
-        100% client-side: camara via <code>getUserMedia</code>, crop y
-        filtros con canvas 2D, PDF con jsPDF. No hay backend, no se sube
-        nada a ningun servidor.
+      <footer className="safe-bottom mt-auto pt-3 text-center text-[11px] leading-relaxed text-carbon-500">
+        100% en tu navegador: nada se sube a ningun servidor.
       </footer>
     </main>
   );

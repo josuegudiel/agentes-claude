@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { CaptureView } from './CaptureView';
 import { EditView } from './EditView';
 import { ExportView } from './ExportView';
+import { IconCheck, IconX } from './icons';
 import { loadImageFromFile } from './pipeline';
 import { isStorageAvailable, loadPages, savePages } from './storage';
 
@@ -12,6 +13,11 @@ type Stage = 'capture' | 'edit' | 'export';
 interface Page {
   canvas: HTMLCanvasElement;
   thumb: string;
+}
+
+interface PendingImage {
+  id: number;
+  img: HTMLImageElement;
 }
 
 /**
@@ -26,11 +32,6 @@ interface Page {
  * Las paginas se persisten en IndexedDB: al recargar la pestana se
  * restauran y la app arranca directo en la vista de export.
  */
-interface PendingImage {
-  id: number;
-  img: HTMLImageElement;
-}
-
 export function ScannerApp(): React.ReactElement {
   const [stage, setStage] = useState<Stage>('capture');
   // Cola de imagenes por editar (>1 cuando el usuario capturo en rafaga o
@@ -164,23 +165,26 @@ export function ScannerApp(): React.ReactElement {
       <Steps stage={stage} pageCount={pages.length} />
 
       {loadError && (
-        <div className="rounded-md border border-rose-700/40 bg-rose-900/20 p-3 text-sm text-rose-200">
-          <strong>Error cargando imagen:</strong> {loadError}
+        <div className="stage-in rounded-2xl border border-rose-500/30 bg-rose-950/40 px-4 py-3 text-sm text-rose-200">
+          <strong className="font-semibold">Error cargando imagen:</strong>{' '}
+          {loadError}
         </div>
       )}
 
       {restoredCount > 0 && stage === 'export' && (
-        <div className="flex items-center justify-between rounded-md border border-sky-700/40 bg-sky-900/20 px-3 py-2 text-sm text-sky-200">
-          <span>
+        <div className="stage-in flex items-center justify-between gap-3 rounded-2xl border border-scan-500/25 bg-scan-500/10 px-4 py-2.5 text-sm text-scan-200">
+          <span className="flex items-center gap-2">
+            <IconCheck className="h-4 w-4 shrink-0" />
             Sesion anterior restaurada ({restoredCount}{' '}
             {restoredCount === 1 ? 'pagina' : 'paginas'}).
           </span>
           <button
             type="button"
             onClick={() => setRestoredCount(0)}
-            className="text-xs text-sky-400 underline"
+            aria-label="Cerrar aviso"
+            className="btn-ghost flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-carbon-300"
           >
-            Ok
+            <IconX className="h-4 w-4" />
           </button>
         </div>
       )}
@@ -195,7 +199,7 @@ export function ScannerApp(): React.ReactElement {
       {stage === 'edit' && pendingImages.length > 0 && (
         <>
           {pendingTotal > 1 && (
-            <p className="text-xs font-semibold text-ink-400">
+            <p className="text-center text-xs font-medium text-scan-300">
               Editando pagina {pendingTotal - pendingImages.length + 1} de {pendingTotal}
             </p>
           )}
@@ -259,6 +263,12 @@ async function blobToCanvas(blob: Blob): Promise<HTMLCanvasElement> {
   }
 }
 
+const STAGE_ORDER: Stage[] = ['capture', 'edit', 'export'];
+
+/**
+ * Indicador de progreso del flujo: 3 pasos con conectores que se
+ * "encienden" al avanzar. Compacto en movil, con labels siempre visibles.
+ */
 function Steps({
   stage,
   pageCount,
@@ -267,24 +277,43 @@ function Steps({
   pageCount: number;
 }): React.ReactElement {
   const items: { id: Stage; label: string }[] = [
-    { id: 'capture', label: '1. Capturar' },
-    { id: 'edit', label: '2. Editar' },
-    { id: 'export', label: `3. Exportar${pageCount ? ` (${pageCount})` : ''}` },
+    { id: 'capture', label: 'Capturar' },
+    { id: 'edit', label: 'Editar' },
+    { id: 'export', label: pageCount ? `Exportar (${pageCount})` : 'Exportar' },
   ];
+  const activeIdx = STAGE_ORDER.indexOf(stage);
+
   return (
-    <ol className="flex flex-wrap gap-2 text-xs">
-      {items.map((it) => {
-        const active = it.id === stage;
+    <ol className="flex items-center gap-1.5" aria-label="Progreso">
+      {items.map((it, i) => {
+        const state = i < activeIdx ? 'done' : i === activeIdx ? 'active' : 'todo';
         return (
-          <li
-            key={it.id}
-            className={`rounded-full border px-3 py-1 ${
-              active
-                ? 'border-emerald-500 bg-emerald-500/10 text-emerald-300'
-                : 'border-ink-700 bg-ink-900 text-ink-400'
-            }`}
-          >
-            {it.label}
+          <li key={it.id} className="flex min-w-0 flex-1 items-center gap-1.5">
+            <div
+              className={`flex min-w-0 flex-1 items-center gap-2 rounded-full border px-2.5 py-1.5 transition-colors ${
+                state === 'active'
+                  ? 'border-scan-500/60 bg-scan-500/10 text-scan-200 shadow-glow-sm'
+                  : state === 'done'
+                    ? 'border-carbon-700 bg-carbon-850 text-scan-400'
+                    : 'border-carbon-700/60 bg-carbon-900/60 text-carbon-500'
+              }`}
+              aria-current={state === 'active' ? 'step' : undefined}
+            >
+              <span
+                className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] font-bold ${
+                  state === 'active'
+                    ? 'bg-scan-400 text-carbon-950'
+                    : state === 'done'
+                      ? 'bg-scan-500/25 text-scan-300'
+                      : 'bg-carbon-800 text-carbon-500'
+                }`}
+              >
+                {state === 'done' ? <IconCheck className="h-3 w-3" /> : i + 1}
+              </span>
+              <span className="truncate font-display text-xs font-medium">
+                {it.label}
+              </span>
+            </div>
           </li>
         );
       })}

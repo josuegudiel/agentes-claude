@@ -6,6 +6,14 @@ import {
   exportPages,
   type ExportFormat,
 } from './export';
+import {
+  IconChevronLeft,
+  IconChevronRight,
+  IconDownload,
+  IconPlus,
+  IconRefresh,
+  IconX,
+} from './icons';
 
 interface Page {
   canvas: HTMLCanvasElement;
@@ -47,26 +55,17 @@ export function ExportView({ pages, onAddPage, onRemovePage, onMovePage, onResta
   }, [pages, filename, format]);
 
   return (
-    <div className="flex flex-col gap-5">
+    <div className="stage-in flex flex-col gap-4">
       {/* Paginas */}
       <div>
-        <div className="mb-2 flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-ink-200">
-            Paginas ({pages.length})
-          </h2>
-          <button
-            type="button"
-            onClick={onAddPage}
-            className="rounded-md border border-ink-700 bg-ink-800 px-3 py-1.5 text-xs hover:bg-ink-700"
-          >
-            + Agregar pagina
-          </button>
-        </div>
-        <div className="flex flex-wrap gap-3">
+        <h2 className="mb-2 px-1 font-display text-[11px] font-semibold uppercase tracking-widest text-carbon-500">
+          Paginas ({pages.length})
+        </h2>
+        <div className="grid grid-cols-3 gap-2.5 sm:grid-cols-4">
           {pages.map((p, i) => (
             <div
               key={i}
-              className="relative h-32 w-24 overflow-hidden rounded-md border border-ink-700 bg-ink-950"
+              className="group relative aspect-[3/4] overflow-hidden rounded-2xl bg-carbon-900 shadow-card ring-1 ring-carbon-700/70"
             >
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
@@ -74,7 +73,7 @@ export function ExportView({ pages, onAddPage, onRemovePage, onMovePage, onResta
                 alt={`Pagina ${i + 1}`}
                 className="h-full w-full object-cover"
               />
-              <div className="absolute left-1 top-1 rounded bg-black/60 px-1.5 py-0.5 text-[10px] text-white">
+              <div className="absolute left-1.5 top-1.5 flex h-6 w-6 items-center justify-center rounded-full bg-black/65 font-display text-[11px] font-bold text-white backdrop-blur-sm">
                 {i + 1}
               </div>
               {pages.length > 1 && (
@@ -82,99 +81,128 @@ export function ExportView({ pages, onAddPage, onRemovePage, onMovePage, onResta
                   type="button"
                   aria-label={`Eliminar pagina ${i + 1}`}
                   onClick={() => onRemovePage(i)}
-                  className="absolute right-1 top-1 rounded bg-black/70 px-1.5 py-0.5 text-[10px] text-white hover:bg-rose-600"
+                  className="absolute right-1.5 top-1.5 flex h-7 w-7 items-center justify-center rounded-full bg-black/65 text-white backdrop-blur-sm transition-colors active:bg-rose-600"
                 >
-                  X
+                  <IconX className="h-3.5 w-3.5" />
                 </button>
               )}
               {pages.length > 1 && (
-                <div className="absolute inset-x-0 bottom-0 flex justify-between bg-black/60 px-1 py-0.5">
+                <div className="absolute inset-x-0 bottom-0 flex justify-between bg-gradient-to-t from-black/80 to-transparent px-1 pb-1 pt-4">
                   <button
                     type="button"
                     aria-label={`Mover pagina ${i + 1} a la izquierda`}
                     onClick={() => onMovePage(i, -1)}
                     disabled={i === 0}
-                    className="px-1 text-xs text-white disabled:opacity-30"
+                    className="flex h-8 w-8 items-center justify-center rounded-full text-white disabled:opacity-25"
                   >
-                    {'<'}
+                    <IconChevronLeft className="h-4 w-4" />
                   </button>
                   <button
                     type="button"
                     aria-label={`Mover pagina ${i + 1} a la derecha`}
                     onClick={() => onMovePage(i, 1)}
                     disabled={i === pages.length - 1}
-                    className="px-1 text-xs text-white disabled:opacity-30"
+                    className="flex h-8 w-8 items-center justify-center rounded-full text-white disabled:opacity-25"
                   >
-                    {'>'}
+                    <IconChevronRight className="h-4 w-4" />
                   </button>
                 </div>
               )}
             </div>
           ))}
+
+          {/* Tile para agregar otra pagina */}
+          <button
+            type="button"
+            onClick={onAddPage}
+            aria-label="Agregar pagina"
+            className="flex aspect-[3/4] flex-col items-center justify-center gap-1.5 rounded-2xl border-2 border-dashed border-carbon-600/70 text-carbon-400 transition-colors active:border-scan-500/60 active:text-scan-300"
+          >
+            <IconPlus className="h-6 w-6" />
+            <span className="text-[11px] font-medium">Agregar</span>
+          </button>
         </div>
       </div>
 
-      {/* Formato y nombre */}
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-        <div>
-          <label className="mb-2 block text-xs font-semibold uppercase tracking-wide text-ink-400">
-            Formato
-          </label>
-          <div className="flex flex-wrap gap-2">
-            {FORMATS.map((f) => (
+      {/* Formato */}
+      <div>
+        <h2 className="mb-2 px-1 font-display text-[11px] font-semibold uppercase tracking-widest text-carbon-500">
+          Formato
+        </h2>
+        <div className="grid grid-cols-3 gap-2">
+          {FORMATS.map((f) => {
+            const selected = format === f.id;
+            return (
               <button
                 key={f.id}
                 type="button"
                 onClick={() => setFormat(f.id)}
                 title={f.hint}
-                className={`rounded-md border px-3 py-2 text-sm ${
-                  format === f.id
-                    ? 'border-emerald-500 bg-emerald-500/10 text-emerald-300'
-                    : 'border-ink-700 bg-ink-800 text-ink-200 hover:bg-ink-700'
+                aria-pressed={selected}
+                className={`scan-card flex min-h-[56px] flex-col items-center justify-center gap-0.5 rounded-2xl px-2 py-2.5 transition-transform active:scale-95 ${
+                  selected ? 'chip-selected' : ''
                 }`}
               >
-                {f.label}
+                <span
+                  className={`font-display text-sm font-bold ${
+                    selected ? 'text-scan-300' : 'text-carbon-300'
+                  }`}
+                >
+                  {f.label}
+                </span>
+                <span className="text-[9.5px] leading-tight text-carbon-500">
+                  {f.id === 'pdf' ? 'multi-pagina' : f.id === 'jpg' ? 'comprimido' : 'sin perdida'}
+                </span>
               </button>
-            ))}
-          </div>
-          {format !== 'pdf' && pages.length > 1 && (
-            <p className="mt-2 text-xs text-amber-300">
-              {format.toUpperCase()} solo exporta una imagen. Usa PDF para
-              guardar todas las paginas juntas.
-            </p>
-          )}
+            );
+          })}
         </div>
-
-        <div>
-          <label className="mb-2 block text-xs font-semibold uppercase tracking-wide text-ink-400">
-            Nombre del archivo
-          </label>
-          <input
-            type="text"
-            value={filename}
-            onChange={(e) => setFilename(e.target.value)}
-            className="w-full rounded-md border border-ink-700 bg-ink-950 px-3 py-2 text-sm text-ink-100 focus:border-emerald-500 focus:outline-none"
-          />
-          <p className="mt-1 text-[11px] text-ink-500">
-            Solo a-z, A-Z, 0-9, _ y -. Lo demas se sustituye por _.
+        {format !== 'pdf' && pages.length > 1 && (
+          <p className="mt-2 rounded-xl border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-[11px] leading-relaxed text-amber-200">
+            {format.toUpperCase()} solo exporta una imagen. Usa PDF para
+            guardar todas las paginas juntas.
           </p>
-        </div>
+        )}
       </div>
 
-      <div className="flex flex-wrap justify-between gap-2 pt-2">
+      {/* Nombre */}
+      <div>
+        <label
+          htmlFor="scan-filename"
+          className="mb-2 block px-1 font-display text-[11px] font-semibold uppercase tracking-widest text-carbon-500"
+        >
+          Nombre del archivo
+        </label>
+        <input
+          id="scan-filename"
+          type="text"
+          value={filename}
+          onChange={(e) => setFilename(e.target.value)}
+          autoComplete="off"
+          className="w-full rounded-2xl border border-carbon-700/70 bg-carbon-900 px-4 py-3 text-sm text-paper outline-none transition-colors focus:border-scan-500/70 focus:shadow-glow-sm"
+        />
+        <p className="mt-1.5 px-1 text-[10px] text-carbon-500">
+          Solo a-z, A-Z, 0-9, _ y -. Lo demas se sustituye por _.
+        </p>
+      </div>
+
+      {/* CTA */}
+      <div className="safe-bottom flex items-center gap-2 pt-1">
         <button
           type="button"
           onClick={onRestart}
-          className="rounded-md border border-ink-700 px-4 py-2 text-sm text-ink-200 hover:bg-ink-800"
+          className="btn-ghost flex min-h-[52px] items-center justify-center gap-1.5 rounded-2xl px-4 text-sm font-medium text-carbon-300"
         >
+          <IconRefresh className="h-4 w-4" />
           Empezar de nuevo
         </button>
         <button
           type="button"
           onClick={() => void handleExport()}
           disabled={exporting || pages.length === 0}
-          className="rounded-md bg-emerald-500 px-5 py-2 text-sm font-semibold text-emerald-950 hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-50"
+          className="btn-scan flex min-h-[52px] flex-1 items-center justify-center gap-2 rounded-2xl px-5 font-display text-sm font-semibold"
         >
+          <IconDownload className="h-4 w-4" />
           {exporting ? 'Exportando...' : `Descargar ${format.toUpperCase()}`}
         </button>
       </div>
