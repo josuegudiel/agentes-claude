@@ -7,6 +7,17 @@ const nextConfig = {
   },
   // Evitamos bundlear Node-only deps (pino, etc.) en el client.
   serverExternalPackages: ['pino', 'pino-pretty'],
+  // El scanner ahora vive en la raiz; /scanner queda como redirect para
+  // que los links compartidos antes del cambio sigan funcionando.
+  async redirects() {
+    return [
+      {
+        source: '/scanner',
+        destination: '/',
+        permanent: true,
+      },
+    ];
+  },
   // El codigo en ../src usa la convencion ESM Node de imports con extension
   // ".js" apuntando a archivos ".ts" hermanos. Mapeamos esto para Webpack y
   // Turbopack para que la resolucion funcione igual en ambos bundlers.
