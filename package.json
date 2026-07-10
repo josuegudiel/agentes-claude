@@ -4,8 +4,9 @@
   "private": true,
   "description": "Agentes de browser automation para flujos de SaaS (E2E, seed, agentes productivos)",
   "type": "module",
+  "packageManager": "pnpm@10.33.0",
   "engines": {
-    "node": ">=20.10.0"
+    "node": "22.x"
   },
   "scripts": {
     "test": "playwright test",
