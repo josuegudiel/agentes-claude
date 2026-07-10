@@ -105,6 +105,82 @@ describe('detectDocumentQuad', () => {
     expect(detectDocumentQuad(img)).toBeNull();
   });
 
+  it('detecta un documento MUY rotado (~35deg) — caso torpe del metodo de extremos', () => {
+    const w = 160;
+    const h = 160;
+    // Rectangulo 90x60 rotado 35 grados alrededor del centro de la imagen.
+    const cx = 80;
+    const cy = 80;
+    const rad = (35 * Math.PI) / 180;
+    const cos = Math.cos(rad);
+    const sin = Math.sin(rad);
+    const local: Point[] = [
+      { x: -45, y: -30 },
+      { x: 45, y: -30 },
+      { x: 45, y: 30 },
+      { x: -45, y: 30 },
+    ];
+    const rot = local.map((p) => ({
+      x: cx + p.x * cos - p.y * sin,
+      y: cy + p.x * sin + p.y * cos,
+    }));
+    const quad = detectDocumentQuad(docImage(w, h, rot));
+    expect(quad).not.toBeNull();
+    // Con rotacion fuerte, las esquinas "tl/tr/br/bl" detectadas pueden
+    // quedar rotadas un slot respecto a las que generamos: comparamos
+    // como CONJUNTO — cada esquina real debe tener una detectada cerca.
+    for (const expected of rot) {
+      const nearest = Math.min(
+        ...quad!.map((p) => Math.hypot(p.x * w - expected.x, p.y * h - expected.y)),
+      );
+      expect(nearest).toBeLessThanOrEqual(8);
+    }
+  });
+
+  it('ignora un distractor puntual en el fondo — el otro caso torpe', () => {
+    const w = 160;
+    const h = 128;
+    const rect: Point[] = [
+      { x: 40, y: 30 },
+      { x: 130, y: 34 },
+      { x: 126, y: 104 },
+      { x: 36, y: 98 },
+    ];
+    const img = makeImage(w, h, (x, y) => {
+      // Blob brillante 8x8 pegado a la esquina de la imagen: con el
+      // metodo de extremos secuestraba la esquina tl del quad.
+      if (x >= 3 && x < 11 && y >= 3 && y < 11) return 235;
+      return insideQuad(rect, x, y) ? 230 : 25;
+    });
+    const quad = detectDocumentQuad(img);
+    expect(quad).not.toBeNull();
+    for (let i = 0; i < 4; i++) {
+      expectCornerNear(quad![i]!, rect[i]!, w, h, 8);
+    }
+  });
+
+  it('documento cortado por el encuadre: usa el borde de la imagen', () => {
+    const w = 160;
+    const h = 128;
+    // El lado izquierdo del documento queda fuera del encuadre (x<0):
+    // solo se ven 3 bordes; el cuarto debe sintetizarse con el borde de
+    // la imagen.
+    const rect: Point[] = [
+      { x: -20, y: 24 },
+      { x: 120, y: 28 },
+      { x: 116, y: 104 },
+      { x: -24, y: 100 },
+    ];
+    const quad = detectDocumentQuad(docImage(w, h, rect));
+    expect(quad).not.toBeNull();
+    // Las dos esquinas izquierdas deben quedar clampeadas al borde x=0.
+    expect(quad![0]!.x * w).toBeLessThanOrEqual(4);
+    expect(quad![3]!.x * w).toBeLessThanOrEqual(4);
+    // Las derechas cerca de las reales.
+    expectCornerNear(quad![1]!, rect[1]!, w, h, 8);
+    expectCornerNear(quad![2]!, rect[2]!, w, h, 8);
+  });
+
   it('tolera ruido moderado en el fondo', () => {
     const w = 128;
     const h = 128;
