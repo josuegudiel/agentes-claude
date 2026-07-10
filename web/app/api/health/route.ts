@@ -8,6 +8,9 @@ import type { HealthResponse } from '../../../lib/types';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
+// maxDuration como config de segmento (Vercel lo respeta sin depender del
+// glob de `functions` en vercel.json, que no matchea en monorepos).
+export const maxDuration = 10;
 
 export async function GET(): Promise<NextResponse<HealthResponse>> {
   // Construimos los clients aqui — si la GROQ_API_KEY falta y querias Groq,
