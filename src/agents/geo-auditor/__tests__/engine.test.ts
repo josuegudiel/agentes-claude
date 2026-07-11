@@ -1,5 +1,21 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { runGeoAudit } from '../engine.js';
+
+// El fetcher usa el fetch de undici; lo mockeamos (Agent no-op).
+const { undiciFetchMock } = vi.hoisted(() => ({ undiciFetchMock: vi.fn() }));
+vi.mock('undici', () => ({
+  Agent: class {
+    constructor(_opts?: unknown) {}
+  },
+  fetch: undiciFetchMock,
+}));
+
+// El fetcher resuelve DNS para el guard anti-SSRF; en tests devolvemos una IP
+// publica fija para no depender de la red.
+vi.mock('node:dns/promises', () => ({
+  lookup: async () => [{ address: '93.184.216.34', family: 4 }],
+}));
+
+const { runGeoAudit } = await import('../engine.js');
 import type { TavilyClient } from '../tavily-client.js';
 import type { ChatClient } from '../../predictive/chat-client.js';
 import type { AuditEvent, AuditRequest } from '../schema.js';
@@ -39,11 +55,9 @@ function fakeTavily(results: Array<{ title: string; url: string; content: string
 }
 
 describe('runGeoAudit', () => {
-  let fetchSpy: ReturnType<typeof vi.spyOn>;
-
   beforeEach(() => {
-    fetchSpy = vi.spyOn(globalThis, 'fetch');
-    fetchSpy.mockImplementation(async (input: RequestInfo | URL) => {
+    undiciFetchMock.mockReset();
+    undiciFetchMock.mockImplementation(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url === 'https://tallerlopez.gt/') {
         return new Response(PAGE, { status: 200 });
@@ -53,7 +67,7 @@ describe('runGeoAudit', () => {
   });
 
   afterEach(() => {
-    fetchSpy.mockRestore();
+    undiciFetchMock.mockReset();
   });
 
   it('pipeline completo: checks de las 3 categorias, scores, resumen y eventos en orden', async () => {
@@ -144,7 +158,7 @@ describe('runGeoAudit', () => {
   });
 
   it('si el sitio no responde, lanza SiteFetchError', async () => {
-    fetchSpy.mockRejectedValue(new TypeError('fetch failed'));
+    undiciFetchMock.mockRejectedValue(new TypeError('fetch failed'));
     await expect(runGeoAudit(REQUEST, { chat: null, tavily: null })).rejects.toMatchObject({
       name: 'SiteFetchError',
     });

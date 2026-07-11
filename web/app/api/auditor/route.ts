@@ -10,11 +10,18 @@ export const runtime = 'nodejs';
 // glob de `functions` en vercel.json, que no matchea en monorepos).
 export const maxDuration = 60;
 
+// Parseo defensivo de env numerico: un valor invalido (typo, espacios) NO
+// debe desactivar silenciosamente el rate limit -> cae al default.
+function posIntEnv(name: string, fallback: number): number {
+  const n = Number.parseInt(process.env[name] ?? '', 10);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
 // Mas estricto que /api/predict: cada auditoria hace varios fetch externos
 // y (si hay claves) consume cuota de Tavily y Groq.
 const RATE_LIMIT_ENABLED = process.env['NODE_ENV'] === 'production';
-const RATE_LIMIT_PER_IP = Number(process.env['AUDITOR_RATE_LIMIT_PER_IP'] ?? 3);
-const RATE_LIMIT_WINDOW_MS = Number(process.env['RATE_LIMIT_WINDOW_MS'] ?? 10 * 60 * 1000);
+const RATE_LIMIT_PER_IP = posIntEnv('AUDITOR_RATE_LIMIT_PER_IP', 3);
+const RATE_LIMIT_WINDOW_MS = posIntEnv('RATE_LIMIT_WINDOW_MS', 10 * 60 * 1000);
 
 function sseFormat(event: AuditorSSEEvent): string {
   return `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`;
@@ -58,10 +65,28 @@ export async function POST(req: Request): Promise<Response> {
     });
   }
 
+  // Aborta la auditoria (fetch del sitio, Tavily) si el cliente cierra la
+  // conexion, para no gastar cuota/CPU en un resultado que nadie recibira.
+  const ac = new AbortController();
+  req.signal.addEventListener('abort', () => ac.abort());
+  // Cubre el caso en que el cliente ya se desconecto ANTES de que corra start().
+  if (req.signal.aborted) ac.abort();
+
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       const encoder = new TextEncoder();
+      let closed = false;
+      // Si ya venia abortado, no arrancar la auditoria.
+      if (ac.signal.aborted) {
+        try {
+          controller.close();
+        } catch {
+          /* ya cerrado */
+        }
+        return;
+      }
       const send = (event: AuditorSSEEvent): void => {
+        if (closed) return;
         try {
           controller.enqueue(encoder.encode(sseFormat(event)));
         } catch {
@@ -70,15 +95,29 @@ export async function POST(req: Request): Promise<Response> {
       };
 
       try {
-        const report = await runGeoAudit(parsed, { onEvent: send });
+        const report = await runGeoAudit(parsed, { onEvent: send, signal: ac.signal });
         send({ type: 'done', report });
       } catch (err) {
-        const code = err instanceof SiteFetchError ? err.code : 'AUDIT_FAILED';
-        const message = err instanceof Error ? err.message : String(err);
-        send({ type: 'error', message, code });
+        if (ac.signal.aborted) {
+          // Cliente desconectado: no hay a quien enviar el error.
+        } else if (err instanceof SiteFetchError) {
+          // SiteFetchError trae codigos estables y mensajes ya saneados.
+          send({ type: 'error', message: err.message, code: err.code });
+        } else {
+          // Error inesperado: no filtrar detalles internos al cliente.
+          send({ type: 'error', message: 'Error interno al auditar el sitio.', code: 'AUDIT_FAILED' });
+        }
       } finally {
-        controller.close();
+        closed = true;
+        try {
+          controller.close();
+        } catch {
+          // Ya cerrado por cancelacion del cliente.
+        }
       }
+    },
+    cancel() {
+      ac.abort();
     },
   });
 

@@ -15,6 +15,7 @@
  */
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { z } from 'zod';
 import { logger } from '../src/core/logger.js';
 import { makeChatClient } from '../src/agents/predictive/chat-client-factory.js';
@@ -100,19 +101,71 @@ export function parseBusinessesFile(path: string): Business[] {
   });
 }
 
+/**
+ * Parser CSV que respeta comillas y "" escapadas (RFC 4180 simplificado).
+ * split(',') no sirve: rompe con valores como "Taller, S.A.".
+ */
+export function parseCsvRows(raw: string): string[][] {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let field = '';
+  let inQuotes = false;
+
+  for (let i = 0; i < raw.length; i++) {
+    const ch = raw[i];
+    if (inQuotes) {
+      if (ch === '"') {
+        if (raw[i + 1] === '"') {
+          field += '"';
+          i++;
+        } else {
+          inQuotes = false;
+        }
+      } else {
+        field += ch;
+      }
+    } else if (ch === '"') {
+      inQuotes = true;
+    } else if (ch === ',') {
+      row.push(field);
+      field = '';
+    } else if (ch === '\n' || ch === '\r') {
+      // Cierra la fila en \n; ignora \r (soporta CRLF y CR).
+      if (ch === '\r' && raw[i + 1] === '\n') i++;
+      row.push(field);
+      field = '';
+      if (row.some((c) => c.trim().length > 0)) rows.push(row);
+      row = [];
+    } else {
+      field += ch;
+    }
+  }
+  // Comilla sin cerrar: el archivo esta mal formado; fallar claro en vez de
+  // absorber el resto del CSV en un solo campo.
+  if (inQuotes) {
+    throw new Error('CSV mal formado: hay una comilla sin cerrar');
+  }
+  // Última fila sin salto final.
+  if (field.length > 0 || row.length > 0) {
+    row.push(field);
+    if (row.some((c) => c.trim().length > 0)) rows.push(row);
+  }
+  return rows;
+}
+
 function parseCsv(raw: string): Array<Record<string, string>> {
-  const lines = raw.split(/\r?\n/).filter((l) => l.trim().length > 0);
-  const header = (lines[0] ?? '').split(',').map((h) => h.trim().toLowerCase());
+  const rows = parseCsvRows(raw);
+  if (rows.length === 0) throw new Error('CSV vacio');
+  const header = (rows[0] ?? []).map((h) => h.trim().toLowerCase());
   for (const required of ['name', 'city', 'url']) {
     if (!header.includes(required)) {
       throw new Error(`CSV sin columna "${required}" (encabezado: ${header.join(',')})`);
     }
   }
-  return lines.slice(1).map((line) => {
-    const cells = line.split(',').map((c) => c.trim());
+  return rows.slice(1).map((cells) => {
     const row: Record<string, string> = {};
     header.forEach((key, i) => {
-      row[key] = cells[i] ?? '';
+      row[key] = (cells[i] ?? '').trim();
     });
     return row;
   });
@@ -125,6 +178,17 @@ export function slugify(name: string): string {
     .replace(/[\u0300-\u036f]/g, '')
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/(^-|-$)/g, '');
+}
+
+/** Garantiza un slug unico anexando -2, -3... para no sobrescribir reportes. */
+export function uniqueSlug(base: string, used: Set<string>): string {
+  let slug = base;
+  let n = 2;
+  while (used.has(slug)) {
+    slug = `${base}-${n++}`;
+  }
+  used.add(slug);
+  return slug;
 }
 
 async function main(): Promise<void> {
@@ -144,10 +208,11 @@ async function main(): Promise<void> {
   const chat = args.noLlm ? null : makeChatClient();
   const summary: Array<{ name: string; score: string; status: string; file: string }> = [];
   const csvRows: Array<Record<string, string>> = [];
+  const usedSlugs = new Set<string>();
 
   // Secuencial a proposito: cuida las cuotas gratuitas de Groq y Tavily.
   for (const business of businesses) {
-    const slug = slugify(business.name) || 'negocio';
+    const slug = uniqueSlug(slugify(business.name) || 'negocio', usedSlugs);
     process.stdout.write(`→ ${business.name} (${business.url}) ... `);
     try {
       const request = AuditRequestSchema.parse({
@@ -220,8 +285,14 @@ function csvRow(business: Business, report: AuditReport): Record<string, string>
 export function toCsv(rows: Array<Record<string, string>>): string {
   if (rows.length === 0) return '';
   const headers = Object.keys(rows[0] ?? {});
-  const escape = (value: string): string =>
-    /[",\n]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
+  const escape = (raw: string): string => {
+    // Anti CSV-injection: un valor que empieza con = + - @ (o tab/CR) se
+    // interpreta como formula/DDE al abrir en Excel/Sheets. Se neutraliza
+    // prefijando una comilla simple.
+    const value = /^[=+\-@\t\r]/.test(raw) ? `'${raw}` : raw;
+    // Entrecomillar si contiene comilla, coma o cualquier salto de linea.
+    return /[",\n\r]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
+  };
   const lines = [headers.join(',')];
   for (const row of rows) {
     lines.push(headers.map((h) => escape(row[h] ?? '')).join(','));
@@ -263,8 +334,16 @@ function printUsage(): void {
   );
 }
 
-main().catch((err) => {
-  logger.error({ err: (err as Error).message }, 'Auditoria en lote fallo');
-  console.error(`\nError: ${(err as Error).message}\n`);
-  process.exit(1);
-});
+// Solo ejecuta el CLI cuando se corre directamente (no al importarlo en tests).
+// pathToFileURL maneja rutas con espacios/caracteres no-ASCII (percent-encoding)
+// que una interpolacion `file://${path}` no encodearia igual que import.meta.url.
+const invokedDirectly =
+  typeof process.argv[1] === 'string' &&
+  import.meta.url === pathToFileURL(process.argv[1]).href;
+if (invokedDirectly) {
+  main().catch((err) => {
+    logger.error({ err: (err as Error).message }, 'Auditoria en lote fallo');
+    console.error(`\nError: ${(err as Error).message}\n`);
+    process.exit(1);
+  });
+}

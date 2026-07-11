@@ -75,10 +75,11 @@ export function deriveFindings(checks: CheckResult[]): Finding[] {
       recommendation: check.recommendation ?? 'Revisar este punto con un especialista GEO/SEO.',
     });
   }
+  // Precomputar pesos por id: evita un find() lineal dentro del comparador.
+  const weightById = new Map(checks.map((c) => [c.id, c.weight]));
   return findings.sort((a, b) => {
     const bySeverity = SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity];
     if (bySeverity !== 0) return bySeverity;
-    const weightOf = (f: Finding): number => checks.find((c) => c.id === f.checkId)?.weight ?? 0;
-    return weightOf(b) - weightOf(a);
+    return (weightById.get(b.checkId) ?? 0) - (weightById.get(a.checkId) ?? 0);
   });
 }

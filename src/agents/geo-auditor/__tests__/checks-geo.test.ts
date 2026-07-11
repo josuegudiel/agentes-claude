@@ -59,6 +59,16 @@ describe('parseRobotsGroups / isAgentBlocked', () => {
     );
     expect(isAgentBlocked(groups, 'GPTBot')).toBe(true);
   });
+
+  it('Allow: / junto a Disallow: / NO cuenta como bloqueo (falso positivo)', () => {
+    const groups = parseRobotsGroups('User-agent: GPTBot\nDisallow: /\nAllow: /');
+    expect(isAgentBlocked(groups, 'GPTBot')).toBe(false);
+  });
+
+  it('Disallow raiz sin Allow raiz sigue siendo bloqueo', () => {
+    const groups = parseRobotsGroups('User-agent: GPTBot\nDisallow: /\nAllow: /publico');
+    expect(isAgentBlocked(groups, 'GPTBot')).toBe(true);
+  });
 });
 
 describe('runGeoChecks', () => {

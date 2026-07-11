@@ -2,7 +2,7 @@ import { logger } from '../../core/logger.js';
 import type { ChatClient } from '../predictive/chat-client.js';
 import { chatClientProvider, makeChatClient } from '../predictive/chat-client-factory.js';
 import { parseSiteHtml } from './html.js';
-import { fetchSite } from './site-fetcher.js';
+import { fetchSite, SiteFetchError } from './site-fetcher.js';
 import { runOnpageChecks } from './checks/onpage.js';
 import { runGeoChecks } from './checks/geo.js';
 import { runPresenceChecks } from './checks/presence.js';
@@ -31,6 +31,13 @@ export interface GeoAuditOptions {
   /** Inyectable para tests; default TavilyClient si hay API key. */
   tavily?: TavilyClient | null;
   onEvent?: (event: AuditEvent) => void;
+  /**
+   * Aborta la auditoria si el cliente desconecta. Corta el fetch del sitio y
+   * las busquedas de Tavily en vuelo, y se comprueba entre fases. La llamada
+   * final al LLM (resumen, la fase mas corta) no se cancela a mitad, pero se
+   * omite si el abort llega antes de iniciarla.
+   */
+  signal?: AbortSignal;
 }
 
 export async function runGeoAudit(
@@ -41,18 +48,24 @@ export async function runGeoAudit(
   const emit = (event: AuditEvent): void => {
     try {
       opts.onEvent?.(event);
-    } catch {
-      // Un listener roto no debe tumbar la auditoria.
+    } catch (err) {
+      // Un listener roto no debe tumbar la auditoria, pero dejamos traza para
+      // poder diagnosticar por que un stream quedo incompleto.
+      log.debug({ err: (err as Error).message, event: event.type }, 'listener onEvent fallo');
     }
   };
   const startedAt = Date.now();
   const warnings: string[] = [];
 
+  const throwIfAborted = (): void => {
+    if (opts.signal?.aborted) throw new SiteFetchError('Auditoria abortada.', { code: 'ABORTED' });
+  };
+
   emit({ type: 'start', url: req.url, businessName: req.businessName });
 
   // --- 1. Fetch del sitio (si esto falla, falla la auditoria entera) ---
   emit({ type: 'phase', phase: 'fetch', status: 'running' });
-  const fetched = await fetchSite(req.url);
+  const fetched = await fetchSite(req.url, opts.signal ? { signal: opts.signal } : undefined);
   const site = parseSiteHtml(fetched.html, {
     baseHost: new URL(fetched.finalUrl).hostname,
   });
@@ -75,6 +88,7 @@ export async function runGeoAudit(
   emit({ type: 'phase', phase: 'onpage', status: 'done' });
 
   // --- 3. Preparacion GEO ---
+  throwIfAborted();
   emit({ type: 'phase', phase: 'geo', status: 'running' });
   emitChecks(
     runGeoChecks({
@@ -88,6 +102,7 @@ export async function runGeoAudit(
   emit({ type: 'phase', phase: 'geo', status: 'done' });
 
   // --- 4. Presencia online (opcional / degradable) ---
+  throwIfAborted();
   const presence = await runPresencePhase(req, fetched.finalUrl, opts, emitChecks, warnings, emit);
 
   // --- 5. Scoring determinista ---
@@ -96,6 +111,7 @@ export async function runGeoAudit(
   emit({ type: 'scores', scores });
 
   // --- 6. Resumen ejecutivo con LLM (degradable) ---
+  throwIfAborted();
   emit({ type: 'phase', phase: 'summary', status: 'running' });
   let executiveSummary: string | null = null;
   let llm: AuditReport['llm'] = null;
@@ -112,7 +128,11 @@ export async function runGeoAudit(
         }),
         { temperature: 0.4 },
       );
-      executiveSummary = text.trim();
+      const trimmed = text.trim();
+      // Un resumen vacio (LLM devolvio solo espacios) se trata como fallo, para
+      // mantener solo dos estados coherentes: texto util o null (sin llm).
+      if (!trimmed) throw new Error('el LLM devolvio un resumen vacio');
+      executiveSummary = trimmed;
       llm = { provider: providerName(), model: chat.modelName };
       emit({ type: 'phase', phase: 'summary', status: 'done' });
     } catch (err) {
@@ -155,8 +175,12 @@ async function runPresencePhase(
   emit: (event: AuditEvent) => void,
 ): Promise<AuditReport['presence']> {
   if (req.skipPresence) {
+    const reason = 'Analisis de presencia desactivado para esta auditoria.';
+    // Emitir el warning tambien aqui, para que el reporte explique el 'no medida'
+    // igual que cuando falta Tavily (consistencia en PDF/markdown).
+    warnings.push(reason);
     emit({ type: 'phase', phase: 'presence', status: 'skipped', detail: 'desactivado' });
-    return { skipped: true, reason: 'Analisis de presencia desactivado para esta auditoria.' };
+    return { skipped: true, reason };
   }
 
   let tavily: TavilyClient | null;
@@ -174,9 +198,10 @@ async function runPresencePhase(
 
   emit({ type: 'phase', phase: 'presence', status: 'running' });
   try {
+    const searchOpts = opts.signal ? { signal: opts.signal } : undefined;
     const [general, reviews] = await Promise.all([
-      tavily.search(`"${req.businessName}" ${req.city}`),
-      tavily.search(`${req.businessName} ${req.city} opiniones reseñas`),
+      tavily.search(`"${req.businessName}" ${req.city}`, searchOpts),
+      tavily.search(`${req.businessName} ${req.city} opiniones reseñas`, searchOpts),
     ]);
     const results = dedupeByUrl([...general.results, ...reviews.results]);
     emitChecks(

@@ -16,6 +16,7 @@ export default defineConfig({
       'web/lib/**/__tests__/**/*.test.ts',
       'web/lib/**/*.test.ts',
       'web/components/**/__tests__/**/*.test.ts',
+      'scripts/**/__tests__/**/*.test.ts',
     ],
     exclude: ['node_modules', '**/node_modules/**', 'tests/e2e/**', 'predictive-service/**', 'web/.next/**'],
     environment: 'node',

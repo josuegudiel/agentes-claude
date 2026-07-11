@@ -1,5 +1,6 @@
 import type { CheckResult } from '../schema.js';
 import type { ParsedSite } from '../html.js';
+import { containsWord } from './text-match.js';
 
 /**
  * Checks de preparacion GEO (Generative Engine Optimization): que tan listo
@@ -69,10 +70,11 @@ export function runGeoChecks(input: GeoInput): CheckResult[] {
 }
 
 function cityInTitleCheck(site: ParsedSite, city: string): CheckResult {
-  const cityLower = city.toLowerCase();
-  const inTitle = Boolean(site.title?.toLowerCase().includes(cityLower));
-  const h1 = site.headings.find((h) => h.level === 1)?.text.toLowerCase() ?? '';
-  const inH1 = h1.includes(cityLower);
+  // Match por palabra completa e ignorando acentos: "Leon" no coincide con
+  // "Napoleon", y "León" coincide con un title que escriba "Leon".
+  const inTitle = site.title ? containsWord(site.title, city) : false;
+  const h1 = site.headings.find((h) => h.level === 1)?.text ?? '';
+  const inH1 = containsWord(h1, city);
 
   let status: CheckResult['status'];
   if (inTitle) status = 'pass';
@@ -194,9 +196,10 @@ function jsonLdLocalCheck(site: ParsedSite): CheckResult {
 interface RobotsGroup {
   agents: string[];
   disallows: string[];
+  allows: string[];
 }
 
-/** Parser minimo de robots.txt: grupos User-agent -> Disallow. */
+/** Parser minimo de robots.txt: grupos User-agent -> Disallow/Allow. */
 export function parseRobotsGroups(content: string): RobotsGroup[] {
   const groups: RobotsGroup[] = [];
   let current: RobotsGroup | null = null;
@@ -212,26 +215,37 @@ export function parseRobotsGroups(content: string): RobotsGroup[] {
 
     if (key === 'user-agent') {
       if (!current || !lastWasAgent) {
-        current = { agents: [], disallows: [] };
+        current = { agents: [], disallows: [], allows: [] };
         groups.push(current);
       }
       current.agents.push(value.toLowerCase());
       lastWasAgent = true;
     } else {
       if (key === 'disallow' && current) current.disallows.push(value);
+      else if (key === 'allow' && current) current.allows.push(value);
       lastWasAgent = false;
     }
   }
   return groups;
 }
 
-/** true si el agente tiene Disallow: / efectivo (directo o via wildcard). */
+/**
+ * true si el agente esta efectivamente bloqueado del sitio entero.
+ * Considera la directiva Allow: un `Allow: /` (o `/*`) junto a `Disallow: /`
+ * habilita el acceso — ignorarlo produce falsos positivos de bloqueo.
+ */
 export function isAgentBlocked(groups: RobotsGroup[], agent: string): boolean {
   const lower = agent.toLowerCase();
   const specific = groups.filter((g) => g.agents.includes(lower));
   // robots.txt: el grupo mas especifico gana; solo cae al wildcard si no hay grupo propio.
   const applicable = specific.length > 0 ? specific : groups.filter((g) => g.agents.includes('*'));
-  return applicable.some((g) => g.disallows.some((d) => d === '/' || d === '/*'));
+  return applicable.some((g) => {
+    const disallowRoot = g.disallows.some((d) => d === '/' || d === '/*');
+    if (!disallowRoot) return false;
+    // Un Allow raiz revierte el Disallow raiz -> no esta bloqueado.
+    const allowRoot = g.allows.some((a) => a === '/' || a === '/*');
+    return !allowRoot;
+  });
 }
 
 function robotsAiCrawlersCheck(robots: GeoInput['robotsTxt']): CheckResult {
@@ -385,15 +399,23 @@ function citableDataCheck(site: ParsedSite): CheckResult {
   };
 }
 
-const PHONE_PATTERN = /(?:\+?\d{1,3}[\s.-]?)?(?:\(?\d{2,4}\)?[\s.-]?)?\d{3,4}[\s.-]?\d{4}\b/;
-const ADDRESS_HINT =
-  /\b(calle|avenida|av\.|zona|colonia|boulevard|blvd|carretera|local|edificio|street|ave\b|suite|#\s?\d)/i;
+// Telefono: (a) numero con separador/parentesis/prefijo internacional entre
+// bloques, o (b) una corrida contigua de EXACTAMENTE 8 digitos (formato movil/
+// fijo comun en LatAm, ej. "77611234"). El "exactamente 8" evita matchear
+// cifras de 7 digitos como "1500000 clientes" o corridas mas largas.
+const PHONE_PATTERN =
+  /(?:\+\d{1,3}[\s.-]?)?(?:\(\d{2,4}\)|\d{2,4})[\s.-]\d{3,4}(?:[\s.-]\d{2,4})?|\b\d{8}\b/;
+// Direccion: palabras fuertes por si solas, o palabras debiles seguidas de un
+// numero (asi "comida local" no cuenta como direccion, pero "local 5" si).
+const ADDRESS_STRONG = /\b(calle|avenida|av\.|boulevard|blvd|carretera|colonia|edificio|street)\b/i;
+const ADDRESS_WEAK_WITH_NUM = /\b(zona|local|suite|no\.?)\s*\d|#\s?\d/i;
 
 function napCheck(site: ParsedSite, city: string): CheckResult {
   const text = site.visibleText;
-  const hasPhone = PHONE_PATTERN.test(text);
-  const hasCity = text.toLowerCase().includes(city.toLowerCase());
-  const hasAddress = ADDRESS_HINT.test(text);
+  // El telefono cuenta si hay un enlace tel: (senal dura) o un patron con formato.
+  const hasPhone = site.links.telLinks.length > 0 || PHONE_PATTERN.test(text);
+  const hasCity = containsWord(text, city);
+  const hasAddress = ADDRESS_STRONG.test(text) || ADDRESS_WEAK_WITH_NUM.test(text);
   const present = [hasPhone, hasCity, hasAddress].filter(Boolean).length;
 
   let status: CheckResult['status'];

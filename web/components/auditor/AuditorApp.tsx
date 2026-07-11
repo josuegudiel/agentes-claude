@@ -29,22 +29,28 @@ export function AuditorApp(): React.ReactElement {
   const [delta, setDelta] = useState<number | null>(null);
   const [copied, setCopied] = useState(false);
   const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+  // Espejo del historial para calcular el delta fuera del updater de setState
+  // (mantener el updater puro y evitar dobles escrituras en StrictMode).
+  const historyRef = useRef<AuditHistoryEntry[]>([]);
 
   useEffect(() => {
-    setHistory(loadHistory());
+    const loaded = loadHistory();
+    historyRef.current = loaded;
+    setHistory(loaded);
     return () => {
       if (copyTimer.current) clearTimeout(copyTimer.current);
+      abortRef.current?.abort();
     };
   }, []);
 
   const recordAudit = useCallback((done: AuditReport) => {
     const entry = entryFromReport(done);
-    setHistory((prev) => {
-      const { list, previous } = appendEntry(prev, entry);
-      persistHistory(list);
-      setDelta(previous ? entry.scores.overall - previous.scores.overall : null);
-      return list;
-    });
+    const { list, previous } = appendEntry(historyRef.current, entry);
+    historyRef.current = list;
+    persistHistory(list);
+    setHistory(list);
+    setDelta(previous ? entry.scores.overall - previous.scores.overall : null);
   }, []);
 
   const handleSubmit = useCallback(
@@ -56,11 +62,18 @@ export function AuditorApp(): React.ReactElement {
       setCopied(false);
       setRunning(true);
 
+      // Cancelar cualquier auditoria anterior en vuelo (evita mezclar eventos
+      // y fugar el stream si el usuario relanza rapido).
+      abortRef.current?.abort();
+      const ac = new AbortController();
+      abortRef.current = ac;
+
       try {
         const res = await fetch('/api/auditor', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify(params),
+          signal: ac.signal,
         });
         if (!res.ok || !res.body) {
           const text = await res.text();
@@ -90,9 +103,15 @@ export function AuditorApp(): React.ReactElement {
           }
         }
       } catch (err) {
-        setErrorMsg(err instanceof Error ? err.message : String(err));
+        // Un abort deliberado (relanzar/desmontar) no es un error a mostrar.
+        if (!(err instanceof DOMException && err.name === 'AbortError')) {
+          setErrorMsg(err instanceof Error ? err.message : String(err));
+        }
       } finally {
-        setRunning(false);
+        if (abortRef.current === ac) {
+          abortRef.current = null;
+          setRunning(false);
+        }
       }
     },
     [recordAudit],
@@ -119,6 +138,7 @@ export function AuditorApp(): React.ReactElement {
 
   const handleClearHistory = useCallback(() => {
     clearHistory();
+    historyRef.current = [];
     setHistory([]);
   }, []);
 
@@ -186,6 +206,7 @@ export function AuditorApp(): React.ReactElement {
                 <button
                   type="button"
                   onClick={handleCopySummary}
+                  aria-live="polite"
                   className="holo-card inline-flex items-center gap-2 px-4 py-2 text-xs font-medium text-violet-100 transition duration-200 hover:border-cyan-300/50 hover:text-cyan-300"
                 >
                   {copied ? 'Copiado ✓' : 'Copiar resumen'}

@@ -24,19 +24,22 @@ export function normalizeUrl(raw: string): string {
 export const AuditRequestSchema = z.object({
   url: z
     .string()
+    .trim()
     .min(4)
     .max(2048)
     .transform(normalizeUrl)
     .refine((u) => {
       try {
         const parsed = new URL(u);
-        return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
+        // Exigir un host con punto (dominio real), no 'https://a'.
+        return parsed.hostname.includes('.');
       } catch {
         return false;
       }
     }, 'URL invalida'),
-  businessName: z.string().min(2).max(120),
-  city: z.string().min(2).max(80),
+  businessName: z.string().trim().min(2).max(120),
+  city: z.string().trim().min(2).max(80),
   skipPresence: z.boolean().default(false),
 });
 export type AuditRequest = z.infer<typeof AuditRequestSchema>;
