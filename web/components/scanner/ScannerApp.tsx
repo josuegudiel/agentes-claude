@@ -165,14 +165,14 @@ export function ScannerApp(): React.ReactElement {
       <Steps stage={stage} pageCount={pages.length} />
 
       {loadError && (
-        <div className="stage-in rounded-2xl border border-rose-500/30 bg-rose-950/40 px-4 py-3 text-sm text-rose-200">
+        <div className="stage-in rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
           <strong className="font-semibold">Error cargando imagen:</strong>{' '}
           {loadError}
         </div>
       )}
 
       {restoredCount > 0 && stage === 'export' && (
-        <div className="stage-in flex items-center justify-between gap-3 rounded-2xl border border-scan-500/25 bg-scan-500/10 px-4 py-2.5 text-sm text-scan-200">
+        <div className="stage-in flex items-center justify-between gap-3 rounded-2xl border border-leaf-200 bg-leaf-50 px-4 py-2.5 text-sm text-leaf-700">
           <span className="flex items-center gap-2">
             <IconCheck className="h-4 w-4 shrink-0" />
             Sesion anterior restaurada ({restoredCount}{' '}
@@ -182,7 +182,7 @@ export function ScannerApp(): React.ReactElement {
             type="button"
             onClick={() => setRestoredCount(0)}
             aria-label="Cerrar aviso"
-            className="btn-ghost flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-carbon-300"
+            className="btn-ghost flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-stone-500"
           >
             <IconX className="h-4 w-4" />
           </button>
@@ -199,7 +199,7 @@ export function ScannerApp(): React.ReactElement {
       {stage === 'edit' && pendingImages.length > 0 && (
         <>
           {pendingTotal > 1 && (
-            <p className="text-center text-xs font-medium text-scan-300">
+            <p className="text-center text-xs font-semibold text-leaf-600">
               Editando pagina {pendingTotal - pendingImages.length + 1} de {pendingTotal}
             </p>
           )}
@@ -292,25 +292,25 @@ function Steps({
             <div
               className={`flex min-w-0 flex-1 items-center gap-2 rounded-full border px-2.5 py-1.5 transition-colors ${
                 state === 'active'
-                  ? 'border-scan-500/60 bg-scan-500/10 text-scan-200 shadow-glow-sm'
+                  ? 'border-leaf-500 bg-leaf-50 text-leaf-700'
                   : state === 'done'
-                    ? 'border-carbon-700 bg-carbon-850 text-scan-400'
-                    : 'border-carbon-700/60 bg-carbon-900/60 text-carbon-500'
+                    ? 'border-stone-200 bg-white text-leaf-600'
+                    : 'border-stone-200 bg-white text-stone-400'
               }`}
               aria-current={state === 'active' ? 'step' : undefined}
             >
               <span
                 className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] font-bold ${
                   state === 'active'
-                    ? 'bg-scan-400 text-carbon-950'
+                    ? 'bg-leaf-500 text-white'
                     : state === 'done'
-                      ? 'bg-scan-500/25 text-scan-300'
-                      : 'bg-carbon-800 text-carbon-500'
+                      ? 'bg-leaf-100 text-leaf-700'
+                      : 'bg-stone-100 text-stone-400'
                 }`}
               >
                 {state === 'done' ? <IconCheck className="h-3 w-3" /> : i + 1}
               </span>
-              <span className="truncate font-display text-xs font-medium">
+              <span className="truncate text-xs font-bold">
                 {it.label}
               </span>
             </div>
