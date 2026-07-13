@@ -212,7 +212,7 @@ export function EditView({ image, onConfirm, onBack }: Props): React.ReactElemen
 
     loupe.width = LOUPE_SIZE;
     loupe.height = LOUPE_SIZE;
-    ctx.fillStyle = '#06080e';
+    ctx.fillStyle = '#f5f5f4';
     ctx.fillRect(0, 0, LOUPE_SIZE, LOUPE_SIZE);
 
     const r = loupeRects(cx, cy, preview.width, preview.height, LOUPE_SIZE, LOUPE_ZOOM);
@@ -221,7 +221,7 @@ export function EditView({ image, onConfirm, onBack }: Props): React.ReactElemen
       ctx.drawImage(preview, r.sx, r.sy, r.sw, r.sh, r.dx, r.dy, r.dw, r.dh);
     }
 
-    ctx.strokeStyle = 'rgba(45,212,191,0.9)';
+    ctx.strokeStyle = 'rgba(30,158,100,0.9)';
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.moveTo(LOUPE_SIZE / 2, 0);
@@ -251,7 +251,7 @@ export function EditView({ image, onConfirm, onBack }: Props): React.ReactElemen
       {/* Lienzo con overlay del quad */}
       <div
         ref={containerRef}
-        className="relative w-full overflow-hidden rounded-3xl bg-carbon-950 shadow-card ring-1 ring-carbon-700/60"
+        className="relative w-full overflow-hidden rounded-2xl border border-stone-200 bg-stone-100"
         style={{ touchAction: 'none' }}
       >
         <canvas ref={previewRef} className="mx-auto block max-w-full" />
@@ -274,7 +274,7 @@ export function EditView({ image, onConfirm, onBack }: Props): React.ReactElemen
             del lado contrario a la esquina para que el dedo no la tape. */}
         {dragCorner !== null && (
           <div
-            className={`pointer-events-none absolute top-2 overflow-hidden rounded-full border-2 border-scan-400 shadow-glow ${
+            className={`pointer-events-none absolute top-2 overflow-hidden rounded-full border-[3px] border-leaf-500 shadow-sm ${
               loupePlacement(quad[dragCorner]!.x) === 'right' ? 'right-2' : 'left-2'
             }`}
             style={{ width: LOUPE_SIZE, height: LOUPE_SIZE }}
@@ -286,10 +286,10 @@ export function EditView({ image, onConfirm, onBack }: Props): React.ReactElemen
       </div>
 
       {/* Estado de la deteccion */}
-      <p className="flex items-center justify-center gap-1.5 text-center text-[11px] text-carbon-400">
+      <p className="flex items-center justify-center gap-1.5 text-center text-[11px] text-stone-500">
         {autoDetected ? (
           <>
-            <IconWand className="h-3.5 w-3.5 text-scan-400" />
+            <IconWand className="h-3.5 w-3.5 text-leaf-600" />
             Bordes detectados automaticamente — ajusta las esquinas si hace falta.
           </>
         ) : (
@@ -307,7 +307,7 @@ export function EditView({ image, onConfirm, onBack }: Props): React.ReactElemen
 
       {/* Filtros con preview real */}
       <div>
-        <div className="mb-1.5 px-1 font-display text-[11px] font-semibold uppercase tracking-widest text-carbon-500">
+        <div className="mb-1.5 px-1 text-[11px] font-bold uppercase tracking-widest text-stone-400">
           Filtro
         </div>
         <div className="no-scrollbar -mx-1 flex gap-2 overflow-x-auto px-1 pb-1">
@@ -321,11 +321,11 @@ export function EditView({ image, onConfirm, onBack }: Props): React.ReactElemen
                 onClick={() => setFilter(f.id)}
                 title={f.hint}
                 aria-pressed={selected}
-                className={`flex shrink-0 flex-col items-center gap-1 rounded-2xl border border-carbon-700/70 bg-carbon-850 p-1.5 transition-transform active:scale-95 ${
+                className={`flex shrink-0 flex-col items-center gap-1 rounded-2xl border border-stone-200 bg-white p-1.5 transition-transform active:scale-95 ${
                   selected ? 'chip-selected' : ''
                 }`}
               >
-                <span className="block h-16 w-14 overflow-hidden rounded-xl bg-carbon-900">
+                <span className="block h-16 w-14 overflow-hidden rounded-xl bg-stone-100">
                   {thumb && (
                     // eslint-disable-next-line @next/next/no-img-element
                     <img
@@ -337,8 +337,8 @@ export function EditView({ image, onConfirm, onBack }: Props): React.ReactElemen
                   )}
                 </span>
                 <span
-                  className={`text-[10px] font-medium ${
-                    selected ? 'text-scan-300' : 'text-carbon-400'
+                  className={`text-[10px] font-semibold ${
+                    selected ? 'text-leaf-700' : 'text-stone-500'
                   }`}
                 >
                   {f.label}
@@ -354,7 +354,7 @@ export function EditView({ image, onConfirm, onBack }: Props): React.ReactElemen
         <button
           type="button"
           onClick={onBack}
-          className="btn-ghost flex min-h-[52px] items-center justify-center gap-1 rounded-2xl px-4 text-sm font-medium text-carbon-300"
+          className="btn-ghost flex min-h-[52px] items-center justify-center gap-1 rounded-2xl px-4 text-sm font-semibold text-stone-600"
         >
           <IconChevronLeft className="h-4 w-4" />
           Volver
@@ -363,7 +363,7 @@ export function EditView({ image, onConfirm, onBack }: Props): React.ReactElemen
           type="button"
           onClick={handleConfirm}
           disabled={confirming}
-          className="btn-scan flex min-h-[52px] flex-1 items-center justify-center rounded-2xl px-5 font-display text-sm font-semibold"
+          className="btn-scan flex min-h-[52px] flex-1 items-center justify-center rounded-2xl px-5 text-sm font-bold"
         >
           {confirming ? 'Procesando...' : 'Aplicar y continuar'}
         </button>
@@ -385,10 +385,10 @@ function ToolButton({
     <button
       type="button"
       onClick={onClick}
-      className="btn-ghost flex min-h-[58px] flex-col items-center justify-center gap-1 rounded-2xl px-1 py-2 text-scan-300"
+      className="btn-ghost flex min-h-[58px] flex-col items-center justify-center gap-1 rounded-2xl px-1 py-2 text-leaf-600"
     >
       {icon}
-      <span className="text-[10px] font-medium text-carbon-400">{label}</span>
+      <span className="text-[10px] font-semibold text-stone-500">{label}</span>
     </button>
   );
 }
@@ -463,12 +463,12 @@ function QuadOverlay({ quad }: { quad: Quad }): React.ReactElement {
       <path
         d={`M0 0 H100 V100 H0 Z ${innerPath} Z`}
         fillRule="evenodd"
-        fill="rgba(3, 6, 12, 0.6)"
+        fill="rgba(28, 25, 23, 0.5)"
       />
       <polygon
         points={pts}
         fill="none"
-        stroke="#2dd4bf"
+        stroke="#1E9E64"
         strokeWidth="0.6"
         vectorEffect="non-scaling-stroke"
       />
@@ -490,7 +490,7 @@ function Handle({
       role="slider"
       aria-label={label}
       onPointerDown={onDown}
-      className="absolute h-8 w-8 -translate-x-1/2 -translate-y-1/2 cursor-move rounded-full border-[3px] border-paper bg-scan-400 shadow-glow-sm"
+      className="absolute h-8 w-8 -translate-x-1/2 -translate-y-1/2 cursor-move rounded-full border-[3px] border-leaf-500 bg-white shadow-sm"
       style={{
         left: `${point.x * 100}%`,
         top: `${point.y * 100}%`,

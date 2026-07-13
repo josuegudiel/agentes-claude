@@ -1,16 +1,12 @@
 import type { Metadata, Viewport } from 'next';
-import { Inter, Space_Grotesk } from 'next/font/google';
+import { Nunito } from 'next/font/google';
 import './globals.css';
 
-// Display para titulos (geometrica, con caracter) + Inter para UI.
-// next/font descarga y self-hostea en build: cero requests a Google
-// en runtime y sin FOUT.
-const display = Space_Grotesk({
-  subsets: ['latin'],
-  variable: '--font-display',
-  display: 'swap',
-});
-const body = Inter({
+// Nunito para toda la UI: terminales redondeadas, calida y legible.
+// Eleccion deliberada — NO Inter ni Space Grotesk (los defaults que
+// delatan una interfaz generada por IA). next/font descarga y
+// self-hostea en build: cero requests a Google en runtime.
+const body = Nunito({
   subsets: ['latin'],
   variable: '--font-body',
   display: 'swap',
@@ -28,7 +24,7 @@ export const viewport: Viewport = {
   width: 'device-width',
   initialScale: 1,
   viewportFit: 'cover',
-  themeColor: '#06080e',
+  themeColor: '#FAF8F3',
 };
 
 export default function RootLayout({
@@ -37,8 +33,8 @@ export default function RootLayout({
   children: React.ReactNode;
 }): React.ReactElement {
   return (
-    <html lang="es" className={`${display.variable} ${body.variable}`}>
-      <body className="scanner-theme min-h-screen font-sans text-carbon-200 antialiased">
+    <html lang="es" className={body.variable}>
+      <body className="scanner-theme min-h-screen font-sans text-stone-800 antialiased">
         {children}
       </body>
     </html>

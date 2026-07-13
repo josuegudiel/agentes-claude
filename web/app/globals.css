@@ -287,25 +287,16 @@ body {
 }
 
 /* =====================================================================
-   Scanner — tema "darkroom": carbon azulado profundo y luz de escaner
-   verde-cian. Mobile-first: targets grandes, safe-areas, sin hover-only.
+   Scanner — tema "papel fresco": fondo crema calido, tarjetas blancas
+   planas, un solo acento verde hoja. Sin degradados, sin glow, sin
+   glassmorphism. Mobile-first: targets grandes y safe-areas.
    ===================================================================== */
 
 .scanner-theme {
-  background:
-    radial-gradient(ellipse 120% 50% at 50% -12%, rgba(20, 184, 166, 0.10), transparent 62%),
-    radial-gradient(ellipse 90% 40% at 50% 112%, rgba(45, 212, 191, 0.05), transparent 60%),
-    #06080e;
+  background: #faf8f3;
+  color-scheme: light;
   /* Evita el zoom por doble tap en iOS sin bloquear el pinch-zoom. */
   touch-action: manipulation;
-}
-
-/* Titular con el gradiente de la "luz" del escaner */
-.text-scanlight {
-  background: linear-gradient(95deg, #99f6e4 8%, #2dd4bf 45%, #22d3ee 88%);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
 }
 
 /* --- Visor de camara ------------------------------------------------- */
@@ -313,121 +304,111 @@ body {
 /* Esquinas de encuadre tipo visor (4 "L" en las esquinas) */
 .viewfinder-corner {
   position: absolute;
-  width: 26px;
-  height: 26px;
-  border-color: rgba(94, 234, 212, 0.85);
+  width: 24px;
+  height: 24px;
+  border-color: rgba(255, 255, 255, 0.9);
   border-style: solid;
   border-width: 0;
   pointer-events: none;
 }
-.viewfinder-corner.tl { top: 14px; left: 14px; border-top-width: 3px; border-left-width: 3px; border-top-left-radius: 10px; }
-.viewfinder-corner.tr { top: 14px; right: 14px; border-top-width: 3px; border-right-width: 3px; border-top-right-radius: 10px; }
-.viewfinder-corner.br { bottom: 14px; right: 14px; border-bottom-width: 3px; border-right-width: 3px; border-bottom-right-radius: 10px; }
-.viewfinder-corner.bl { bottom: 14px; left: 14px; border-bottom-width: 3px; border-left-width: 3px; border-bottom-left-radius: 10px; }
+.viewfinder-corner.tl { top: 14px; left: 14px; border-top-width: 3px; border-left-width: 3px; border-top-left-radius: 8px; }
+.viewfinder-corner.tr { top: 14px; right: 14px; border-top-width: 3px; border-right-width: 3px; border-top-right-radius: 8px; }
+.viewfinder-corner.br { bottom: 14px; right: 14px; border-bottom-width: 3px; border-right-width: 3px; border-bottom-right-radius: 8px; }
+.viewfinder-corner.bl { bottom: 14px; left: 14px; border-bottom-width: 3px; border-left-width: 3px; border-bottom-left-radius: 8px; }
 
-/* Linea de escaneo que recorre el visor mientras la camara esta activa */
+/* Linea de escaneo: un trazo solido y discreto, sin brillo. */
 @keyframes scan-sweep {
-  0%, 100% { top: 10%; }
-  50% { top: 86%; }
+  0%, 100% { top: 12%; }
+  50% { top: 84%; }
 }
 .scan-line {
   position: absolute;
-  left: 8%;
-  right: 8%;
+  left: 10%;
+  right: 10%;
   height: 2px;
   border-radius: 2px;
-  background: linear-gradient(90deg, transparent, rgba(45, 212, 191, 0.9) 22%, rgba(34, 211, 238, 0.9) 78%, transparent);
-  box-shadow: 0 0 18px 3px rgba(45, 212, 191, 0.45);
-  animation: scan-sweep 3.6s ease-in-out infinite;
+  background: rgba(255, 255, 255, 0.55);
+  animation: scan-sweep 3.8s ease-in-out infinite;
   pointer-events: none;
 }
 
-/* Vineta sutil para que el documento resalte en el visor */
+/* Vineta muy leve para que el documento resalte en el visor. */
 .viewfinder-vignette {
   position: absolute;
   inset: 0;
   pointer-events: none;
-  background: radial-gradient(ellipse 85% 78% at 50% 50%, transparent 58%, rgba(0, 0, 0, 0.42));
+  background: radial-gradient(ellipse 88% 80% at 50% 50%, transparent 62%, rgba(0, 0, 0, 0.3));
 }
 
-/* --- Boton shutter tipo app de camara -------------------------------- */
+/* --- Boton shutter tipo app de camara (plano) ------------------------- */
 
 .shutter {
-  position: relative;
-  width: 74px;
-  height: 74px;
+  width: 72px;
+  height: 72px;
   border-radius: 9999px;
-  background: conic-gradient(from 140deg, #2dd4bf, #22d3ee, #2dd4bf);
-  padding: 4px;
-  box-shadow: 0 0 26px rgba(45, 212, 191, 0.35);
+  background: #ffffff;
+  border: 2px solid #d6d3d1;
+  box-shadow: 0 1px 3px rgba(41, 37, 36, 0.12);
+  display: flex;
+  align-items: center;
+  justify-content: center;
   transition: transform 120ms ease;
 }
 .shutter:active { transform: scale(0.92); }
 .shutter-inner {
-  width: 100%;
-  height: 100%;
+  width: 54px;
+  height: 54px;
   border-radius: 9999px;
-  background: #f4f1e7;
-  border: 3px solid #06080e;
+  background: #1e9e64;
 }
 
-/* --- Componentes compartidos del tema -------------------------------- */
+/* --- Componentes del tema --------------------------------------------- */
 
-/* Tarjeta base */
-.scan-card {
-  background: linear-gradient(175deg, rgba(21, 26, 39, 0.85), rgba(10, 13, 21, 0.92));
-  border: 1px solid rgba(50, 61, 92, 0.5);
-}
-
-/* Boton primario con la luz del escaner */
+/* Boton primario: verde hoja plano. */
 .btn-scan {
-  position: relative;
-  overflow: hidden;
-  background: linear-gradient(115deg, #14b8a6, #0ea5b7 60%, #14b8a6);
-  background-size: 200% 200%;
-  color: #04211c;
-  box-shadow: 0 8px 22px -8px rgba(45, 212, 191, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.25);
-  transition: transform 150ms ease, background-position 400ms ease, filter 150ms ease;
-}
-.btn-scan:active:not(:disabled) { transform: scale(0.98); }
-.btn-scan:hover:not(:disabled) { background-position: 85% 50%; filter: brightness(1.06); }
-.btn-scan:disabled { opacity: 0.55; box-shadow: none; }
-
-/* Boton fantasma */
-.btn-ghost {
-  border: 1px solid rgba(50, 61, 92, 0.6);
-  background: rgba(21, 26, 39, 0.6);
+  background: #188a56;
+  color: #ffffff;
   transition: background 150ms ease, transform 120ms ease;
 }
-.btn-ghost:active { transform: scale(0.97); }
-.btn-ghost:hover { background: rgba(33, 41, 64, 0.8); }
+.btn-scan:hover:not(:disabled) { background: #136e45; }
+.btn-scan:active:not(:disabled) { transform: scale(0.98); }
+.btn-scan:disabled { opacity: 0.5; }
 
-/* Chip seleccionable (filtros, formatos) */
+/* Boton secundario: blanco con borde fino. */
+.btn-ghost {
+  border: 1px solid #e7e5e4;
+  background: #ffffff;
+  transition: background 150ms ease, transform 120ms ease;
+}
+.btn-ghost:hover { background: #f5f5f4; }
+.btn-ghost:active { transform: scale(0.97); }
+
+/* Chip seleccionable (filtros, formatos): borde y tinte, sin sombras. */
 .chip-selected {
-  border-color: rgba(45, 212, 191, 0.8) !important;
-  box-shadow: 0 0 0 1px rgba(45, 212, 191, 0.5), 0 0 16px -4px rgba(45, 212, 191, 0.5);
+  border-color: #1e9e64 !important;
+  background: #eef8f2 !important;
 }
 
-/* Barra inferior respetando el notch/home-indicator de iOS */
+/* Barra inferior respetando el notch/home-indicator de iOS. */
 .safe-bottom { padding-bottom: max(0.75rem, env(safe-area-inset-bottom)); }
 
-/* Scroll horizontal sin barra visible (strips de filtros) */
+/* Scroll horizontal sin barra visible (strips de filtros). */
 .no-scrollbar { scrollbar-width: none; -ms-overflow-style: none; }
 .no-scrollbar::-webkit-scrollbar { display: none; }
 
-/* Flash de confirmacion en modo rafaga */
+/* Flash de confirmacion en modo rafaga. */
 @keyframes shot-flash {
   from { opacity: 0.75; }
   to { opacity: 0; }
 }
 .shot-flash { animation: shot-flash 220ms ease-out both; }
 
-/* Entrada de las vistas del flujo */
+/* Entrada de las vistas del flujo. */
 @keyframes stage-in {
-  from { opacity: 0; transform: translateY(10px); }
+  from { opacity: 0; transform: translateY(8px); }
   to { opacity: 1; transform: none; }
 }
-.stage-in { animation: stage-in 300ms cubic-bezier(0.16, 1, 0.3, 1) both; }
+.stage-in { animation: stage-in 260ms ease-out both; }
 
 @media (prefers-reduced-motion: reduce) {
   .scan-line,
