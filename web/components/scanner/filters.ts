@@ -37,7 +37,7 @@ export interface FilterMeta {
 
 export const FILTERS: FilterMeta[] = [
   { id: 'original', label: 'Original', hint: 'Sin procesamiento' },
-  { id: 'magic', label: 'Magico', hint: 'Auto-mejora general tipo escaner' },
+  { id: 'magic', label: 'Magico', hint: 'Contraste adaptativo por zonas (CLAHE) — revive texto y detalle palidos' },
   { id: 'doc', label: 'Documento', hint: 'Blanquea el papel y quita sombras; conserva sellos y firmas en color' },
   { id: 'receipt', label: 'Factura', hint: 'Realza texto desvanecido de tickets, facturas y papel termico' },
   { id: 'bw', label: 'B&N', hint: 'Blanco y negro adaptativo (Sauvola) para maxima legibilidad' },
@@ -93,21 +93,36 @@ function docEnhance(data: ImageData): ImageData {
   for (let y = 0, i = 0, j = 0; y < h; y++) {
     for (let x = 0; x < w; x++, i += 4, j++) {
       const b = Math.max(30, bg.sample(x, y));
-      // 245 y no 255: deja una pizca de textura de papel en vez de
-      // clippear todo a blanco puro.
       const gain = Math.min(3, 245 / b);
       let r = px[i]! * gain;
       let g = px[i + 1]! * gain;
       let bch = px[i + 2]! * gain;
-      // Oscurece levemente la tinta (medios-bajos) para ganar contraste.
-      r = r < 160 ? r * 0.92 : r;
-      g = g < 160 ? g * 0.92 : g;
-      bch = bch < 160 ? bch * 0.92 : bch;
+
+      // Blanqueo suave: los pixeles cuya luma normalizada quedo cerca
+      // del papel se empujan a blanco puro con smoothstep — el fondo
+      // queda limpio de verdad (como una fotocopia buena) sin escalon
+      // duro contra la tinta.
+      const nl = 0.299 * r + 0.587 * g + 0.114 * bch;
+      if (nl >= 190) {
+        const t = Math.min(1, (nl - 190) / 55);
+        const s = t * t * (3 - 2 * t);
+        r = r + (255 - r) * s;
+        g = g + (255 - g) * s;
+        bch = bch + (255 - bch) * s;
+      } else {
+        // Oscurece levemente la tinta (medios-bajos) para ganar contraste.
+        r = r < 160 ? r * 0.9 : r;
+        g = g < 160 ? g * 0.9 : g;
+        bch = bch < 160 ? bch * 0.9 : bch;
+      }
       px[i] = clamp255(r);
       px[i + 1] = clamp255(g);
       px[i + 2] = clamp255(bch);
     }
   }
+
+  // Texto mas crocante sin franjas de color: enfoque sobre luminancia.
+  unsharpLuma(data, 0.4, 3);
   return data;
 }
 
@@ -156,6 +171,9 @@ function receiptEnhance(data: ImageData): ImageData {
     px[i + 1] = out;
     px[i + 2] = out;
   }
+
+  // Trazos del texto termico mas definidos.
+  unsharpLuma(data, 0.5, 3);
   return data;
 }
 
@@ -198,57 +216,48 @@ function sauvolaBw(data: ImageData): ImageData {
 // ---------------------------------------------------------------------------
 
 /**
- * "Magic" scan: mejora automatica tipo CamScanner. Sube brillo en las zonas
- * claras (papel), oscurece tinta, recorta extremos del histograma. No es
- * tan agresivo como B&N — preserva sellos y firmas en color tenue.
+ * "Magic" scan: mejora automatica tipo CamScanner, ahora con CLAHE
+ * (Contrast-Limited Adaptive Histogram Equalization) — la tecnica que
+ * usan los SDKs de escaneo profesionales. A diferencia del clip global
+ * de histograma, CLAHE ecualiza POR REGION (tiles con LUT interpolada
+ * bilinealmente), asi que levanta el contraste local: texto palido en
+ * una zona oscura Y detalle en una zona clara mejoran a la vez. El
+ * limite de clip evita amplificar ruido en zonas planas. Remate con
+ * enfoque suave de luminancia.
  */
 function magicScan(data: ImageData): ImageData {
-  const px = data.data;
-
-  // Auto-contraste por canal: clip al 1% y 99% del histograma.
-  // Usamos un flag explicito (loSet) para distinguir "lo todavia no
-  // asignado" de "lo asignado al valor 0" — sin esto, una imagen con
-  // muchos pixeles puros en bin 0 hacia overwrite continuo de lo[c].
-  const lo = [0, 0, 0];
-  const hi = [255, 255, 255];
-  for (let c = 0; c < 3; c++) {
-    const hist = new Uint32Array(256);
-    for (let i = c; i < px.length; i += 4) hist[px[i]!]!++;
-    const total = px.length / 4;
-    let cum = 0;
-    const loTarget = total * 0.01;
-    const hiTarget = total * 0.99;
-    let loSet = false;
-    for (let v = 0; v < 256; v++) {
-      cum += hist[v]!;
-      if (!loSet && cum >= loTarget) {
-        lo[c] = v;
-        loSet = true;
-      }
-      if (cum >= hiTarget) {
-        hi[c] = v;
-        break;
-      }
-    }
-  }
-
-  const scale = [
-    255 / Math.max(1, hi[0]! - lo[0]!),
-    255 / Math.max(1, hi[1]! - lo[1]!),
-    255 / Math.max(1, hi[2]! - lo[2]!),
-  ];
-
-  // Aplicamos el clip + un gamma 0.9 (oscurece levemente la tinta).
-  for (let i = 0; i < px.length; i += 4) {
-    for (let c = 0; c < 3; c++) {
-      let v = (px[i + c]! - lo[c]!) * scale[c]!;
-      v = Math.max(0, Math.min(255, v));
-      // Gamma sin Math.pow (caro): aproximacion lineal por tramos.
-      v = v < 128 ? v * 0.92 : 255 - (255 - v) * 0.92;
-      px[i + c] = v;
-    }
-  }
+  // Clip alto: los tiles CON contenido se ecualizan fuerte (la
+  // proteccion de tiles planos dentro de claheLuma evita amplificar
+  // ruido donde no hay detalle real).
+  claheLuma(data, 16, 0.9);
+  // Estiramiento global de luminancia para asentar negros y blancos
+  // (solo si hay rango real que estirar).
+  stretchLuma(data, 0.01, 0.99, 40);
+  unsharpLuma(data, 0.35, 2);
   return data;
+}
+
+/**
+ * Estiramiento global de luminancia por percentiles, aplicado como ratio
+ * a RGB (no vira el color). `minRange` evita amplificar ruido en
+ * imagenes casi planas.
+ */
+function stretchLuma(data: ImageData, pLo: number, pHi: number, minRange: number): void {
+  const px = data.data;
+  const luma = lumaOf(data);
+  const lo = percentileF32(luma, pLo);
+  const hi = percentileF32(luma, pHi);
+  if (hi - lo < minRange) return;
+  const scale = 255 / (hi - lo);
+  for (let j = 0, i = 0; j < luma.length; j++, i += 4) {
+    const l = Math.max(1, luma[j]!);
+    let nl = (l - lo) * scale;
+    nl = nl < 0 ? 0 : nl > 255 ? 255 : nl;
+    const ratio = nl / l;
+    px[i] = clamp255(px[i]! * ratio);
+    px[i + 1] = clamp255(px[i + 1]! * ratio);
+    px[i + 2] = clamp255(px[i + 2]! * ratio);
+  }
 }
 
 /** Grises + estiramiento de contraste por percentiles sobre la luminancia. */
@@ -273,34 +282,13 @@ function grayscaleContrast(data: ImageData): ImageData {
 }
 
 /**
- * Enfoque unsharp-mask: out = v + amount * (v - blur3x3(v)). Recupera
- * capturas levemente borrosas (pulso, autofoco lento) sin halos gracias
- * al radio chico.
+ * "Nitido": enfoque unsharp-mask sobre LUMINANCIA (no por canal — el
+ * enfoque por canal genera franjas de color en los bordes). El umbral
+ * evita amplificar ruido del sensor en zonas planas: solo se enfoca
+ * donde la diferencia local supera el minimo.
  */
 function unsharp(data: ImageData): ImageData {
-  const { width: w, height: h } = data;
-  const px = data.data;
-  const src = new Uint8ClampedArray(px); // copia para leer el vecindario
-  const AMOUNT = 0.9;
-
-  for (let y = 0; y < h; y++) {
-    const y0 = Math.max(0, y - 1) * w;
-    const y1 = y * w;
-    const y2 = Math.min(h - 1, y + 1) * w;
-    for (let x = 0; x < w; x++) {
-      const x0 = Math.max(0, x - 1);
-      const x2 = Math.min(w - 1, x + 1);
-      const i = (y1 + x) * 4;
-      for (let c = 0; c < 3; c++) {
-        const blur =
-          (src[(y0 + x0) * 4 + c]! + src[(y0 + x) * 4 + c]! + src[(y0 + x2) * 4 + c]! +
-            src[(y1 + x0) * 4 + c]! + src[(y1 + x) * 4 + c]! + src[(y1 + x2) * 4 + c]! +
-            src[(y2 + x0) * 4 + c]! + src[(y2 + x) * 4 + c]! + src[(y2 + x2) * 4 + c]!) / 9;
-        const v = src[i + c]!;
-        px[i + c] = clamp255(v + AMOUNT * (v - blur));
-      }
-    }
-  }
+  unsharpLuma(data, 1.1, 3);
   return data;
 }
 
@@ -312,7 +300,9 @@ function unsharp(data: ImageData): ImageData {
  * "Foto": auto-mejora natural para fotografias. Balance de blancos
  * gray-world (corrige dominantes de color de la luz), estiramiento de
  * LUMINANCIA por percentiles (sin virar tonos, a diferencia del clip por
- * canal de magic), curva S suave y +12% de saturacion.
+ * canal), curva S suave y VIBRANCE — realza los colores apagados mas que
+ * los ya saturados y protege los tonos de piel, como el ajuste homonimo
+ * de Lightroom/Photoshop. Resultado con punch pero natural.
  */
 function photoEnhance(data: ImageData): ImageData {
   const px = data.data;
@@ -349,7 +339,6 @@ function photoEnhance(data: ImageData): ImageData {
   const stretch = hi - lo >= 5;
   const scale = stretch ? 255 / (hi - lo) : 1;
   const SCURVE = 0.3;
-  const SAT = 1.12;
 
   for (let j = 0, i = 0; j < luma.length; j++, i += 4) {
     const l = Math.max(1, luma[j]!);
@@ -360,41 +349,30 @@ function photoEnhance(data: ImageData): ImageData {
     const target = nl + SCURVE * (smooth - nl);
     const ratio = target / l;
 
-    let r = px[i]! * ratio;
-    let g = px[i + 1]! * ratio;
-    let b = px[i + 2]! * ratio;
+    const r = px[i]! * ratio;
+    const g = px[i + 1]! * ratio;
+    const b = px[i + 2]! * ratio;
 
-    const y = 0.299 * r + 0.587 * g + 0.114 * b;
-    r = y + (r - y) * SAT;
-    g = y + (g - y) * SAT;
-    b = y + (b - y) * SAT;
-
-    px[i] = clamp255(r);
-    px[i + 1] = clamp255(g);
-    px[i + 2] = clamp255(b);
+    const [vr, vg, vb] = vibrancePixel(r, g, b, 0.45);
+    px[i] = clamp255(vr);
+    px[i + 1] = clamp255(vg);
+    px[i + 2] = clamp255(vb);
   }
   return data;
 }
 
 /**
- * "Vivido": saturacion fuerte + curva S marcada sobre la luminancia.
- * Para fotos lavadas que necesitan punch (tickets a color, folletos).
+ * "Vivido": vibrance fuerte + curva S marcada sobre la luminancia. La
+ * vibrance (a diferencia de la saturacion plana) empuja mas los colores
+ * apagados y hace "aterrizaje suave" en los ya saturados — punch intenso
+ * sin clipping de color ni pieles naranjas.
  */
 function vividBoost(data: ImageData): ImageData {
   const px = data.data;
-  const SAT = 1.4;
   const SCURVE = 0.55;
 
   for (let i = 0; i < px.length; i += 4) {
-    let r = px[i]!;
-    let g = px[i + 1]!;
-    let b = px[i + 2]!;
-
-    // Saturacion: alejar del gris (luma) preservando la luminancia.
-    const y = 0.299 * r + 0.587 * g + 0.114 * b;
-    r = y + (r - y) * SAT;
-    g = y + (g - y) * SAT;
-    b = y + (b - y) * SAT;
+    const [r, g, b] = vibrancePixel(px[i]!, px[i + 1]!, px[i + 2]!, 1.1);
 
     // Curva S sobre la luma, aplicada como ratio (no vira el tono).
     const ly = Math.max(1, 0.299 * r + 0.587 * g + 0.114 * b);
@@ -494,6 +472,164 @@ function dilate3x3(src: Float32Array, w: number, h: number): Float32Array {
 }
 
 // ---------------------------------------------------------------------------
+// Primitivas de mejora (CLAHE, unsharp de luminancia, vibrance)
+// ---------------------------------------------------------------------------
+
+/**
+ * CLAHE (Contrast-Limited Adaptive Histogram Equalization) sobre la
+ * luminancia, aplicado como ratio a RGB para preservar el color.
+ *
+ * Pipeline clasico: la imagen se divide en tiles (~8x8), cada tile
+ * construye su histograma de luma, se recorta al limite de clip
+ * (clipFactor x promedio de bin, el exceso se redistribuye — esto evita
+ * amplificar ruido en zonas planas) y su CDF se convierte en una LUT.
+ * Cada pixel interpola BILINEALMENTE entre las LUTs de los 4 tiles
+ * vecinos: transicion continua, sin bordes de bloque.
+ *
+ * `strength` mezcla el resultado con el original (1 = efecto completo).
+ */
+function claheLuma(data: ImageData, clipFactor: number, strength: number): void {
+  const { width: w, height: h } = data;
+  if (w < 8 || h < 8) return;
+  const px = data.data;
+  const luma = lumaOf(data);
+
+  // Grilla de tiles adaptativa: ~64px por tile, entre 2x2 y 8x8.
+  const tilesX = Math.max(2, Math.min(8, Math.round(w / 64)));
+  const tilesY = Math.max(2, Math.min(8, Math.round(h / 64)));
+  const tileW = Math.ceil(w / tilesX);
+  const tileH = Math.ceil(h / tilesY);
+
+  // LUT por tile.
+  const luts = new Float32Array(tilesX * tilesY * 256);
+  const hist = new Uint32Array(256);
+  for (let ty = 0; ty < tilesY; ty++) {
+    for (let tx = 0; tx < tilesX; tx++) {
+      hist.fill(0);
+      const x0 = tx * tileW;
+      const y0 = ty * tileH;
+      const x1 = Math.min(w, x0 + tileW);
+      const y1 = Math.min(h, y0 + tileH);
+      const count = (x1 - x0) * (y1 - y0);
+      for (let y = y0; y < y1; y++) {
+        for (let x = x0; x < x1; x++) {
+          hist[Math.min(255, Math.round(luma[y * w + x]!))]!++;
+        }
+      }
+
+      const base = (ty * tilesX + tx) * 256;
+
+      // Proteccion de tiles planos: si el rango util (p2..p98) del tile
+      // es minusculo, ahi no hay detalle — solo ruido de sensor o papel
+      // liso. Ecualizarlo amplificaria el ruido x10; LUT identidad.
+      const p2 = histPercentile(hist, count, 0.02);
+      const p98 = histPercentile(hist, count, 0.98);
+      if (p98 - p2 < 12) {
+        for (let v = 0; v < 256; v++) luts[base + v] = v;
+        continue;
+      }
+
+      // Clip + redistribucion del exceso.
+      const clipLimit = Math.max(1, Math.round((clipFactor * count) / 256));
+      let excess = 0;
+      for (let v = 0; v < 256; v++) {
+        const over = hist[v]! - clipLimit;
+        if (over > 0) {
+          hist[v] = clipLimit;
+          excess += over;
+        }
+      }
+      const perBin = excess / 256;
+      // CDF -> LUT.
+      let cum = 0;
+      for (let v = 0; v < 256; v++) {
+        cum += hist[v]! + perBin;
+        luts[base + v] = (cum / count) * 255;
+      }
+    }
+  }
+
+  // Interpolacion bilineal entre LUTs de tiles vecinos, por pixel.
+  for (let y = 0, j = 0, i = 0; y < h; y++) {
+    // Coordenada del pixel en el espacio de centros de tile.
+    const gy = clampRange(y / tileH - 0.5, 0, tilesY - 1.001);
+    const ty0 = Math.floor(gy);
+    const fy = gy - ty0;
+    for (let x = 0; x < w; x++, j++, i += 4) {
+      const gx = clampRange(x / tileW - 0.5, 0, tilesX - 1.001);
+      const tx0 = Math.floor(gx);
+      const fx = gx - tx0;
+
+      const l = Math.min(255, Math.round(luma[j]!));
+      const l00 = luts[(ty0 * tilesX + tx0) * 256 + l]!;
+      const l10 = luts[(ty0 * tilesX + tx0 + 1) * 256 + l]!;
+      const l01 = luts[((ty0 + 1) * tilesX + tx0) * 256 + l]!;
+      const l11 = luts[((ty0 + 1) * tilesX + tx0 + 1) * 256 + l]!;
+      const mapped =
+        l00 * (1 - fx) * (1 - fy) +
+        l10 * fx * (1 - fy) +
+        l01 * (1 - fx) * fy +
+        l11 * fx * fy;
+
+      const target = luma[j]! + strength * (mapped - luma[j]!);
+      const ratio = target / Math.max(1, luma[j]!);
+      px[i] = clamp255(px[i]! * ratio);
+      px[i + 1] = clamp255(px[i + 1]! * ratio);
+      px[i + 2] = clamp255(px[i + 2]! * ratio);
+    }
+  }
+}
+
+/**
+ * Unsharp mask sobre LUMINANCIA aplicado como ratio a RGB: enfoca sin
+ * generar franjas de color en los bordes (defecto tipico del unsharp por
+ * canal). `threshold` ignora diferencias pequenas — no amplifica el
+ * ruido del sensor en zonas planas.
+ */
+function unsharpLuma(data: ImageData, amount: number, threshold: number): void {
+  const { width: w, height: h } = data;
+  const px = data.data;
+  const luma = lumaOf(data);
+  const blurred = boxBlurF32(luma, w, h, 1);
+
+  for (let j = 0, i = 0; j < luma.length; j++, i += 4) {
+    const l = luma[j]!;
+    const diff = l - blurred[j]!;
+    if (Math.abs(diff) <= threshold) continue;
+    const ratio = (l + amount * diff) / Math.max(1, l);
+    px[i] = clamp255(px[i]! * ratio);
+    px[i + 1] = clamp255(px[i + 1]! * ratio);
+    px[i + 2] = clamp255(px[i + 2]! * ratio);
+  }
+}
+
+/**
+ * Vibrance por pixel: boost de saturacion NO lineal — proporcional a lo
+ * apagado que esta el color (los ya saturados casi no cambian, sin
+ * clipping) y con proteccion de tonos de piel (r>g>b calidos reciben
+ * menos de la mitad del boost).
+ */
+function vibrancePixel(
+  r: number,
+  g: number,
+  b: number,
+  amount: number,
+): [number, number, number] {
+  const mx = Math.max(r, g, b);
+  const mn = Math.min(r, g, b);
+  const sat = mx <= 1 ? 0 : (mx - mn) / mx;
+
+  let boost = amount * (1 - sat);
+  // Tonos de piel (calidos, r>g>b): boost reducido para no dejar caras
+  // naranjas.
+  if (r > g && g > b) boost *= 0.45;
+
+  const f = 1 + boost;
+  const y = 0.299 * r + 0.587 * g + 0.114 * b;
+  return [y + (r - y) * f, y + (g - y) * f, y + (b - y) * f];
+}
+
+// ---------------------------------------------------------------------------
 // Utilidades compartidas
 // ---------------------------------------------------------------------------
 
@@ -513,6 +649,17 @@ function clamp255(v: number): number {
 
 function clampRange(v: number, lo: number, hi: number): number {
   return v < lo ? lo : v > hi ? hi : v;
+}
+
+/** Percentil p (0..1) de un histograma de 256 bins ya construido. */
+function histPercentile(hist: Uint32Array, count: number, p: number): number {
+  const target = count * p;
+  let cum = 0;
+  for (let v = 0; v < 256; v++) {
+    cum += hist[v]!;
+    if (cum >= target) return v;
+  }
+  return 255;
 }
 
 /** Percentil p (0..1) de un Float32Array via histograma entero 0..255. */
@@ -588,4 +735,12 @@ function boxBlurSeparable(
 }
 
 // Exportado para tests unitarios — no usar fuera de este modulo.
-export const __test = { boxBlurSeparable, boxBlurF32, estimateBackground, dilate3x3 };
+export const __test = {
+  boxBlurSeparable,
+  boxBlurF32,
+  estimateBackground,
+  dilate3x3,
+  claheLuma,
+  unsharpLuma,
+  vibrancePixel,
+};

@@ -244,6 +244,70 @@ describe('applyFilter', () => {
     expect(diff).toBeLessThan(before / 2);
   });
 
+  it('magic (CLAHE): mejora el contraste local en zonas oscuras y claras a la vez', () => {
+    // Mitad izquierda oscura con detalle tenue (40/55), mitad derecha
+    // clara con detalle tenue (200/215). Un clip global de histograma
+    // apenas los separa; CLAHE ecualiza POR REGION y amplifica ambos.
+    const w = 64;
+    const h = 64;
+    const img = makeImageData(w, h, (x, y) => {
+      const dark = x < 32;
+      const detail = y % 8 < 4;
+      const v = dark ? (detail ? 40 : 55) : detail ? 200 : 215;
+      return [v, v, v, 255];
+    });
+    const out = applyFilter(img, 'magic');
+    const at = (x: number, y: number): number => out.data[(y * w + x) * 4]!;
+    // Diferencia local franja vs franja (era 15 en el original).
+    const darkDiff = Math.abs(at(16, 2) - at(16, 6));
+    const brightDiff = Math.abs(at(48, 2) - at(48, 6));
+    expect(darkDiff).toBeGreaterThan(30);
+    expect(brightDiff).toBeGreaterThan(30);
+  });
+
+  it('vibrance: realza mas los colores apagados que los ya saturados', () => {
+    const { vibrancePixel } = __test;
+    const satOf = (r: number, g: number, b: number): number => {
+      const mx = Math.max(r, g, b);
+      const mn = Math.min(r, g, b);
+      return (mx - mn) / mx;
+    };
+    const muted = vibrancePixel(150, 130, 170, 0.8);
+    const saturated = vibrancePixel(60, 40, 250, 0.8);
+    const mutedGain = satOf(muted[0], muted[1], muted[2]) / satOf(150, 130, 170);
+    const saturatedGain =
+      satOf(saturated[0], saturated[1], saturated[2]) / satOf(60, 40, 250);
+    expect(mutedGain).toBeGreaterThan(saturatedGain);
+  });
+
+  it('vibrance: protege los tonos de piel (calidos r>g>b)', () => {
+    const { vibrancePixel } = __test;
+    const satOf = (r: number, g: number, b: number): number => {
+      const mx = Math.max(r, g, b);
+      const mn = Math.min(r, g, b);
+      return (mx - mn) / mx;
+    };
+    // Mismo nivel de saturacion, uno calido (piel) y su espejo frio.
+    const skin = vibrancePixel(200, 150, 120, 0.8);
+    const cool = vibrancePixel(120, 150, 200, 0.8);
+    const skinGain = satOf(skin[0], skin[1], skin[2]) / satOf(200, 150, 120);
+    const coolGain = satOf(cool[0], cool[1], cool[2]) / satOf(120, 150, 200);
+    expect(coolGain).toBeGreaterThan(skinGain);
+  });
+
+  it('sharpen: no amplifica ruido sutil (umbral)', () => {
+    // Checkerboard de +-1 alrededor de 128: bajo el umbral -> intacto.
+    const img = makeImageData(12, 12, (x, y) => {
+      const v = 128 + ((x + y) % 2 === 0 ? 1 : -1);
+      return [v, v, v, 255];
+    });
+    const copy = new Uint8ClampedArray(img.data);
+    const out = applyFilter(img, 'sharpen');
+    for (let i = 0; i < out.data.length; i += 4) {
+      expect(out.data[i]).toBe(copy[i]);
+    }
+  });
+
   it('todos los filtros corren sin lanzar y preservan dimensiones', () => {
     for (const f of FILTERS) {
       const img = makeImageData(24, 18, (x, y) => [
