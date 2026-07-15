@@ -287,13 +287,16 @@ body {
 }
 
 /* =====================================================================
-   Scanner — tema "papel fresco": fondo crema calido, tarjetas blancas
-   planas, un solo acento verde hoja. Sin degradados, sin glow, sin
-   glassmorphism. Mobile-first: targets grandes y safe-areas.
+   Scanner — tema "El Escritorio": la interfaz como papeleria fisica.
+   Papel kraft con grano real, fichas con sombra dura desplazada (recorte
+   de papel, no blur), pestanas de carpeta, botones que se estampan.
+   Sin degradados decorativos, sin glow, sin glassmorphism.
    ===================================================================== */
 
 .scanner-theme {
-  background: #faf8f3;
+  background-color: #ede4d3;
+  /* Grano de papel: ruido fractal inline (autocontenido, sin requests). */
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0.17 0 0 0 0 0.14 0 0 0 0 0.08 0 0 0 0.05 0'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)'/%3E%3C/svg%3E");
   color-scheme: light;
   /* Evita el zoom por doble tap en iOS sin bloquear el pinch-zoom. */
   touch-action: manipulation;
@@ -301,7 +304,6 @@ body {
 
 /* --- Visor de camara ------------------------------------------------- */
 
-/* Esquinas de encuadre tipo visor (4 "L" en las esquinas) */
 .viewfinder-corner {
   position: absolute;
   width: 24px;
@@ -311,12 +313,12 @@ body {
   border-width: 0;
   pointer-events: none;
 }
-.viewfinder-corner.tl { top: 14px; left: 14px; border-top-width: 3px; border-left-width: 3px; border-top-left-radius: 8px; }
-.viewfinder-corner.tr { top: 14px; right: 14px; border-top-width: 3px; border-right-width: 3px; border-top-right-radius: 8px; }
-.viewfinder-corner.br { bottom: 14px; right: 14px; border-bottom-width: 3px; border-right-width: 3px; border-bottom-right-radius: 8px; }
-.viewfinder-corner.bl { bottom: 14px; left: 14px; border-bottom-width: 3px; border-left-width: 3px; border-bottom-left-radius: 8px; }
+.viewfinder-corner.tl { top: 14px; left: 14px; border-top-width: 3px; border-left-width: 3px; }
+.viewfinder-corner.tr { top: 14px; right: 14px; border-top-width: 3px; border-right-width: 3px; }
+.viewfinder-corner.br { bottom: 14px; right: 14px; border-bottom-width: 3px; border-right-width: 3px; }
+.viewfinder-corner.bl { bottom: 14px; left: 14px; border-bottom-width: 3px; border-left-width: 3px; }
 
-/* Linea de escaneo: un trazo solido y discreto, sin brillo. */
+/* Linea de escaneo: trazo DISCONTINUO (como linea de corte de papel). */
 @keyframes scan-sweep {
   0%, 100% { top: 12%; }
   50% { top: 84%; }
@@ -325,14 +327,12 @@ body {
   position: absolute;
   left: 10%;
   right: 10%;
-  height: 2px;
-  border-radius: 2px;
-  background: rgba(255, 255, 255, 0.55);
+  height: 0;
+  border-top: 2px dashed rgba(255, 255, 255, 0.65);
   animation: scan-sweep 3.8s ease-in-out infinite;
   pointer-events: none;
 }
 
-/* Vineta muy leve para que el documento resalte en el visor. */
 .viewfinder-vignette {
   position: absolute;
   inset: 0;
@@ -340,53 +340,100 @@ body {
   background: radial-gradient(ellipse 88% 80% at 50% 50%, transparent 62%, rgba(0, 0, 0, 0.3));
 }
 
-/* --- Boton shutter tipo app de camara (plano) ------------------------- */
+/* --- Boton shutter: sello de goma ------------------------------------- */
 
 .shutter {
   width: 72px;
   height: 72px;
   border-radius: 9999px;
-  background: #ffffff;
-  border: 2px solid #d6d3d1;
-  box-shadow: 0 1px 3px rgba(41, 37, 36, 0.12);
+  background: #fdfbf5;
+  border: 2px solid #2b2415;
+  box-shadow: 3px 3px 0 0 #2b2415;
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: transform 120ms ease;
+  transition: transform 110ms ease, box-shadow 110ms ease;
 }
-.shutter:active { transform: scale(0.92); }
+.shutter:active {
+  transform: translate(3px, 3px);
+  box-shadow: 0 0 0 0 #2b2415;
+}
 .shutter-inner {
-  width: 54px;
-  height: 54px;
+  width: 52px;
+  height: 52px;
   border-radius: 9999px;
-  background: #1e9e64;
+  background: #c73e1d;
+  border: 2px solid #2b2415;
 }
 
 /* --- Componentes del tema --------------------------------------------- */
 
-/* Boton primario: verde hoja plano. */
+/* Boton primario: etiqueta estampada — se hunde al presionar. */
 .btn-scan {
-  background: #188a56;
-  color: #ffffff;
-  transition: background 150ms ease, transform 120ms ease;
+  background: #c73e1d;
+  color: #fdfbf5;
+  border: 2px solid #2b2415;
+  box-shadow: 3px 3px 0 0 #2b2415;
+  transition: transform 110ms ease, box-shadow 110ms ease, background 150ms ease;
 }
-.btn-scan:hover:not(:disabled) { background: #136e45; }
-.btn-scan:active:not(:disabled) { transform: scale(0.98); }
-.btn-scan:disabled { opacity: 0.5; }
+.btn-scan:hover:not(:disabled) { background: #a93317; }
+.btn-scan:active:not(:disabled) {
+  transform: translate(3px, 3px);
+  box-shadow: 0 0 0 0 #2b2415;
+}
+.btn-scan:disabled { opacity: 0.5; box-shadow: 2px 2px 0 0 rgba(43, 36, 21, 0.4); }
 
-/* Boton secundario: blanco con borde fino. */
+/* Boton secundario: ficha de papel. */
 .btn-ghost {
-  border: 1px solid #e7e5e4;
-  background: #ffffff;
-  transition: background 150ms ease, transform 120ms ease;
+  border: 2px solid #2b2415;
+  background: #fdfbf5;
+  box-shadow: 2px 2px 0 0 rgba(43, 36, 21, 0.35);
+  transition: transform 110ms ease, box-shadow 110ms ease, background 150ms ease;
 }
-.btn-ghost:hover { background: #f5f5f4; }
-.btn-ghost:active { transform: scale(0.97); }
+.btn-ghost:hover { background: #f5eedf; }
+.btn-ghost:active {
+  transform: translate(2px, 2px);
+  box-shadow: 0 0 0 0 rgba(43, 36, 21, 0.35);
+}
 
-/* Chip seleccionable (filtros, formatos): borde y tinte, sin sombras. */
+/* Chip seleccionable: borde de tinta + punto de sello rojo (via ::after
+   en el wrapper .chip-stamp). */
 .chip-selected {
-  border-color: #1e9e64 !important;
-  background: #eef8f2 !important;
+  border-color: #2b2415 !important;
+  background: #fdfbf5 !important;
+  box-shadow: 2px 2px 0 0 #2b2415 !important;
+}
+.chip-stamp {
+  position: relative;
+}
+.chip-stamp.chip-selected::after {
+  content: '';
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  width: 14px;
+  height: 14px;
+  border-radius: 9999px;
+  background: #c73e1d;
+  border: 2px solid #fdfbf5;
+}
+
+/* Pestanas de carpeta (steps). La activa "sube" y se funde con la linea
+   base; las demas quedan hundidas y atenuadas. */
+.folder-tab {
+  border: 2px solid #2b2415;
+  border-bottom: none;
+  border-radius: 10px 10px 0 0;
+  margin-bottom: 0;
+}
+.folder-tab.tab-active {
+  background: #fdfbf5;
+  transform: translateY(2px);
+}
+.folder-tab.tab-idle {
+  background: #dfd2b8;
+  border-color: rgba(43, 36, 21, 0.45);
+  transform: translateY(6px);
 }
 
 /* Barra inferior respetando el notch/home-indicator de iOS. */

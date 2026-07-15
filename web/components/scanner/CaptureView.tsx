@@ -168,7 +168,7 @@ export function CaptureView({ onCapture, onCancel }: Props): React.ReactElement 
   return (
     <div className="stage-in flex flex-col gap-3">
       {/* Visor */}
-      <div className="relative aspect-[3/4] w-full overflow-hidden rounded-2xl border border-stone-200 bg-stone-900 sm:aspect-[4/3]">
+      <div className="relative aspect-[3/4] w-full overflow-hidden rounded-lg border-2 border-cocoa-900 bg-cocoa-900 shadow-paper sm:aspect-[4/3]">
         {/* El <video> vive SIEMPRE en el DOM (solo cambia la visibilidad):
             asi videoRef.current existe cuando getUserMedia resuelve y el
             stream se ata de inmediato. Montarlo condicionado a live dejaba
@@ -182,26 +182,26 @@ export function CaptureView({ onCapture, onCancel }: Props): React.ReactElement 
         />
 
         {mode === 'starting' && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-stone-900 text-stone-400">
-            <IconCamera className="h-8 w-8 animate-pulse text-stone-300" />
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-cocoa-900 text-kraft-300">
+            <IconCamera className="h-8 w-8 animate-pulse text-kraft-200" />
             <span className="text-sm">Iniciando camara...</span>
           </div>
         )}
 
         {mode === 'fallback' && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-stone-50 p-6 text-center">
-            <div className="flex h-16 w-16 items-center justify-center rounded-2xl border border-stone-200 bg-white">
-              <IconCamera className="h-8 w-8 text-stone-400" />
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-kraft-100 p-6 text-center">
+            <div className="flex h-16 w-16 items-center justify-center rounded-lg border-2 border-cocoa-900 bg-paper shadow-paper-sm">
+              <IconCamera className="h-8 w-8 text-cocoa-500" />
             </div>
-            <p className="max-w-xs text-sm leading-relaxed text-stone-600">
+            <p className="max-w-xs text-sm leading-relaxed text-cocoa-700">
               No pudimos abrir la camara
               {errorMsg ? (
-                <span className="block text-xs text-stone-400">{errorMsg}</span>
+                <span className="block text-xs text-cocoa-400">{errorMsg}</span>
               ) : (
                 '.'
               )}
             </p>
-            <label className="btn-scan flex min-h-[48px] cursor-pointer items-center gap-2 rounded-full px-6 py-3 text-sm font-bold">
+            <label className="btn-scan flex min-h-[48px] cursor-pointer items-center gap-2 rounded-lg px-6 py-3 font-display text-base font-semibold">
               <IconUpload className="h-4 w-4" />
               Elegir imagen del dispositivo
               <input
@@ -215,7 +215,7 @@ export function CaptureView({ onCapture, onCancel }: Props): React.ReactElement 
             <button
               type="button"
               onClick={handleRetry}
-              className="flex items-center gap-1.5 text-xs text-stone-500 underline underline-offset-4"
+              className="flex items-center gap-1.5 text-xs text-cocoa-500 underline underline-offset-4"
             >
               <IconRefresh className="h-3.5 w-3.5" />
               Reintentar camara
@@ -232,7 +232,7 @@ export function CaptureView({ onCapture, onCancel }: Props): React.ReactElement 
             <span className="viewfinder-corner br" aria-hidden />
             <span className="viewfinder-corner bl" aria-hidden />
             <span className="scan-line" aria-hidden />
-            <p className="pointer-events-none absolute inset-x-0 top-4 text-center text-[11px] font-semibold tracking-wide text-white/75">
+            <p className="pointer-events-none absolute inset-x-0 top-4 text-center font-display text-xs font-semibold tracking-wide text-white/80">
               Encuadra el documento
             </p>
           </>
@@ -245,7 +245,7 @@ export function CaptureView({ onCapture, onCancel }: Props): React.ReactElement 
 
         {/* Contador de capturas acumuladas en rafaga */}
         {batchMode && shots.length > 0 && (
-          <div className="absolute right-3 top-3 flex h-8 min-w-8 items-center justify-center rounded-full bg-leaf-500 px-2 text-sm font-bold text-white">
+          <div className="absolute right-3 top-3 flex h-8 min-w-8 items-center justify-center rounded-full border-2 border-paper bg-stamp-600 px-2 font-display text-sm font-bold text-paper">
             {shots.length}
           </div>
         )}
@@ -270,17 +270,17 @@ export function CaptureView({ onCapture, onCancel }: Props): React.ReactElement 
             type="button"
             onClick={() => setBatchMode((b) => !b)}
             aria-pressed={batchMode}
-            className={`flex min-h-[44px] flex-col items-center justify-center gap-0.5 rounded-2xl px-3 py-1.5 text-[11px] font-medium transition-colors ${
+            className={`flex min-h-[44px] flex-col items-center justify-center gap-0.5 rounded-lg px-3 py-1.5 text-[11px] font-medium transition-colors ${
               batchMode
-                ? 'text-leaf-700'
-                : 'text-stone-500'
+                ? 'text-stamp-700'
+                : 'text-cocoa-500'
             }`}
           >
             <span
               className={`flex h-8 w-8 items-center justify-center rounded-full border transition-all ${
                 batchMode
-                  ? 'border-leaf-500 bg-leaf-50'
-                  : 'border-stone-200 bg-white'
+                  ? 'border-cocoa-900 bg-stamp-100 shadow-paper-ink-sm'
+                  : 'border-cocoa-900/40 bg-paper'
               }`}
             >
               <IconBolt className="h-4 w-4" />
@@ -304,8 +304,8 @@ export function CaptureView({ onCapture, onCancel }: Props): React.ReactElement 
           <span aria-hidden />
         )}
 
-        <label className="flex min-h-[44px] cursor-pointer flex-col items-center justify-center gap-0.5 rounded-2xl px-3 py-1.5 text-[11px] font-semibold text-stone-500">
-          <span className="flex h-8 w-8 items-center justify-center rounded-full border border-stone-200 bg-white">
+        <label className="flex min-h-[44px] cursor-pointer flex-col items-center justify-center gap-0.5 rounded-lg px-3 py-1.5 text-[11px] font-semibold text-cocoa-500">
+          <span className="flex h-8 w-8 items-center justify-center rounded-full border-2 border-cocoa-900/40 bg-paper">
             <IconUpload className="h-4 w-4" />
           </span>
           Subir archivos
@@ -324,7 +324,7 @@ export function CaptureView({ onCapture, onCancel }: Props): React.ReactElement 
         <button
           type="button"
           onClick={handleBatchDone}
-          className="btn-scan flex min-h-[52px] w-full items-center justify-center gap-2 rounded-2xl px-5 py-3 text-sm font-bold"
+          className="btn-scan flex min-h-[52px] w-full items-center justify-center gap-2 rounded-lg px-5 py-3 font-display text-base font-semibold"
         >
           Editar {shots.length} {shots.length === 1 ? 'captura' : 'capturas'}
         </button>

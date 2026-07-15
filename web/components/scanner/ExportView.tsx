@@ -58,14 +58,15 @@ export function ExportView({ pages, onAddPage, onRemovePage, onMovePage, onResta
     <div className="stage-in flex flex-col gap-4">
       {/* Paginas */}
       <div>
-        <h2 className="mb-2 px-1 text-[11px] font-bold uppercase tracking-widest text-stone-400">
+        <h2 className="mb-2 px-1 font-display text-xs font-semibold uppercase tracking-[0.18em] text-cocoa-500">
           Paginas ({pages.length})
         </h2>
         <div className="grid grid-cols-3 gap-2.5 sm:grid-cols-4">
           {pages.map((p, i) => (
             <div
               key={i}
-              className="group relative aspect-[3/4] overflow-hidden rounded-2xl border border-stone-200 bg-white shadow-sm"
+              className="group relative aspect-[3/4] overflow-hidden rounded-md border-2 border-cocoa-900 bg-paper shadow-paper transition-transform"
+              style={{ transform: `rotate(${i % 2 === 0 ? -1.2 : 1.1}deg)` }}
             >
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
@@ -73,7 +74,7 @@ export function ExportView({ pages, onAddPage, onRemovePage, onMovePage, onResta
                 alt={`Pagina ${i + 1}`}
                 className="h-full w-full object-cover"
               />
-              <div className="absolute left-1.5 top-1.5 flex h-6 w-6 items-center justify-center rounded-full bg-stone-800/75 text-[11px] font-bold text-white">
+              <div className="absolute left-1.5 top-1.5 flex h-6 w-6 items-center justify-center rounded-full border-2 border-paper bg-cocoa-900 font-display text-[11px] font-bold text-paper">
                 {i + 1}
               </div>
               {pages.length > 1 && (
@@ -81,13 +82,13 @@ export function ExportView({ pages, onAddPage, onRemovePage, onMovePage, onResta
                   type="button"
                   aria-label={`Eliminar pagina ${i + 1}`}
                   onClick={() => onRemovePage(i)}
-                  className="absolute right-1.5 top-1.5 flex h-7 w-7 items-center justify-center rounded-full bg-stone-800/75 text-white transition-colors active:bg-red-600"
+                  className="absolute right-1.5 top-1.5 flex h-7 w-7 items-center justify-center rounded-full border-2 border-paper bg-cocoa-900 text-paper transition-colors active:bg-stamp-600"
                 >
                   <IconX className="h-3.5 w-3.5" />
                 </button>
               )}
               {pages.length > 1 && (
-                <div className="absolute inset-x-0 bottom-0 flex justify-between bg-stone-900/60 px-1 py-0.5">
+                <div className="absolute inset-x-0 bottom-0 flex justify-between bg-cocoa-900/70 px-1 py-0.5">
                   <button
                     type="button"
                     aria-label={`Mover pagina ${i + 1} a la izquierda`}
@@ -116,7 +117,7 @@ export function ExportView({ pages, onAddPage, onRemovePage, onMovePage, onResta
             type="button"
             onClick={onAddPage}
             aria-label="Agregar pagina"
-            className="flex aspect-[3/4] flex-col items-center justify-center gap-1.5 rounded-2xl border-2 border-dashed border-stone-300 text-stone-400 transition-colors active:border-leaf-500 active:text-leaf-600"
+            className="flex aspect-[3/4] flex-col items-center justify-center gap-1.5 rounded-md border-2 border-dashed border-cocoa-900/50 text-cocoa-500 transition-colors active:border-stamp-600 active:text-stamp-600"
           >
             <IconPlus className="h-6 w-6" />
             <span className="text-[11px] font-semibold">Agregar</span>
@@ -126,7 +127,7 @@ export function ExportView({ pages, onAddPage, onRemovePage, onMovePage, onResta
 
       {/* Formato */}
       <div>
-        <h2 className="mb-2 px-1 text-[11px] font-bold uppercase tracking-widest text-stone-400">
+        <h2 className="mb-2 px-1 font-display text-xs font-semibold uppercase tracking-[0.18em] text-cocoa-500">
           Formato
         </h2>
         <div className="grid grid-cols-3 gap-2">
@@ -139,18 +140,18 @@ export function ExportView({ pages, onAddPage, onRemovePage, onMovePage, onResta
                 onClick={() => setFormat(f.id)}
                 title={f.hint}
                 aria-pressed={selected}
-                className={`flex min-h-[56px] flex-col items-center justify-center gap-0.5 rounded-2xl border border-stone-200 bg-white px-2 py-2.5 transition-transform active:scale-95 ${
+                className={`chip-stamp flex min-h-[56px] flex-col items-center justify-center gap-0.5 rounded-lg border-2 border-cocoa-900/25 bg-paper px-2 py-2.5 shadow-paper-sm transition-transform active:translate-x-[2px] active:translate-y-[2px] active:shadow-none ${
                   selected ? 'chip-selected' : ''
                 }`}
               >
                 <span
-                  className={`text-sm font-extrabold ${
-                    selected ? 'text-leaf-700' : 'text-stone-600'
+                  className={`font-display text-base font-bold ${
+                    selected ? 'text-stamp-700' : 'text-cocoa-700'
                   }`}
                 >
                   {f.label}
                 </span>
-                <span className="text-[9.5px] leading-tight text-stone-400">
+                <span className="text-[9.5px] leading-tight text-cocoa-500">
                   {f.id === 'pdf' ? 'multi-pagina' : f.id === 'jpg' ? 'comprimido' : 'sin perdida'}
                 </span>
               </button>
@@ -158,7 +159,7 @@ export function ExportView({ pages, onAddPage, onRemovePage, onMovePage, onResta
           })}
         </div>
         {format !== 'pdf' && pages.length > 1 && (
-          <p className="mt-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] leading-relaxed text-amber-800">
+          <p className="mt-2 rounded-md border-2 border-note-300 bg-note-100 px-3 py-2 text-[11px] leading-relaxed text-note-700 shadow-paper-sm">
             {format.toUpperCase()} solo exporta una imagen. Usa PDF para
             guardar todas las paginas juntas.
           </p>
@@ -169,7 +170,7 @@ export function ExportView({ pages, onAddPage, onRemovePage, onMovePage, onResta
       <div>
         <label
           htmlFor="scan-filename"
-          className="mb-2 block px-1 text-[11px] font-bold uppercase tracking-widest text-stone-400"
+          className="mb-2 block px-1 font-display text-xs font-semibold uppercase tracking-[0.18em] text-cocoa-500"
         >
           Nombre del archivo
         </label>
@@ -179,9 +180,9 @@ export function ExportView({ pages, onAddPage, onRemovePage, onMovePage, onResta
           value={filename}
           onChange={(e) => setFilename(e.target.value)}
           autoComplete="off"
-          className="w-full rounded-2xl border border-stone-200 bg-white px-4 py-3 text-sm text-stone-800 outline-none transition-colors focus:border-leaf-500"
+          className="w-full rounded-lg border-2 border-cocoa-900/30 bg-paper px-4 py-3 text-sm text-cocoa-900 shadow-paper-sm outline-none transition-colors focus:border-cocoa-900"
         />
-        <p className="mt-1.5 px-1 text-[10px] text-stone-400">
+        <p className="mt-1.5 px-1 text-[10px] text-cocoa-400">
           Solo a-z, A-Z, 0-9, _ y -. Lo demas se sustituye por _.
         </p>
       </div>
@@ -191,7 +192,7 @@ export function ExportView({ pages, onAddPage, onRemovePage, onMovePage, onResta
         <button
           type="button"
           onClick={onRestart}
-          className="btn-ghost flex min-h-[52px] items-center justify-center gap-1.5 rounded-2xl px-4 text-sm font-semibold text-stone-600"
+          className="btn-ghost flex min-h-[52px] items-center justify-center gap-1.5 rounded-lg px-4 font-display text-base font-semibold text-cocoa-900"
         >
           <IconRefresh className="h-4 w-4" />
           Empezar de nuevo
@@ -200,7 +201,7 @@ export function ExportView({ pages, onAddPage, onRemovePage, onMovePage, onResta
           type="button"
           onClick={() => void handleExport()}
           disabled={exporting || pages.length === 0}
-          className="btn-scan flex min-h-[52px] flex-1 items-center justify-center gap-2 rounded-2xl px-5 text-sm font-bold"
+          className="btn-scan flex min-h-[52px] flex-1 items-center justify-center gap-2 rounded-lg px-5 font-display text-base font-semibold"
         >
           <IconDownload className="h-4 w-4" />
           {exporting ? 'Exportando...' : `Descargar ${format.toUpperCase()}`}
