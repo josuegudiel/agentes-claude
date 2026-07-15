@@ -1,12 +1,17 @@
 import type { Metadata, Viewport } from 'next';
-import { Nunito } from 'next/font/google';
+import { Public_Sans, Zilla_Slab } from 'next/font/google';
 import './globals.css';
 
-// Nunito para toda la UI: terminales redondeadas, calida y legible.
-// Eleccion deliberada — NO Inter ni Space Grotesk (los defaults que
-// delatan una interfaz generada por IA). next/font descarga y
-// self-hostea en build: cero requests a Google en runtime.
-const body = Nunito({
+// Zilla Slab: slab serif con caracter de imprenta/sello para titulos y
+// CTAs. Public Sans: cuerpo neutro y calido. Eleccion deliberada — nada
+// de Inter/Space Grotesk/Nunito (defaults que delatan UI de IA).
+const display = Zilla_Slab({
+  subsets: ['latin'],
+  weight: ['500', '600', '700'],
+  variable: '--font-display',
+  display: 'swap',
+});
+const body = Public_Sans({
   subsets: ['latin'],
   variable: '--font-body',
   display: 'swap',
@@ -24,7 +29,7 @@ export const viewport: Viewport = {
   width: 'device-width',
   initialScale: 1,
   viewportFit: 'cover',
-  themeColor: '#FAF8F3',
+  themeColor: '#EDE4D3',
 };
 
 export default function RootLayout({
@@ -33,8 +38,8 @@ export default function RootLayout({
   children: React.ReactNode;
 }): React.ReactElement {
   return (
-    <html lang="es" className={body.variable}>
-      <body className="scanner-theme min-h-screen font-sans text-stone-800 antialiased">
+    <html lang="es" className={`${display.variable} ${body.variable}`}>
+      <body className="scanner-theme min-h-screen font-sans text-cocoa-900 antialiased">
         {children}
       </body>
     </html>

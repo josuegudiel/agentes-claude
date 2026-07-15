@@ -151,7 +151,7 @@ export function IconDocScan(props: IconProps): React.ReactElement {
     <svg {...base(props)}>
       <path d="M7 3.5h7l4 4v13h-11z" opacity="0.9" />
       <path d="M14 3.5v4h4" />
-      <path d="M3.5 12h17" strokeWidth="2.2" className="text-leaf-500" stroke="currentColor" />
+      <path d="M3.5 12h17" strokeWidth="2.2" className="text-stamp-600" stroke="currentColor" />
     </svg>
   );
 }

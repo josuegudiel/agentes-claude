@@ -165,14 +165,14 @@ export function ScannerApp(): React.ReactElement {
       <Steps stage={stage} pageCount={pages.length} />
 
       {loadError && (
-        <div className="stage-in rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+        <div className="stage-in rounded-lg border-2 border-stamp-600 bg-stamp-50 px-4 py-3 text-sm text-stamp-700 shadow-paper-sm">
           <strong className="font-semibold">Error cargando imagen:</strong>{' '}
           {loadError}
         </div>
       )}
 
       {restoredCount > 0 && stage === 'export' && (
-        <div className="stage-in flex items-center justify-between gap-3 rounded-2xl border border-leaf-200 bg-leaf-50 px-4 py-2.5 text-sm text-leaf-700">
+        <div className="stage-in flex items-center justify-between gap-3 rounded-lg border-2 border-dashed border-cocoa-900 bg-paper px-4 py-2.5 text-sm text-cocoa-700 shadow-paper-sm">
           <span className="flex items-center gap-2">
             <IconCheck className="h-4 w-4 shrink-0" />
             Sesion anterior restaurada ({restoredCount}{' '}
@@ -182,7 +182,7 @@ export function ScannerApp(): React.ReactElement {
             type="button"
             onClick={() => setRestoredCount(0)}
             aria-label="Cerrar aviso"
-            className="btn-ghost flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-stone-500"
+            className="btn-ghost flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-cocoa-500"
           >
             <IconX className="h-4 w-4" />
           </button>
@@ -199,7 +199,7 @@ export function ScannerApp(): React.ReactElement {
       {stage === 'edit' && pendingImages.length > 0 && (
         <>
           {pendingTotal > 1 && (
-            <p className="text-center text-xs font-semibold text-leaf-600">
+            <p className="text-center font-display text-sm font-semibold text-stamp-600">
               Editando pagina {pendingTotal - pendingImages.length + 1} de {pendingTotal}
             </p>
           )}
@@ -266,8 +266,9 @@ async function blobToCanvas(blob: Blob): Promise<HTMLCanvasElement> {
 const STAGE_ORDER: Stage[] = ['capture', 'edit', 'export'];
 
 /**
- * Indicador de progreso del flujo: 3 pasos con conectores que se
- * "encienden" al avanzar. Compacto en movil, con labels siempre visibles.
+ * Indicador de progreso como pestanas de carpeta de archivo: la activa
+ * "sube" y se funde con la linea base de tinta; las otras quedan
+ * hundidas detras.
  */
 function Steps({
   stage,
@@ -284,33 +285,36 @@ function Steps({
   const activeIdx = STAGE_ORDER.indexOf(stage);
 
   return (
-    <ol className="flex items-center gap-1.5" aria-label="Progreso">
+    <ol
+      className="flex items-end gap-1.5 border-b-2 border-cocoa-900 px-1"
+      aria-label="Progreso"
+    >
       {items.map((it, i) => {
         const state = i < activeIdx ? 'done' : i === activeIdx ? 'active' : 'todo';
         return (
-          <li key={it.id} className="flex min-w-0 flex-1 items-center gap-1.5">
+          <li key={it.id} className="min-w-0 flex-1">
             <div
-              className={`flex min-w-0 flex-1 items-center gap-2 rounded-full border px-2.5 py-1.5 transition-colors ${
-                state === 'active'
-                  ? 'border-leaf-500 bg-leaf-50 text-leaf-700'
-                  : state === 'done'
-                    ? 'border-stone-200 bg-white text-leaf-600'
-                    : 'border-stone-200 bg-white text-stone-400'
+              className={`folder-tab flex items-center justify-center gap-1.5 px-2 py-2 ${
+                state === 'active' ? 'tab-active' : 'tab-idle'
               }`}
               aria-current={state === 'active' ? 'step' : undefined}
             >
               <span
                 className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] font-bold ${
                   state === 'active'
-                    ? 'bg-leaf-500 text-white'
+                    ? 'bg-stamp-600 text-paper'
                     : state === 'done'
-                      ? 'bg-leaf-100 text-leaf-700'
-                      : 'bg-stone-100 text-stone-400'
+                      ? 'bg-cocoa-900 text-paper'
+                      : 'bg-cocoa-900/20 text-cocoa-700'
                 }`}
               >
                 {state === 'done' ? <IconCheck className="h-3 w-3" /> : i + 1}
               </span>
-              <span className="truncate text-xs font-bold">
+              <span
+                className={`truncate font-display text-sm font-semibold ${
+                  state === 'active' ? 'text-cocoa-900' : 'text-cocoa-500'
+                }`}
+              >
                 {it.label}
               </span>
             </div>

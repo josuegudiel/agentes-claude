@@ -8,9 +8,10 @@ const config: Config = {
   theme: {
     extend: {
       fontFamily: {
-        // Nunito para todo: terminales redondeadas = calido y friendly.
-        // (Deliberadamente NO Inter/Space Grotesk — defaults de IA.)
-        display: ['var(--font-body)', 'system-ui', 'sans-serif'],
+        // Zilla Slab (slab serif con caracter de sello/imprenta) para
+        // titulos y CTAs; Public Sans para el cuerpo. Deliberadamente
+        // NADA de Inter/Space Grotesk/Nunito — defaults de IA.
+        display: ['var(--font-display)', 'Georgia', 'serif'],
         sans: ['var(--font-body)', 'system-ui', 'sans-serif'],
         mono: ['ui-monospace', 'SFMono-Regular', 'Menlo', 'Monaco', 'monospace'],
       },
@@ -29,17 +30,42 @@ const config: Config = {
           900: '#0f172a',
           950: '#020617',
         },
-        // Tema del scanner: "papel fresco" — claro, plano, un solo acento.
-        paper: '#FAF8F3',
-        leaf: {
-          50: '#EEF8F2',
-          100: '#DCF1E5',
-          200: '#B9E3CE',
-          300: '#8BD0AC',
-          500: '#1E9E64',
-          600: '#188A56',
-          700: '#136E45',
+        // Tema del scanner: "El Escritorio" — papeleria fisica.
+        // Kraft (papel madera), cocoa (tinta calida), stamp (rojo sello),
+        // note (amarillo nota adhesiva), paper (papel blanco calido).
+        kraft: {
+          50: '#FBF7EE',
+          100: '#F5EEDF',
+          200: '#EDE4D3',
+          300: '#DFD2B8',
+          400: '#C9B896',
         },
+        cocoa: {
+          300: '#AD9F87',
+          400: '#8A7E68',
+          500: '#6E6350',
+          700: '#4A4132',
+          900: '#2B2415',
+        },
+        stamp: {
+          50: '#FBEEE8',
+          100: '#F7DDD3',
+          600: '#C73E1D',
+          700: '#A93317',
+        },
+        note: {
+          100: '#F9EAC0',
+          300: '#EBCB6E',
+          700: '#8A6914',
+        },
+        paper: '#FDFBF5',
+      },
+      boxShadow: {
+        // Sombras DURAS desplazadas — recorte de papel, no blur difuso.
+        paper: '3px 3px 0 0 rgba(43, 36, 21, 0.16)',
+        'paper-sm': '2px 2px 0 0 rgba(43, 36, 21, 0.14)',
+        'paper-ink': '3px 3px 0 0 #2B2415',
+        'paper-ink-sm': '2px 2px 0 0 #2B2415',
       },
     },
   },
