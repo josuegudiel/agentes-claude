@@ -209,6 +209,78 @@ describe('detectDocumentQuad', () => {
     expectCornerNear(quad![2]!, rect[2]!, w, h, 8);
   });
 
+  it('rechaza un quad SIN contraste real con el alrededor', () => {
+    // Rectangulo con borde marcado pero interior casi igual al fondo
+    // (145 vs 128): hay lineas detectables, pero no es un documento.
+    const w = 128;
+    const h = 128;
+    const rect: Point[] = [
+      { x: 24, y: 24 },
+      { x: 104, y: 24 },
+      { x: 104, y: 104 },
+      { x: 24, y: 104 },
+    ];
+    const img = makeImage(w, h, (x, y) =>
+      insideQuad(rect, x, y) ? 145 : 128,
+    );
+    expect(detectDocumentQuad(img)).toBeNull();
+  });
+
+  it('acepta el mismo quad cuando el contraste es real', () => {
+    const w = 128;
+    const h = 128;
+    const rect: Point[] = [
+      { x: 24, y: 24 },
+      { x: 104, y: 24 },
+      { x: 104, y: 104 },
+      { x: 24, y: 104 },
+    ];
+    const img = makeImage(w, h, (x, y) =>
+      insideQuad(rect, x, y) ? 200 : 90,
+    );
+    expect(detectDocumentQuad(img)).not.toBeNull();
+  });
+
+  it('allowImageBorders:false rechaza el documento cortado por el encuadre', () => {
+    const w = 160;
+    const h = 128;
+    const rect: Point[] = [
+      { x: -20, y: 24 },
+      { x: 120, y: 28 },
+      { x: 116, y: 104 },
+      { x: -24, y: 100 },
+    ];
+    const img = docImage(w, h, rect);
+    // Con bordes permitidos (default) lo encuentra...
+    expect(detectDocumentQuad(img)).not.toBeNull();
+    // ...pero en modo camara-en-vivo (sin bordes sinteticos) lo rechaza.
+    expect(detectDocumentQuad(img, { allowImageBorders: false })).toBeNull();
+  });
+
+  it('minArea alto rechaza documentos chicos en el encuadre', () => {
+    const w = 160;
+    const h = 160;
+    // Documento de ~11% del area: pasa con default (8%) pero no con 15%.
+    const rect: Point[] = [
+      { x: 55, y: 55 },
+      { x: 108, y: 57 },
+      { x: 106, y: 110 },
+      { x: 53, y: 108 },
+    ];
+    const img = docImage(w, h, rect);
+    expect(detectDocumentQuad(img)).not.toBeNull();
+    expect(detectDocumentQuad(img, { minArea: 0.15 })).toBeNull();
+  });
+
+  it('una sola franja del fondo no fabrica un documento', () => {
+    // Fondo claro con UNA franja oscura vertical (p.ej. pata de mesa):
+    // dos lineas paralelas cercanas no forman quad valido.
+    const w = 128;
+    const h = 128;
+    const img = makeImage(w, h, (x) => (x >= 58 && x < 72 ? 40 : 215));
+    expect(detectDocumentQuad(img)).toBeNull();
+  });
+
   it('tolera ruido moderado en el fondo', () => {
     const w = 128;
     const h = 128;
