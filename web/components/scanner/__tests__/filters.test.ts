@@ -244,7 +244,7 @@ describe('applyFilter', () => {
     expect(diff).toBeLessThan(before / 2);
   });
 
-  it('magic (CLAHE): mejora el contraste local en zonas oscuras y claras a la vez', () => {
+  it('magic: revela detalle en zonas oscuras y claras a la vez (aplanado + curva)', () => {
     // Mitad izquierda oscura con detalle tenue (40/55), mitad derecha
     // clara con detalle tenue (200/215). Un clip global de histograma
     // apenas los separa; CLAHE ecualiza POR REGION y amplifica ambos.
@@ -406,7 +406,7 @@ describe('applyFilter', () => {
     }
   });
 
-  it('magic: clipea histograma y centra en el rango (0..255)', () => {
+  it('magic: expande el rango tonal de una imagen lavada', () => {
     // Imagen con valores entre 50 y 200 — el magic clip deberia expandir
     // el rango usable cerca de [0..255].
     const img = makeImageData(32, 32, (x) => {

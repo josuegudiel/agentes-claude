@@ -38,7 +38,7 @@ export interface FilterMeta {
 
 export const FILTERS: FilterMeta[] = [
   { id: 'original', label: 'Original', hint: 'Sin procesamiento' },
-  { id: 'magic', label: 'Magico', hint: 'Contraste adaptativo por zonas (CLAHE) — revive texto y detalle palidos' },
+  { id: 'magic', label: 'Magico', hint: 'Escaneo automatico: papel parejo, tinta firme, colores intactos' },
   { id: 'doc', label: 'Documento', hint: 'Blanquea el papel y quita sombras; conserva sellos y firmas en color' },
   { id: 'shadow', label: 'Sin sombra', hint: 'Solo levanta sombras y empareja la luz — sin blanquear ni tocar colores' },
   { id: 'receipt', label: 'Factura', hint: 'Realza texto desvanecido de tickets, facturas y papel termico' },
@@ -81,68 +81,20 @@ export function applyFilter(data: ImageData, filter: FilterId): ImageData {
 // ---------------------------------------------------------------------------
 
 /**
- * "Documento": correccion de iluminacion (flat-field). Estima el fondo
- * (papel) con dilatacion + blur a escala reducida y divide la imagen por
- * el: las sombras y la luz despareja desaparecen, el papel queda blanco
- * uniforme y la tinta/sellos conservan su color. El filtro estrella para
- * papeleria fotografiada con el celular.
+ * "Documento": escaneo de alto contraste — papel blanco puro, tinta
+ * asentada, sellos y tintas de color reforzados. Preset fuerte del
+ * nucleo profesional.
  */
 function docEnhance(data: ImageData): ImageData {
-  const { width: w, height: h } = data;
-  const px = data.data;
-
-  const luma = lumaOf(data);
-  const bg = estimateBackground(luma, w, h);
-
-  for (let y = 0, i = 0, j = 0; y < h; y++) {
-    for (let x = 0; x < w; x++, i += 4, j++) {
-      const b = Math.max(30, bg.sample(x, y));
-      // Cap 5 (antes 3): una sombra profunda con fondo ~50 necesita
-      // gain ~4.9 para levantar el papel a blanco. Con cap 3 la sombra
-      // quedaba a medio corregir y los umbrales de abajo la RE-oscurecian
-      // — el bug de "las sombras se oscurecen mas".
-      const gain = Math.min(5, 245 / b);
-      let r = px[i]! * gain;
-      let g = px[i + 1]! * gain;
-      let bch = px[i + 2]! * gain;
-
-      const nl = 0.299 * r + 0.587 * g + 0.114 * bch;
-      const chroma = Math.max(r, g, bch) - Math.min(r, g, bch);
-
-      if (chroma >= 20 && nl >= 120) {
-        // TINTA DE COLOR (verde palido, cafe, sellos, logos): un pixel
-        // con croma NO es papel — jamas blanquearlo. Al contrario: se
-        // refuerza (mas saturacion, un toque mas oscuro) para que las
-        // tintas claras queden legibles en vez de lavarse. Este era el
-        // bug que borraba texto verde/cafe de tarjetas y membretes.
-        const f = 1.3;
-        r = (nl + (r - nl) * f) * 0.9;
-        g = (nl + (g - nl) * f) * 0.9;
-        bch = (nl + (bch - nl) * f) * 0.9;
-      } else if (nl >= 180 && chroma < 20) {
-        // Blanqueo suave SOLO para pixeles casi neutros (papel): los
-        // cercanos al blanco se empujan a blanco puro con smoothstep.
-        const t = Math.min(1, (nl - 180) / 60);
-        const s = t * t * (3 - 2 * t);
-        r = r + (255 - r) * s;
-        g = g + (255 - g) * s;
-        bch = bch + (255 - bch) * s;
-      } else if (nl < 110) {
-        // Oscurecer SOLO tinta franca (nl < 110). La banda media
-        // 110..180 (penumbra corregida a medias) se deja intacta.
-        r *= 0.9;
-        g *= 0.9;
-        bch *= 0.9;
-      }
-      px[i] = clamp255(r);
-      px[i + 1] = clamp255(g);
-      px[i + 2] = clamp255(bch);
-    }
-  }
-
-  // Texto mas crocante sin franjas de color: enfoque sobre luminancia.
-  unsharpLuma(data, 0.4, 3);
-  return data;
+  return scannerCore(data, {
+    gamma: 1.3,
+    knee: 0.8,
+    blackP: 0.02,
+    blackCap: 80,
+    chroma: 1.4,
+    gray: false,
+    sharpen: 0.6,
+  });
 }
 
 /**
@@ -157,11 +109,11 @@ function shadowLift(data: ImageData): ImageData {
   const px = data.data;
 
   const luma = lumaOf(data);
-  const bg = estimateBackground(luma, w, h);
+  if (w < 32 || h < 32) return data;
+  const bg = estimateShading(luma, w, h);
 
-  // Referencia: el fondo mas claro de la imagen (percentil alto del mapa
-  // de sombra) — normalizamos hacia el, no hacia blanco absoluto, para
-  // conservar el tono del papel/superficie original.
+  // Referencia: el papel mas claro de la imagen — normalizamos hacia el,
+  // no hacia blanco absoluto, para conservar el tono original.
   let ref = 0;
   for (let y = 0; y < h; y += 8) {
     for (let x = 0; x < w; x += 8) {
@@ -173,7 +125,7 @@ function shadowLift(data: ImageData): ImageData {
 
   for (let y = 0, i = 0; y < h; y++) {
     for (let x = 0; x < w; x++, i += 4) {
-      const b = Math.max(30, bg.sample(x, y));
+      const b = Math.max(40, bg.sample(x, y));
       const gain = Math.min(5, ref / b);
       px[i] = clamp255(px[i]! * gain);
       px[i + 1] = clamp255(px[i + 1]! * gain);
@@ -184,54 +136,19 @@ function shadowLift(data: ImageData): ImageData {
 }
 
 /**
- * "Factura": pensado para tickets termicos y facturas con texto gris
- * desvanecido. Grises + correccion de iluminacion + estiramiento por
- * percentiles + gamma que oscurece los medios: el texto apenas visible
- * se vuelve legible.
+ * "Factura": para tickets termicos y texto desvanecido — grises con
+ * gamma fuerte que vuelve legible la tinta palida.
  */
 function receiptEnhance(data: ImageData): ImageData {
-  const { width: w, height: h } = data;
-  const px = data.data;
-
-  const luma = lumaOf(data);
-  const bg = estimateBackground(luma, w, h);
-
-  // Normalizacion contra el fondo -> buffer de trabajo en gris.
-  const norm = new Float32Array(w * h);
-  for (let y = 0, j = 0; y < h; y++) {
-    for (let x = 0; x < w; x++, j++) {
-      const b = Math.max(30, bg.sample(x, y));
-      norm[j] = Math.min(255, (luma[j]! * 245) / b);
-    }
-  }
-
-  // Estiramiento: el percentil 5 (la tinta mas oscura presente) va a
-  // negro y el 99 a blanco. El piso en 150 permite que hasta la tinta
-  // PALIDA (texto gris/verde claro ~150-190) gane contraste real.
-  const lo = Math.min(percentileF32(norm, 0.05), 150);
-  const hi = Math.max(percentileF32(norm, 0.99), lo + 30);
-  const scale = 255 / (hi - lo);
-
-  // Gamma 1.3 como LUT de 256 entradas: oscurece los medios (texto
-  // desvanecido) sin tocar blancos ni negros, y sin pagar Math.pow por
-  // pixel (2.7M llamadas a resolucion de camara).
-  const gammaLut = new Uint8ClampedArray(256);
-  for (let v = 0; v < 256; v++) {
-    gammaLut[v] = 255 * Math.pow(v / 255, 1.45);
-  }
-
-  for (let j = 0, i = 0; j < norm.length; j++, i += 4) {
-    let v = (norm[j]! - lo) * scale;
-    v = v < 0 ? 0 : v > 255 ? 255 : v;
-    const out = gammaLut[Math.round(v)]!;
-    px[i] = out;
-    px[i + 1] = out;
-    px[i + 2] = out;
-  }
-
-  // Trazos del texto termico mas definidos.
-  unsharpLuma(data, 0.5, 3);
-  return data;
+  return scannerCore(data, {
+    gamma: 1.7,
+    knee: 0.78,
+    blackP: 0.05,
+    blackCap: 150,
+    chroma: 1,
+    gray: true,
+    sharpen: 0.7,
+  });
 }
 
 /**
@@ -245,11 +162,27 @@ function sauvolaBw(data: ImageData): ImageData {
   const { width: w, height: h } = data;
   const px = data.data;
 
-  const luma = lumaOf(data);
+  // Binarizar sobre la luma APLANADA: sombras e iluminacion despareja
+  // fuera ANTES del umbral — como un scanner fisico en modo B/N.
+  const raw = lumaOf(data);
+  const luma = new Float32Array(w * h);
+  if (w >= 32 && h >= 32) {
+    const shade = estimateShading(raw, w, h);
+    for (let y = 0, j = 0; y < h; y++) {
+      for (let x = 0; x < w; x++, j++) {
+        const s = Math.max(40, shade.sample(x, y));
+        luma[j] = Math.min(255, (raw[j]! * 245) / s);
+      }
+    }
+  } else {
+    luma.set(raw);
+  }
   const sq = new Float32Array(w * h);
   for (let j = 0; j < luma.length; j++) sq[j] = luma[j]! * luma[j]!;
 
-  const radius = Math.max(8, Math.round(Math.min(w, h) * 0.04));
+  // Ventana grande (8% del lado menor): una ventana menor que el ancho de
+  // un trazo grueso deja las letras "huecas".
+  const radius = Math.max(12, Math.round(Math.min(w, h) * 0.08));
   const mean = boxBlurF32(luma, w, h, radius);
   const meanSq = boxBlurF32(sq, w, h, radius);
 
@@ -273,30 +206,19 @@ function sauvolaBw(data: ImageData): ImageData {
 // ---------------------------------------------------------------------------
 
 /**
- * "Magic" scan: mejora automatica tipo CamScanner, ahora con CLAHE
- * (Contrast-Limited Adaptive Histogram Equalization) — la tecnica que
- * usan los SDKs de escaneo profesionales. A diferencia del clip global
- * de histograma, CLAHE ecualiza POR REGION (tiles con LUT interpolada
- * bilinealmente), asi que levanta el contraste local: texto palido en
- * una zona oscura Y detalle en una zona clara mejoran a la vez. El
- * limite de clip evita amplificar ruido en zonas planas. Remate con
- * enfoque suave de luminancia.
+ * "Magico": escaneo automatico — papel blanco parejo, tinta firme,
+ * colores preservados. Preset suave del nucleo profesional.
  */
 function magicScan(data: ImageData): ImageData {
-  // Pre-pase de sombras: normalizacion suave contra el mapa de
-  // iluminacion (Lambertiano) ANTES de CLAHE. Sin esto, CLAHE trata la
-  // sombra como "contenido" y ecualiza dentro de ella — el resultado
-  // percibido era que algunas sombras quedaban MAS oscuras.
-  softShadowLift(data, 2.5);
-  // Clip alto: los tiles CON contenido se ecualizan fuerte (la
-  // proteccion de tiles planos dentro de claheLuma evita amplificar
-  // ruido donde no hay detalle real).
-  claheLuma(data, 16, 0.8);
-  // Estiramiento global de luminancia para asentar negros y blancos
-  // (solo si hay rango real que estirar).
-  stretchLuma(data, 0.01, 0.99, 40);
-  unsharpLuma(data, 0.35, 2);
-  return data;
+  return scannerCore(data, {
+    gamma: 1.08,
+    knee: 0.86,
+    blackP: 0.02,
+    blackCap: 90,
+    chroma: 1.15,
+    gray: false,
+    sharpen: 0.45,
+  });
 }
 
 /**
@@ -343,25 +265,20 @@ function stretchLuma(data: ImageData, pLo: number, pHi: number, minRange: number
   }
 }
 
-/** Grises + estiramiento de contraste por percentiles sobre la luminancia. */
+/**
+ * "Gris": escaneo en escala de grises — mismo nucleo (aplanado + curva)
+ * con salida gris. Como un scanner fisico en modo grayscale.
+ */
 function grayscaleContrast(data: ImageData): ImageData {
-  const px = data.data;
-  const luma = lumaOf(data);
-
-  const lo = percentileF32(luma, 0.01);
-  const hi = percentileF32(luma, 0.99);
-  // Imagen casi uniforme: no estirar (evita amplificar ruido).
-  const stretch = hi - lo >= 5;
-  const scale = stretch ? 255 / (hi - lo) : 1;
-
-  for (let j = 0, i = 0; j < luma.length; j++, i += 4) {
-    let v = stretch ? (luma[j]! - lo) * scale : luma[j]!;
-    v = v < 0 ? 0 : v > 255 ? 255 : v;
-    px[i] = v;
-    px[i + 1] = v;
-    px[i + 2] = v;
-  }
-  return data;
+  return scannerCore(data, {
+    gamma: 1.15,
+    knee: 0.85,
+    blackP: 0.02,
+    blackCap: 90,
+    chroma: 1,
+    gray: true,
+    sharpen: 0.4,
+  });
 }
 
 /**
@@ -468,6 +385,214 @@ function vividBoost(data: ImageData): ImageData {
     px[i + 2] = clamp255(b * ratio);
   }
   return data;
+}
+
+// ---------------------------------------------------------------------------
+// Nucleo profesional de escaneo (pipeline tipo Dropbox Scanner)
+// ---------------------------------------------------------------------------
+//
+// Todos los filtros de papeleria comparten UN nucleo, como una app
+// profesional o un scanner fisico:
+//
+//   1. Iluminacion por PERCENTIL POR BLOQUES: en cada bloque (~1/10 del
+//      lado) el percentil 85 de luma es "el papel" de esa zona — robusto
+//      a texto, logos y fotos (a diferencia de la dilatacion, que dejaba
+//      halos alrededor de zonas oscuras grandes). Los bloques dominados
+//      por tinta heredan el papel vecino (max 3x3) y la grilla se suaviza
+//      e interpola bilinealmente.
+//   2. Aplanado: luma / mapa de iluminacion — papel parejo, sombras
+//      fuera, como el vidrio de un scanner.
+//   3. CURVA TONAL SUAVE via LUT: punto negro = percentil de la tinta,
+//      punto blanco = percentil del papel; gamma que asienta la tinta y
+//      un "roll-off" suave que funde el papel a blanco puro. Sin ramas
+//      por pixel: cero artefactos de posterizacion.
+//   4. Croma uniforme: el color (sellos, tintas verdes/cafe, logos) se
+//      preserva y refuerza parejo — nunca se blanquea.
+
+interface ScanPreset {
+  /** >1 asienta la tinta (oscurece medios-bajos). */
+  gamma: number;
+  /** Desde que punto (0..1) el papel rueda a blanco puro. */
+  knee: number;
+  /** Percentil del punto negro (0..1). */
+  blackP: number;
+  /** Tope del punto negro (no machacar imagenes sin tinta oscura). */
+  blackCap: number;
+  /** Refuerzo de croma (1 = sin cambio). */
+  chroma: number;
+  /** Salida en escala de grises. */
+  gray: boolean;
+  /** Enfoque de luminancia al final (0 = off). */
+  sharpen: number;
+}
+
+function scannerCore(data: ImageData, o: ScanPreset): ImageData {
+  const { width: w, height: h } = data;
+  const px = data.data;
+  const luma = lumaOf(data);
+
+  // 1-2. Aplanado contra el mapa de iluminacion.
+  const flat = new Float32Array(w * h);
+  if (w >= 32 && h >= 32) {
+    const shade = estimateShading(luma, w, h);
+    for (let y = 0, j = 0; y < h; y++) {
+      for (let x = 0; x < w; x++, j++) {
+        const s = Math.max(40, shade.sample(x, y));
+        const gain = Math.min(5, Math.max(0.5, 245 / s));
+        flat[j] = Math.min(255, luma[j]! * gain);
+      }
+    }
+  } else {
+    flat.set(luma);
+  }
+
+  // 3. Puntos negro/blanco + LUT de curva tonal.
+  const bp = Math.min(percentileF32(flat, o.blackP), o.blackCap);
+  let wp = percentileF32(flat, 0.93);
+  if (wp - bp < 60) wp = bp + 60;
+  wp = Math.min(252, wp);
+
+  // Imagen sin rango real (uniforme): identidad — nada que escanear.
+  const uniform = percentileF32(flat, 0.95) - percentileF32(flat, 0.05) < 10;
+
+  const lut = new Float32Array(256);
+  for (let v = 0; v < 256; v++) {
+    if (uniform) {
+      lut[v] = v;
+      continue;
+    }
+    let n = (v - bp) / (wp - bp);
+    n = n < 0 ? 0 : n > 1 ? 1 : n;
+    const base = Math.pow(n, o.gamma);
+    let k = (n - o.knee) / (1 - o.knee);
+    k = k < 0 ? 0 : k > 1 ? 1 : k;
+    const roll = k * k * (3 - 2 * k);
+    lut[v] = 255 * (base + (1 - base) * roll);
+  }
+
+  // 4. Aplicar: ratio de luma a RGB + croma uniforme (o gris).
+  for (let j = 0, i = 0; j < flat.length; j++, i += 4) {
+    const target = lut[Math.min(255, Math.round(flat[j]!))]!;
+    if (o.gray) {
+      px[i] = target;
+      px[i + 1] = target;
+      px[i + 2] = target;
+      continue;
+    }
+    const ratio = target / Math.max(1, luma[j]!);
+    const r = px[i]! * ratio;
+    const g = px[i + 1]! * ratio;
+    const b = px[i + 2]! * ratio;
+    px[i] = clamp255(target + (r - target) * o.chroma);
+    px[i + 1] = clamp255(target + (g - target) * o.chroma);
+    px[i + 2] = clamp255(target + (b - target) * o.chroma);
+  }
+
+  if (o.sharpen > 0) unsharpLuma(data, o.sharpen, 3);
+  return data;
+}
+
+interface ShadingMap {
+  sample: (x: number, y: number) => number;
+}
+
+/**
+ * Mapa de iluminacion por percentil por bloques (el estimador robusto):
+ * p85 de luma por bloque = papel local; max 3x3 en la grilla para que
+ * los bloques dominados por tinta/fotos hereden el papel vecino;
+ * suavizado y muestreo bilineal.
+ */
+function estimateShading(luma: Float32Array, w: number, h: number): ShadingMap {
+  const bs = Math.max(16, Math.round(Math.min(w, h) / 10));
+  const gx = Math.max(2, Math.ceil(w / bs));
+  const gy = Math.max(2, Math.ceil(h / bs));
+
+  const grid = new Float32Array(gx * gy);
+  const hist = new Uint32Array(256);
+  for (let by = 0; by < gy; by++) {
+    for (let bx = 0; bx < gx; bx++) {
+      hist.fill(0);
+      const x0 = bx * bs;
+      const y0 = by * bs;
+      const x1 = Math.min(w, x0 + bs);
+      const y1 = Math.min(h, y0 + bs);
+      let count = 0;
+      for (let y = y0; y < y1; y++) {
+        for (let x = x0; x < x1; x++) {
+          hist[Math.min(255, Math.round(luma[y * w + x]!))]!++;
+          count++;
+        }
+      }
+      let v85 = 255;
+      let cum = 0;
+      const targetCount = count * 0.85;
+      for (let v = 0; v < 256; v++) {
+        cum += hist[v]!;
+        if (cum >= targetCount) {
+          v85 = v;
+          break;
+        }
+      }
+      grid[by * gx + bx] = v85;
+    }
+  }
+
+  // NOTA: NO se hace "herencia" del papel vecino (max 3x3) — confunde
+  // sombra con tinta: un bloque de papel EN SOMBRA heredaria el papel
+  // iluminado del vecino, el gain se anularia y la curva tonal mandaria
+  // la sombra a negro. El percentil 85 por bloque ya es robusto a texto
+  // y tinta normal por si solo.
+
+  // Sin suavizado explicito de la grilla: mezclaria bloques de sombra
+  // con vecinos iluminados (sobre-estimando el papel en sombra). La
+  // interpolacion BILINEAL entre centros de bloque ya da transiciones
+  // continuas.
+  let sm = grid;
+  for (let pass = 0; pass < 0; pass++) {
+    const next = new Float32Array(gx * gy);
+    for (let by = 0; by < gy; by++) {
+      for (let bx = 0; bx < gx; bx++) {
+        let sum = 0;
+        let n = 0;
+        for (let dy = -1; dy <= 1; dy++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            const yy = by + dy;
+            const xx = bx + dx;
+            if (yy < 0 || yy >= gy || xx < 0 || xx >= gx) continue;
+            sum += sm[yy * gx + xx]!;
+            n++;
+          }
+        }
+        next[by * gx + bx] = sum / n;
+      }
+    }
+    sm = next;
+  }
+
+  const gridFinal = sm;
+  return {
+    sample(x: number, y: number): number {
+      // Coordenada en el espacio de CENTROS de bloque.
+      let fx = (x - bs / 2) / bs;
+      let fy = (y - bs / 2) / bs;
+      fx = Math.min(gx - 1.001, Math.max(0, fx));
+      fy = Math.min(gy - 1.001, Math.max(0, fy));
+      const x0 = Math.floor(fx);
+      const y0 = Math.floor(fy);
+      const tx = fx - x0;
+      const ty = fy - y0;
+      const i00 = gridFinal[y0 * gx + x0]!;
+      const i10 = gridFinal[y0 * gx + x0 + 1]!;
+      const i01 = gridFinal[(y0 + 1) * gx + x0]!;
+      const i11 = gridFinal[(y0 + 1) * gx + x0 + 1]!;
+      return (
+        i00 * (1 - tx) * (1 - ty) +
+        i10 * tx * (1 - ty) +
+        i01 * (1 - tx) * ty +
+        i11 * tx * ty
+      );
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------
