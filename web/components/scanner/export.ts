@@ -102,3 +102,55 @@ export function downloadBlob(blob: Blob, filename: string): void {
   // URL se libera dentro del mismo tick.
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
+
+/** MIME por extension del archivo exportado. */
+function mimeOf(filename: string): string {
+  if (filename.endsWith('.png')) return 'image/png';
+  if (filename.endsWith('.jpg') || filename.endsWith('.jpeg')) return 'image/jpeg';
+  if (filename.endsWith('.pdf')) return 'application/pdf';
+  return 'application/octet-stream';
+}
+
+/**
+ * Guarda el archivo con la mejor via disponible en el dispositivo:
+ *
+ *   - En movil (iOS/Android) con Web Share API de archivos: abre el
+ *     share sheet nativo — en iPhone eso incluye "Guardar imagen", que
+ *     lleva JPG/PNG directo a la FOTOTECA (una descarga normal en iOS
+ *     termina en la app Archivos, que no es lo que la gente espera).
+ *   - En desktop o sin soporte: descarga clasica.
+ *
+ * Si el usuario cancela el share sheet (AbortError) no hacemos fallback:
+ * cancelar es una decision, no un fallo.
+ */
+export async function saveBlob(
+  blob: Blob,
+  filename: string,
+): Promise<'shared' | 'downloaded' | 'cancelled'> {
+  const mime = mimeOf(filename);
+  const file = new File([blob], filename, { type: mime });
+
+  const isTouchDevice =
+    typeof navigator !== 'undefined' &&
+    (navigator.maxTouchPoints > 0 || 'ontouchstart' in window);
+
+  if (
+    isTouchDevice &&
+    typeof navigator.canShare === 'function' &&
+    typeof navigator.share === 'function' &&
+    navigator.canShare({ files: [file] })
+  ) {
+    try {
+      await navigator.share({ files: [file] });
+      return 'shared';
+    } catch (err) {
+      if (err instanceof Error && err.name === 'AbortError') {
+        return 'cancelled';
+      }
+      // NotAllowedError / DataError / etc: cae a descarga clasica.
+    }
+  }
+
+  downloadBlob(blob, filename);
+  return 'downloaded';
+}

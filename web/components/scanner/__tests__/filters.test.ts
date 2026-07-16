@@ -308,6 +308,63 @@ describe('applyFilter', () => {
     }
   });
 
+  it('doc: una sombra profunda NUNCA queda mas oscura que el original', () => {
+    // Papel 230 con una franja de sombra fuerte (papel a 80) y texto.
+    const w = 96;
+    const h = 64;
+    const img = makeImageData(w, h, (x, y) => {
+      const inShadow = x < 30;
+      const paper = inShadow ? 80 : 230;
+      const inText = x >= 44 && x < 60 && y >= 26 && y < 38;
+      const v = inText ? 25 : paper;
+      return [v, v, v, 255];
+    });
+    const before = new Uint8ClampedArray(img.data);
+    const out = applyFilter(img, 'doc');
+    // Muestras de papel EN sombra: siempre mas claras que antes.
+    for (const [sx, sy] of [[8, 10], [15, 32], [22, 55]] as const) {
+      const idx = (sy * w + sx) * 4;
+      expect(out.data[idx]!).toBeGreaterThan(before[idx]!);
+      expect(out.data[idx]!).toBeGreaterThanOrEqual(200);
+    }
+  });
+
+  it('magic: el papel en sombra tambien se levanta (no se re-oscurece)', () => {
+    const w = 96;
+    const h = 64;
+    const img = makeImageData(w, h, (x, y) => {
+      const inShadow = x < 30;
+      const paper = inShadow ? 90 : 225;
+      const inText = x >= 44 && x < 60 && y >= 26 && y < 38;
+      const v = inText ? 30 : paper;
+      return [v, v, v, 255];
+    });
+    const before = new Uint8ClampedArray(img.data);
+    const out = applyFilter(img, 'magic');
+    const idx = (32 * w + 12) * 4; // papel en sombra
+    expect(out.data[idx]!).toBeGreaterThan(before[idx]!);
+  });
+
+  it('shadow (Sin sombra): empareja la luz sin blanquear la tinta', () => {
+    const w = 96;
+    const h = 64;
+    const img = makeImageData(w, h, (x, y) => {
+      const paper = x < 48 ? 110 : 220; // mitad en sombra
+      const inText = x >= 20 && x < 32 && y >= 26 && y < 38;
+      const v = inText ? 30 : paper;
+      return [v, v, v, 255];
+    });
+    const out = applyFilter(img, 'shadow');
+    const shadowPaper = out.data[(10 * w + 10) * 4]!;
+    const litPaper = out.data[(10 * w + 80) * 4]!;
+    // Papel de ambos lados queda parejo.
+    expect(Math.abs(shadowPaper - litPaper)).toBeLessThanOrEqual(25);
+    expect(shadowPaper).toBeGreaterThanOrEqual(180);
+    // La tinta sigue siendo oscura (no se blanquea).
+    const text = out.data[(30 * w + 26) * 4]!;
+    expect(text).toBeLessThan(120);
+  });
+
   it('todos los filtros corren sin lanzar y preservan dimensiones', () => {
     for (const f of FILTERS) {
       const img = makeImageData(24, 18, (x, y) => [
