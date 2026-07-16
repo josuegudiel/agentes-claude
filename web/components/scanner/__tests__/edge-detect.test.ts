@@ -83,6 +83,34 @@ describe('detectDocumentQuad', () => {
     }
   });
 
+  it('detecta un documento rotado 45 grados con precision de warp', () => {
+    const w = 160;
+    const h = 160;
+    const cx = 80;
+    const cy = 80;
+    const rad = (45 * Math.PI) / 180;
+    const cos = Math.cos(rad);
+    const sin = Math.sin(rad);
+    const local: Point[] = [
+      { x: -48, y: -32 },
+      { x: 48, y: -32 },
+      { x: 48, y: 32 },
+      { x: -48, y: 32 },
+    ];
+    const rot = local.map((p) => ({
+      x: cx + p.x * cos - p.y * sin,
+      y: cy + p.x * sin + p.y * cos,
+    }));
+    const quad = detectDocumentQuad(docImage(w, h, rot));
+    expect(quad).not.toBeNull();
+    for (const expected of rot) {
+      const nearest = Math.min(
+        ...quad!.map((p) => Math.hypot(p.x * w - expected.x, p.y * h - expected.y)),
+      );
+      expect(nearest).toBeLessThanOrEqual(5);
+    }
+  });
+
   it('devuelve null en imagen plana (sin documento)', () => {
     const img = makeImage(128, 128, () => 128);
     expect(detectDocumentQuad(img)).toBeNull();

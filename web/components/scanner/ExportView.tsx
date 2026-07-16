@@ -2,8 +2,8 @@
 
 import { useCallback, useState } from 'react';
 import {
-  downloadBlob,
   exportPages,
+  saveBlob,
   type ExportFormat,
 } from './export';
 import {
@@ -48,7 +48,9 @@ export function ExportView({ pages, onAddPage, onRemovePage, onMovePage, onResta
         pages.map((p) => ({ canvas: p.canvas, filename: sanitized })),
         format,
       );
-      downloadBlob(blob, outName);
+      // En movil abre el share sheet nativo (en iPhone: "Guardar imagen"
+      // -> fototeca); en desktop descarga.
+      await saveBlob(blob, outName);
     } finally {
       setExporting(false);
     }

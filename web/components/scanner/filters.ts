@@ -21,6 +21,7 @@ export type FilterId =
   | 'original'
   | 'magic'
   | 'doc'
+  | 'shadow'
   | 'receipt'
   | 'bw'
   | 'grayscale'
@@ -39,6 +40,7 @@ export const FILTERS: FilterMeta[] = [
   { id: 'original', label: 'Original', hint: 'Sin procesamiento' },
   { id: 'magic', label: 'Magico', hint: 'Contraste adaptativo por zonas (CLAHE) — revive texto y detalle palidos' },
   { id: 'doc', label: 'Documento', hint: 'Blanquea el papel y quita sombras; conserva sellos y firmas en color' },
+  { id: 'shadow', label: 'Sin sombra', hint: 'Solo levanta sombras y empareja la luz — sin blanquear ni tocar colores' },
   { id: 'receipt', label: 'Factura', hint: 'Realza texto desvanecido de tickets, facturas y papel termico' },
   { id: 'bw', label: 'B&N', hint: 'Blanco y negro adaptativo (Sauvola) para maxima legibilidad' },
   { id: 'grayscale', label: 'Gris', hint: 'Escala de grises con contraste automatico' },
@@ -55,6 +57,8 @@ export function applyFilter(data: ImageData, filter: FilterId): ImageData {
       return magicScan(data);
     case 'doc':
       return docEnhance(data);
+    case 'shadow':
+      return shadowLift(data);
     case 'receipt':
       return receiptEnhance(data);
     case 'bw':
@@ -93,7 +97,11 @@ function docEnhance(data: ImageData): ImageData {
   for (let y = 0, i = 0, j = 0; y < h; y++) {
     for (let x = 0; x < w; x++, i += 4, j++) {
       const b = Math.max(30, bg.sample(x, y));
-      const gain = Math.min(3, 245 / b);
+      // Cap 5 (antes 3): una sombra profunda con fondo ~50 necesita
+      // gain ~4.9 para levantar el papel a blanco. Con cap 3 la sombra
+      // quedaba a medio corregir y los umbrales de abajo la RE-oscurecian
+      // — el bug de "las sombras se oscurecen mas".
+      const gain = Math.min(5, 245 / b);
       let r = px[i]! * gain;
       let g = px[i + 1]! * gain;
       let bch = px[i + 2]! * gain;
@@ -103,17 +111,20 @@ function docEnhance(data: ImageData): ImageData {
       // queda limpio de verdad (como una fotocopia buena) sin escalon
       // duro contra la tinta.
       const nl = 0.299 * r + 0.587 * g + 0.114 * bch;
-      if (nl >= 190) {
-        const t = Math.min(1, (nl - 190) / 55);
+      if (nl >= 180) {
+        const t = Math.min(1, (nl - 180) / 60);
         const s = t * t * (3 - 2 * t);
         r = r + (255 - r) * s;
         g = g + (255 - g) * s;
         bch = bch + (255 - bch) * s;
-      } else {
-        // Oscurece levemente la tinta (medios-bajos) para ganar contraste.
-        r = r < 160 ? r * 0.9 : r;
-        g = g < 160 ? g * 0.9 : g;
-        bch = bch < 160 ? bch * 0.9 : bch;
+      } else if (nl < 110) {
+        // Oscurecer SOLO tinta franca (nl < 110). La banda media
+        // 110..180 (penumbra corregida a medias, sellos claros) se deja
+        // intacta: aplicarle el x0.9 aqui era lo que oscurecia las
+        // sombras en vez de eliminarlas.
+        r *= 0.9;
+        g *= 0.9;
+        bch *= 0.9;
       }
       px[i] = clamp255(r);
       px[i + 1] = clamp255(g);
@@ -123,6 +134,44 @@ function docEnhance(data: ImageData): ImageData {
 
   // Texto mas crocante sin franjas de color: enfoque sobre luminancia.
   unsharpLuma(data, 0.4, 3);
+  return data;
+}
+
+/**
+ * "Sin sombra": SOLO correccion de iluminacion (modelo Lambertiano —
+ * imagen / mapa de sombra = reflectancia). Levanta sombras y empareja la
+ * luz sin blanquear, sin contraste extra y sin tocar los colores: para
+ * cuando Documento resulta demasiado agresivo o para fotos de objetos
+ * con sombras de la mano/telefono.
+ */
+function shadowLift(data: ImageData): ImageData {
+  const { width: w, height: h } = data;
+  const px = data.data;
+
+  const luma = lumaOf(data);
+  const bg = estimateBackground(luma, w, h);
+
+  // Referencia: el fondo mas claro de la imagen (percentil alto del mapa
+  // de sombra) — normalizamos hacia el, no hacia blanco absoluto, para
+  // conservar el tono del papel/superficie original.
+  let ref = 0;
+  for (let y = 0; y < h; y += 8) {
+    for (let x = 0; x < w; x += 8) {
+      const b = bg.sample(x, y);
+      if (b > ref) ref = b;
+    }
+  }
+  ref = Math.min(250, Math.max(120, ref));
+
+  for (let y = 0, i = 0; y < h; y++) {
+    for (let x = 0; x < w; x++, i += 4) {
+      const b = Math.max(30, bg.sample(x, y));
+      const gain = Math.min(5, ref / b);
+      px[i] = clamp255(px[i]! * gain);
+      px[i + 1] = clamp255(px[i + 1]! * gain);
+      px[i + 2] = clamp255(px[i + 2]! * gain);
+    }
+  }
   return data;
 }
 
@@ -226,15 +275,41 @@ function sauvolaBw(data: ImageData): ImageData {
  * enfoque suave de luminancia.
  */
 function magicScan(data: ImageData): ImageData {
+  // Pre-pase de sombras: normalizacion suave contra el mapa de
+  // iluminacion (Lambertiano) ANTES de CLAHE. Sin esto, CLAHE trata la
+  // sombra como "contenido" y ecualiza dentro de ella — el resultado
+  // percibido era que algunas sombras quedaban MAS oscuras.
+  softShadowLift(data, 2.5);
   // Clip alto: los tiles CON contenido se ecualizan fuerte (la
   // proteccion de tiles planos dentro de claheLuma evita amplificar
   // ruido donde no hay detalle real).
-  claheLuma(data, 16, 0.9);
+  claheLuma(data, 16, 0.8);
   // Estiramiento global de luminancia para asentar negros y blancos
   // (solo si hay rango real que estirar).
   stretchLuma(data, 0.01, 0.99, 40);
   unsharpLuma(data, 0.35, 2);
   return data;
+}
+
+/**
+ * Levantado de sombras suave: normaliza contra el mapa de iluminacion
+ * con gain acotado. Usado como pre-pase de otros filtros.
+ */
+function softShadowLift(data: ImageData, maxGain: number): void {
+  const { width: w, height: h } = data;
+  const px = data.data;
+  const luma = lumaOf(data);
+  const bg = estimateBackground(luma, w, h);
+  for (let y = 0, i = 0; y < h; y++) {
+    for (let x = 0; x < w; x++, i += 4) {
+      const b = Math.max(40, bg.sample(x, y));
+      const gain = Math.min(maxGain, 235 / b);
+      if (gain <= 1) continue;
+      px[i] = clamp255(px[i]! * gain);
+      px[i + 1] = clamp255(px[i + 1]! * gain);
+      px[i + 2] = clamp255(px[i + 2]! * gain);
+    }
+  }
 }
 
 /**

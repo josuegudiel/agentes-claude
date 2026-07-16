@@ -1,7 +1,16 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { IconBolt, IconCamera, IconChevronLeft, IconRefresh, IconUpload } from './icons';
+import {
+  AUTO_COOLDOWN_MS,
+  isStableSequence,
+  LOW_CONTRAST_TICKS,
+  mapCoverPoint,
+  STABLE_TICKS_NEEDED,
+} from './auto-capture';
+import { detectDocumentQuad } from './edge-detect';
+import { IconBolt, IconCamera, IconChevronLeft, IconFrame, IconRefresh, IconUpload } from './icons';
+import type { Quad } from './perspective';
 
 interface Props {
   /** Recibe 1..N archivos: 1 en captura normal, N en modo rafaga o al
@@ -165,10 +174,101 @@ export function CaptureView({ onCapture, onCancel }: Props): React.ReactElement 
     [onCapture],
   );
 
+  // --- Auto-captura ---------------------------------------------------------
+  // Como CamScanner: cada ~380ms corre la deteccion de bordes sobre un
+  // frame reducido del video. Con quad estable N ticks seguidos dispara
+  // el shutter solo; con fallos sostenidos avisa que falta contraste.
+  const [autoMode, setAutoMode] = useState(true);
+  const [liveQuad, setLiveQuad] = useState<Quad | null>(null);
+  const [locking, setLocking] = useState(false);
+  const [lowContrast, setLowContrast] = useState(false);
+  const historyRef = useRef<Quad[]>([]);
+  const failsRef = useRef(0);
+  const cooldownUntilRef = useRef(0);
+  const viewfinderRef = useRef<HTMLDivElement>(null);
+  // Ref al shutter mas reciente: el interval no debe capturar un closure
+  // viejo de batchMode.
+  const shutterRef = useRef<() => void>(() => {});
+  shutterRef.current = handleShutter;
+
+  useEffect(() => {
+    if (mode !== 'live' || !autoMode) {
+      setLiveQuad(null);
+      setLocking(false);
+      setLowContrast(false);
+      historyRef.current = [];
+      failsRef.current = 0;
+      return;
+    }
+
+    const detCanvas = document.createElement('canvas');
+    const id = setInterval(() => {
+      if (Date.now() < cooldownUntilRef.current) return;
+      if (typeof document !== 'undefined' && document.hidden) return;
+      const v = videoRef.current;
+      if (!v || v.readyState < 2 || v.videoWidth === 0) return;
+
+      const scale = Math.min(1, 256 / Math.max(v.videoWidth, v.videoHeight));
+      const dw = Math.max(8, Math.round(v.videoWidth * scale));
+      const dh = Math.max(8, Math.round(v.videoHeight * scale));
+      detCanvas.width = dw;
+      detCanvas.height = dh;
+      const ctx = detCanvas.getContext('2d', { willReadFrequently: true });
+      if (!ctx) return;
+      ctx.drawImage(v, 0, 0, dw, dh);
+
+      let quad: Quad | null = null;
+      try {
+        quad = detectDocumentQuad(ctx.getImageData(0, 0, dw, dh));
+      } catch {
+        quad = null;
+      }
+
+      if (quad) {
+        failsRef.current = 0;
+        setLowContrast(false);
+        historyRef.current = [
+          ...historyRef.current.slice(-(STABLE_TICKS_NEEDED - 1)),
+          quad,
+        ];
+
+        // Overlay alineado al recorte object-cover del video.
+        const box = viewfinderRef.current;
+        const bw = box?.clientWidth ?? 0;
+        const bh = box?.clientHeight ?? 0;
+        setLiveQuad(
+          quad.map((p) =>
+            mapCoverPoint(p, v.videoWidth, v.videoHeight, bw, bh),
+          ) as Quad,
+        );
+        setLocking(historyRef.current.length >= 2);
+
+        if (isStableSequence(historyRef.current)) {
+          historyRef.current = [];
+          setLiveQuad(null);
+          setLocking(false);
+          cooldownUntilRef.current = Date.now() + AUTO_COOLDOWN_MS;
+          shutterRef.current();
+        }
+      } else {
+        historyRef.current = [];
+        setLiveQuad(null);
+        setLocking(false);
+        failsRef.current++;
+        if (failsRef.current >= LOW_CONTRAST_TICKS) setLowContrast(true);
+      }
+    }, 380);
+
+    return () => clearInterval(id);
+  }, [mode, autoMode]);
+
   return (
     <div className="stage-in flex flex-col gap-3">
       {/* Visor */}
-      <div className="relative aspect-[3/4] w-full overflow-hidden rounded-lg border-2 border-cocoa-900 bg-cocoa-900 shadow-paper sm:aspect-[4/3]">
+      <div
+        ref={viewfinderRef}
+        className="relative aspect-[3/4] w-full overflow-hidden rounded-lg border-2 border-cocoa-900 bg-cocoa-900 shadow-paper sm:aspect-[4/3]"
+      >
         {/* El <video> vive SIEMPRE en el DOM (solo cambia la visibilidad):
             asi videoRef.current existe cuando getUserMedia resuelve y el
             stream se ata de inmediato. Montarlo condicionado a live dejaba
@@ -233,8 +333,38 @@ export function CaptureView({ onCapture, onCancel }: Props): React.ReactElement 
             <span className="viewfinder-corner bl" aria-hidden />
             <span className="scan-line" aria-hidden />
             <p className="pointer-events-none absolute inset-x-0 top-4 text-center font-display text-xs font-semibold tracking-wide text-white/80">
-              Encuadra el documento
+              {autoMode
+                ? locking
+                  ? 'Manten firme...'
+                  : 'Encuadra el documento'
+                : 'Encuadra el documento'}
             </p>
+
+            {/* Quad detectado en vivo (solo modo auto) */}
+            {liveQuad && (
+              <svg
+                className="pointer-events-none absolute inset-0 h-full w-full"
+                viewBox="0 0 100 100"
+                preserveAspectRatio="none"
+                aria-hidden
+              >
+                <polygon
+                  points={liveQuad.map((p) => `${p.x * 100},${p.y * 100}`).join(' ')}
+                  fill="rgba(199, 62, 29, 0.15)"
+                  stroke="#C73E1D"
+                  strokeWidth="0.9"
+                  vectorEffect="non-scaling-stroke"
+                />
+              </svg>
+            )}
+
+            {/* Alerta de contraste insuficiente para la auto-deteccion */}
+            {autoMode && lowContrast && (
+              <div className="pointer-events-none absolute inset-x-3 bottom-3 rounded-md border-2 border-note-300 bg-note-100/95 px-3 py-2 text-center text-[11px] font-semibold leading-snug text-note-700">
+                Poco contraste: no se detectan los bordes. Proba con mas luz
+                o un fondo que contraste con el documento.
+              </div>
+            )}
           </>
         )}
 
@@ -266,6 +396,26 @@ export function CaptureView({ onCapture, onCancel }: Props): React.ReactElement 
       {/* Controles: rafaga | shutter | subir — como una app de camara */}
       <div className="flex items-center justify-between gap-2 px-1">
         {mode === 'live' ? (
+          <div className="flex items-center">
+          <button
+            type="button"
+            onClick={() => setAutoMode((a) => !a)}
+            aria-pressed={autoMode}
+            className={`flex min-h-[44px] flex-col items-center justify-center gap-0.5 rounded-lg px-2 py-1.5 text-[11px] font-semibold ${
+              autoMode ? 'text-stamp-700' : 'text-cocoa-500'
+            }`}
+          >
+            <span
+              className={`flex h-8 w-8 items-center justify-center rounded-full border-2 transition-all ${
+                autoMode
+                  ? 'border-cocoa-900 bg-stamp-100 shadow-paper-ink-sm'
+                  : 'border-cocoa-900/40 bg-paper'
+              }`}
+            >
+              <IconFrame className="h-4 w-4" />
+            </span>
+            Auto {autoMode ? 'ON' : 'OFF'}
+          </button>
           <button
             type="button"
             onClick={() => setBatchMode((b) => !b)}
@@ -287,6 +437,7 @@ export function CaptureView({ onCapture, onCancel }: Props): React.ReactElement 
             </span>
             Rafaga {batchMode ? 'ON' : 'OFF'}
           </button>
+          </div>
         ) : (
           <span className="w-[68px]" aria-hidden />
         )}
