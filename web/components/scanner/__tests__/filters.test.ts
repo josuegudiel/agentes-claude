@@ -308,6 +308,32 @@ describe('applyFilter', () => {
     }
   });
 
+  it('doc: NO borra tintas de color palidas (texto verde/cafe claro)', () => {
+    // Tarjeta blanca (235) con texto verde palido — luma alta pero CON
+    // croma. El blanqueo viejo lo empujaba a blanco y lo hacia invisible.
+    const w = 96;
+    const h = 64;
+    const green: [number, number, number, number] = [175, 205, 150, 255];
+    const img = makeImageData(w, h, (x, y) => {
+      const inText = x >= 20 && x < 76 && y >= 24 && y < 40;
+      return inText ? green : [235, 235, 235, 255];
+    });
+    const out = applyFilter(img, 'doc');
+    const i = (30 * w + 48) * 4;
+    const r = out.data[i]!;
+    const g = out.data[i + 1]!;
+    const b = out.data[i + 2]!;
+    // Sigue siendo VERDE (croma preservada) y sigue siendo VISIBLE
+    // (mas oscuro que el papel, no blanco).
+    expect(g).toBeGreaterThan(r);
+    expect(g).toBeGreaterThan(b);
+    expect(g - b).toBeGreaterThanOrEqual(30);
+    const luma = 0.299 * r + 0.587 * g + 0.114 * b;
+    expect(luma).toBeLessThan(215);
+    // El papel sigue blanqueado.
+    expect(out.data[(6 * w + 6) * 4]!).toBeGreaterThanOrEqual(240);
+  });
+
   it('doc: una sombra profunda NUNCA queda mas oscura que el original', () => {
     // Papel 230 con una franja de sombra fuerte (papel a 80) y texto.
     const w = 96;
