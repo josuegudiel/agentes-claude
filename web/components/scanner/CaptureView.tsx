@@ -219,7 +219,13 @@ export function CaptureView({ onCapture, onCancel }: Props): React.ReactElement 
 
       let quad: Quad | null = null;
       try {
-        quad = detectDocumentQuad(ctx.getImageData(0, 0, dw, dh));
+        // Modo estricto para la camara en vivo: sin bordes sintetizados
+        // (fabrican documentos fantasma con 2 lineas del fondo) y area
+        // minima 15% — un documento que vas a escanear llena el encuadre.
+        quad = detectDocumentQuad(ctx.getImageData(0, 0, dw, dh), {
+          allowImageBorders: false,
+          minArea: 0.15,
+        });
       } catch {
         quad = null;
       }

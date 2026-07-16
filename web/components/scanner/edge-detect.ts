@@ -44,7 +44,22 @@ interface EdgeData {
   edgeCount: number;
 }
 
-export function detectDocumentQuad(img: ImageData): Quad | null {
+export interface DetectOptions {
+  /**
+   * Sintetizar bordes de la imagen cuando falta un lado del documento
+   * (documento cortado por el encuadre). Util para fotos ya tomadas;
+   * DESACTIVARLO en la camara en vivo — dos lineas cualquiera + dos
+   * bordes del encuadre fabrican un "documento" fantasma.
+   */
+  allowImageBorders?: boolean;
+  /** Area minima del quad como fraccion de la imagen. Default 0.08. */
+  minArea?: number;
+}
+
+export function detectDocumentQuad(img: ImageData, opts: DetectOptions = {}): Quad | null {
+  const allowBorders = opts.allowImageBorders ?? true;
+  const minArea = opts.minArea ?? 0.08;
+
   const w = img.width;
   const h = img.height;
   if (w < 16 || h < 16) return null;
@@ -55,10 +70,102 @@ export function detectDocumentQuad(img: ImageData): Quad | null {
   // Muy pocos pixeles de borde: no hay estructura suficiente.
   if (edges.edgeCount < Math.max(24, (w + h) / 8)) return null;
 
-  const byLines = detectByHoughLines(edges);
-  if (byLines) return byLines;
+  // En modo estricto (camara en vivo) solo vale el detector de lineas:
+  // el fallback de extremos no distingue un documento completo de uno
+  // cortado o de un fragmento del fondo.
+  const quad =
+    detectByHoughLines(edges, allowBorders, minArea) ??
+    (allowBorders ? detectByExtremes(edges, minArea) : null);
+  if (!quad) return null;
 
-  return detectByExtremes(edges);
+  // Validacion final 1: relacion de aspecto de documento. Una hoja va de
+  // 1:1 a ~1:5 (ticket largo); una franja 1:8 es una pata de mesa o una
+  // moldura, no un documento.
+  const wTop = Math.hypot(quad[1].x - quad[0].x, quad[1].y - quad[0].y);
+  const wBot = Math.hypot(quad[2].x - quad[3].x, quad[2].y - quad[3].y);
+  const hLeft = Math.hypot(quad[3].x - quad[0].x, quad[3].y - quad[0].y);
+  const hRight = Math.hypot(quad[2].x - quad[1].x, quad[2].y - quad[1].y);
+  const wAvg = ((wTop + wBot) / 2) * w;
+  const hAvg = ((hLeft + hRight) / 2) * h;
+  const aspect = Math.max(wAvg, hAvg) / Math.max(1, Math.min(wAvg, hAvg));
+  if (aspect > 5) return null;
+
+  // Validacion final 2: un documento REAL contrasta con su alrededor. Si
+  // el interior del quad y el anillo exterior tienen la misma luminancia
+  // mediana, lo detectado es geometria del fondo (azulejos, muebles) y
+  // no un documento — rechazar.
+  if (!hasSurroundContrast(img, quad)) return null;
+
+  return quad;
+}
+
+/**
+ * Contraste interior/exterior del quad. Muestrea una grilla dentro del
+ * quad (interpolacion bilineal de las esquinas) y puntos por fuera de
+ * cada lado (desplazados desde el centroide); compara MEDIANAS de luma —
+ * robustas al texto interior y a objetos sueltos del fondo.
+ *
+ * Los puntos exteriores que caen fuera de la imagen se descartan (lado
+ * pegado al encuadre); si quedan muy pocos, no bloqueamos: no hay
+ * evidencia suficiente en contra.
+ */
+function hasSurroundContrast(img: ImageData, quad: Quad, minDiff = 25): boolean {
+  const w = img.width;
+  const h = img.height;
+
+  const lumaAt = (nx: number, ny: number): number => {
+    const x = Math.min(w - 1, Math.max(0, Math.round(nx * w)));
+    const y = Math.min(h - 1, Math.max(0, Math.round(ny * h)));
+    const i = (y * w + x) * 4;
+    return 0.299 * img.data[i]! + 0.587 * img.data[i + 1]! + 0.114 * img.data[i + 2]!;
+  };
+
+  const [tl, tr, br, bl] = quad;
+  const inner: number[] = [];
+  for (const u of [0.2, 0.4, 0.6, 0.8]) {
+    for (const v of [0.2, 0.4, 0.6, 0.8]) {
+      // Interpolacion bilineal del quad: valida para quads convexos.
+      const topX = tl.x + (tr.x - tl.x) * u;
+      const topY = tl.y + (tr.y - tl.y) * u;
+      const botX = bl.x + (br.x - bl.x) * u;
+      const botY = bl.y + (br.y - bl.y) * u;
+      inner.push(lumaAt(topX + (botX - topX) * v, topY + (botY - topY) * v));
+    }
+  }
+
+  const cx = (tl.x + tr.x + br.x + bl.x) / 4;
+  const cy = (tl.y + tr.y + br.y + bl.y) / 4;
+  const outer: number[] = [];
+  const OFFSET = 0.055;
+  for (let e = 0; e < 4; e++) {
+    const a = quad[e]!;
+    const b = quad[(e + 1) % 4]!;
+    for (const t of [0.25, 0.5, 0.75]) {
+      const px_ = a.x + (b.x - a.x) * t;
+      const py = a.y + (b.y - a.y) * t;
+      // Direccion "hacia afuera": alejarse del centroide.
+      const dx = px_ - cx;
+      const dy = py - cy;
+      const len = Math.hypot(dx, dy);
+      if (len < 1e-6) continue;
+      const ox = px_ + (dx / len) * OFFSET;
+      const oy = py + (dy / len) * OFFSET;
+      if (ox < 0.01 || ox > 0.99 || oy < 0.01 || oy > 0.99) continue;
+      outer.push(lumaAt(ox, oy));
+    }
+  }
+
+  if (outer.length < 4) return true;
+
+  return Math.abs(median(inner) - median(outer)) >= minDiff;
+}
+
+function median(values: number[]): number {
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 0
+    ? (sorted[mid - 1]! + sorted[mid]!) / 2
+    : sorted[mid]!;
 }
 
 /** Area del quad (shoelace) en coordenadas normalizadas — fraccion 0..1. */
@@ -160,13 +267,15 @@ interface HoughLine {
   /** Distancia con signo al origen: x*cos(theta) + y*sin(theta). */
   rho: number;
   votes: number;
+  /** true si es un borde de imagen sintetizado (no una linea detectada). */
+  synthetic?: boolean;
 }
 
 const THETA_BINS = 180; // 1 grado por bin
 const RHO_STEP = 2; // px por bin
 const GRAD_TOLERANCE = 6; // +-grados de voto alrededor del gradiente
 
-function detectByHoughLines(edges: EdgeData): Quad | null {
+function detectByHoughLines(edges: EdgeData, allowBorders: boolean, minArea: number): Quad | null {
   const { w, h, edge, angle } = edges;
   const rhoMax = Math.ceil(Math.hypot(w, h));
   const rhoBins = Math.ceil((2 * rhoMax) / RHO_STEP) + 1;
@@ -240,8 +349,11 @@ function detectByHoughLines(edges: EdgeData): Quad | null {
   }
 
   // Documento cortado por el encuadre: agrega los bordes de la imagen
-  // como candidatos debiles a la familia que corresponda.
-  addImageBorders(famA, famB, ref.theta, w, h, minVotes);
+  // como candidatos debiles a la familia que corresponda (solo si el
+  // caller lo permite — en camara en vivo esta desactivado).
+  if (allowBorders) {
+    addImageBorders(famA, famB, ref.theta, w, h, minVotes);
+  }
 
   if (famA.length < 2 || famB.length < 2) return null;
 
@@ -269,8 +381,21 @@ function detectByHoughLines(edges: EdgeData): Quad | null {
           if (!quad) continue;
 
           const area = quadArea(quad);
-          if (area < 0.08 || area > 0.98) continue;
+          if (area < minArea || area > 0.98) continue;
           if (!isConvexQuad(quad, 5e-3)) continue;
+
+          // Cada linea REAL debe tener soporte fisico proporcional al
+          // lado del quad que forma: una esquina de mesa de 20px no puede
+          // sostener un lado de 200px. Sin esto, fragmentos de fondo
+          // fabricaban documentos fantasma. (Los bordes sinteticos estan
+          // exentos: no tienen pixeles propios.)
+          const sideLen = (p: { x: number; y: number }, q: { x: number; y: number }): number =>
+            Math.hypot(p.x - q.x, p.y - q.y);
+          const SUPPORT_FRAC = 0.3;
+          if (!a1.synthetic && a1.votes < SUPPORT_FRAC * sideLen(c1, c2)) continue;
+          if (!a2.synthetic && a2.votes < SUPPORT_FRAC * sideLen(c4, c3)) continue;
+          if (!b1.synthetic && b1.votes < SUPPORT_FRAC * sideLen(c1, c4)) continue;
+          if (!b2.synthetic && b2.votes < SUPPORT_FRAC * sideLen(c2, c3)) continue;
 
           // Puntaje: fuerza de las 4 lineas, con leve preferencia por
           // quads mas grandes (el documento suele dominar el encuadre).
@@ -375,10 +500,10 @@ function addImageBorders(
   minVotes: number,
 ): void {
   const borders: HoughLine[] = [
-    { theta: 0, rho: 0, votes: minVotes }, // x = 0 (izquierda)
-    { theta: 0, rho: w - 1, votes: minVotes }, // x = w-1 (derecha)
-    { theta: 90, rho: 0, votes: minVotes }, // y = 0 (arriba)
-    { theta: 90, rho: h - 1, votes: minVotes }, // y = h-1 (abajo)
+    { theta: 0, rho: 0, votes: minVotes, synthetic: true }, // x = 0
+    { theta: 0, rho: w - 1, votes: minVotes, synthetic: true }, // x = w-1
+    { theta: 90, rho: 0, votes: minVotes, synthetic: true }, // y = 0
+    { theta: 90, rho: h - 1, votes: minVotes, synthetic: true }, // y = h-1
   ];
   for (const b of borders) {
     const d = orientDist(b.theta, refTheta);
@@ -455,7 +580,7 @@ function orderCorners(
 // Fallback: extremos diagonales (el metodo original)
 // ---------------------------------------------------------------------------
 
-function detectByExtremes(edges: EdgeData): Quad | null {
+function detectByExtremes(edges: EdgeData, minArea: number): Quad | null {
   const { w, h, edge } = edges;
 
   let tlScore = Infinity;
@@ -502,7 +627,7 @@ function detectByExtremes(edges: EdgeData): Quad | null {
   if (!isConvexQuad(quad, 5e-3)) return null;
 
   const area = quadArea(quad);
-  if (area < 0.08 || area > 0.99) return null;
+  if (area < minArea || area > 0.99) return null;
 
   return quad;
 }
