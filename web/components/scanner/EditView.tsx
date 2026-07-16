@@ -37,6 +37,8 @@ export function EditView({ image, onConfirm, onBack }: Props): React.ReactElemen
   const [quad, setQuad] = useState<Quad>(() => cloneQuad(INSET_QUAD));
   const [previewKey, setPreviewKey] = useState(0);
   const [confirming, setConfirming] = useState(false);
+  // Esquina en arrastre (tambien pausa los re-renders de preview/thumbs).
+  const [dragCorner, setDragCorner] = useState<number | null>(null);
 
   // Canvas para mostrar la vista rotada+filtrada (sin el quad aplicado —
   // dibujamos el quad como overlay encima). Tener el preview SIN warp nos
@@ -45,12 +47,17 @@ export function EditView({ image, onConfirm, onBack }: Props): React.ReactElemen
   const containerRef = useRef<HTMLDivElement>(null);
   const [previewSize, setPreviewSize] = useState({ w: 0, h: 0 });
 
-  // Re-render del preview cuando cambia rotacion/filtro.
+  // Re-render del preview: imagen SIN filtrar de base + el filtro
+  // aplicado SOLO dentro del quad (recortado con clip poligonal). Los
+  // filtros de papeleria estiman "el papel" de lo que ven — aplicarlos a
+  // la escena completa (mesa, fondo) daba resultados horribles Y ademas
+  // mentia: el export real filtra el documento ya recortado. WYSIWYG.
   useEffect(() => {
     const c = previewRef.current;
     if (!c) return;
-    const state: EditState = { rotation, filter, quad: null };
-    const out = renderEdited(image, state);
+    // No recomputar en cada movimiento de esquina — al soltar se refresca.
+    if (dragCorner !== null) return;
+    const out = renderEdited(image, { rotation, filter: 'original', quad: null });
 
     // Escalamos el canvas mostrado al ancho disponible — el canvas real
     // puede ser de 4000x3000, lo bajamos a algo razonable para preview.
@@ -62,8 +69,45 @@ export function EditView({ image, onConfirm, onBack }: Props): React.ReactElemen
     const ctx = c.getContext('2d');
     if (!ctx) return;
     ctx.drawImage(out, 0, 0, c.width, c.height);
+
+    if (filter !== 'original') {
+      // Bounding box del quad en pixeles del canvas de preview.
+      const xs = quad.map((p) => p.x * c.width);
+      const ys = quad.map((p) => p.y * c.height);
+      const bx = Math.max(0, Math.floor(Math.min(...xs)));
+      const by = Math.max(0, Math.floor(Math.min(...ys)));
+      const bw = Math.min(c.width, Math.ceil(Math.max(...xs))) - bx;
+      const bh = Math.min(c.height, Math.ceil(Math.max(...ys))) - by;
+      if (bw > 4 && bh > 4) {
+        try {
+          const sub = ctx.getImageData(bx, by, bw, bh);
+          applyFilter(sub, filter);
+          const tmp = document.createElement('canvas');
+          tmp.width = bw;
+          tmp.height = bh;
+          const tctx = tmp.getContext('2d');
+          if (tctx) {
+            tctx.putImageData(sub, 0, 0);
+            ctx.save();
+            ctx.beginPath();
+            quad.forEach((p, i) => {
+              const px_ = p.x * c.width;
+              const py = p.y * c.height;
+              if (i === 0) ctx.moveTo(px_, py);
+              else ctx.lineTo(px_, py);
+            });
+            ctx.closePath();
+            ctx.clip();
+            ctx.drawImage(tmp, bx, by);
+            ctx.restore();
+          }
+        } catch {
+          // getImageData puede fallar con canvas tainted — preview sin filtro.
+        }
+      }
+    }
     setPreviewSize({ w: c.width, h: c.height });
-  }, [image, rotation, filter, previewKey]);
+  }, [image, rotation, filter, previewKey, quad, dragCorner]);
 
   // Re-render en resize del viewport.
   useEffect(() => {
@@ -72,40 +116,51 @@ export function EditView({ image, onConfirm, onBack }: Props): React.ReactElemen
     return () => window.removeEventListener('resize', onResize);
   }, []);
 
-  // Miniaturas de preview por filtro: version diminuta de la imagen
-  // rotada con cada filtro aplicado de verdad. Es barato (~112px de lado
-  // x 5 filtros) y le muestra al usuario que hace cada filtro ANTES de
-  // tocarlo — como la fila de filtros de CamScanner.
+  // Miniaturas de preview por filtro: cada filtro aplicado al RECORTE
+  // warpeado del quad — exactamente el resultado que se exportaria, en
+  // miniatura. Filtrar la escena completa (fondo incluido) daba thumbs
+  // horribles y enganosas. Se regeneran al soltar una esquina.
   const [filterThumbs, setFilterThumbs] = useState<Partial<Record<FilterId, string>>>({});
   useEffect(() => {
+    if (dragCorner !== null) return;
     const srcW = image.naturalWidth;
     const srcH = image.naturalHeight;
     if (!srcW || !srcH) return;
 
-    const rot = ((rotation % 360) + 360) % 360;
-    const swapped = rot === 90 || rot === 270;
-    const rotW = swapped ? srcH : srcW;
-    const rotH = swapped ? srcW : srcH;
-    const scale = Math.min(1, 112 / Math.max(rotW, rotH));
-    const w = Math.max(1, Math.round(rotW * scale));
-    const h = Math.max(1, Math.round(rotH * scale));
+    // Fuente reducida (~360px) para que el warp del thumb sea barato.
+    const preScale = Math.min(1, 360 / Math.max(srcW, srcH));
+    const sw = Math.max(8, Math.round(srcW * preScale));
+    const sh = Math.max(8, Math.round(srcH * preScale));
+    const small = document.createElement('canvas');
+    small.width = sw;
+    small.height = sh;
+    const sctx = small.getContext('2d');
+    if (!sctx) return;
+    sctx.drawImage(image, 0, 0, sw, sh);
 
-    const c = document.createElement('canvas');
-    c.width = w;
-    c.height = h;
-    const ctx = c.getContext('2d');
-    if (!ctx) return;
-    ctx.save();
-    ctx.translate(w / 2, h / 2);
-    ctx.rotate((rot * Math.PI) / 180);
-    ctx.drawImage(image, (-srcW * scale) / 2, (-srcH * scale) / 2, srcW * scale, srcH * scale);
-    ctx.restore();
+    let base: HTMLCanvasElement;
+    try {
+      // Mismo pipeline que el export: rotacion -> warp del quad.
+      base = renderEdited(small, { rotation, quad, filter: 'original' });
+    } catch {
+      return;
+    }
 
-    const base = ctx.getImageData(0, 0, w, h);
+    const tScale = Math.min(1, 112 / Math.max(base.width, base.height));
+    const w = Math.max(1, Math.round(base.width * tScale));
+    const h = Math.max(1, Math.round(base.height * tScale));
+    const tc = document.createElement('canvas');
+    tc.width = w;
+    tc.height = h;
+    const tctx = tc.getContext('2d');
+    if (!tctx) return;
+    tctx.drawImage(base, 0, 0, w, h);
+
+    const baseData = tctx.getImageData(0, 0, w, h);
     const thumbs: Partial<Record<FilterId, string>> = {};
     for (const f of FILTERS) {
       const copy = new ImageData(w, h);
-      copy.data.set(base.data);
+      copy.data.set(baseData.data);
       const out = applyFilter(copy, f.id);
       const oc = document.createElement('canvas');
       oc.width = w;
@@ -116,7 +171,7 @@ export function EditView({ image, onConfirm, onBack }: Props): React.ReactElemen
       thumbs[f.id] = oc.toDataURL('image/jpeg', 0.75);
     }
     setFilterThumbs(thumbs);
-  }, [image, rotation]);
+  }, [image, rotation, quad, dragCorner]);
 
   // Deteccion automatica de bordes al montar y al rotar. Corre sobre una
   // version reducida (<=256px) de la imagen rotada — es O(n) y a ese
@@ -159,8 +214,6 @@ export function EditView({ image, onConfirm, onBack }: Props): React.ReactElemen
 
   // --- Drag de esquinas ----------------------------------------------------
   const draggingRef = useRef<{ corner: number; rect: DOMRect } | null>(null);
-  // Esquina activa como estado (no solo ref): dispara el render de la lupa.
-  const [dragCorner, setDragCorner] = useState<number | null>(null);
 
   const onPointerDown = useCallback(
     (corner: number) => (e: React.PointerEvent<HTMLDivElement>) => {

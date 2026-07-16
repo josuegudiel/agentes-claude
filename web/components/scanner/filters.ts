@@ -106,12 +106,22 @@ function docEnhance(data: ImageData): ImageData {
       let g = px[i + 1]! * gain;
       let bch = px[i + 2]! * gain;
 
-      // Blanqueo suave: los pixeles cuya luma normalizada quedo cerca
-      // del papel se empujan a blanco puro con smoothstep — el fondo
-      // queda limpio de verdad (como una fotocopia buena) sin escalon
-      // duro contra la tinta.
       const nl = 0.299 * r + 0.587 * g + 0.114 * bch;
-      if (nl >= 180) {
+      const chroma = Math.max(r, g, bch) - Math.min(r, g, bch);
+
+      if (chroma >= 20 && nl >= 120) {
+        // TINTA DE COLOR (verde palido, cafe, sellos, logos): un pixel
+        // con croma NO es papel — jamas blanquearlo. Al contrario: se
+        // refuerza (mas saturacion, un toque mas oscuro) para que las
+        // tintas claras queden legibles en vez de lavarse. Este era el
+        // bug que borraba texto verde/cafe de tarjetas y membretes.
+        const f = 1.3;
+        r = (nl + (r - nl) * f) * 0.9;
+        g = (nl + (g - nl) * f) * 0.9;
+        bch = (nl + (bch - nl) * f) * 0.9;
+      } else if (nl >= 180 && chroma < 20) {
+        // Blanqueo suave SOLO para pixeles casi neutros (papel): los
+        // cercanos al blanco se empujan a blanco puro con smoothstep.
         const t = Math.min(1, (nl - 180) / 60);
         const s = t * t * (3 - 2 * t);
         r = r + (255 - r) * s;
@@ -119,9 +129,7 @@ function docEnhance(data: ImageData): ImageData {
         bch = bch + (255 - bch) * s;
       } else if (nl < 110) {
         // Oscurecer SOLO tinta franca (nl < 110). La banda media
-        // 110..180 (penumbra corregida a medias, sellos claros) se deja
-        // intacta: aplicarle el x0.9 aqui era lo que oscurecia las
-        // sombras en vez de eliminarlas.
+        // 110..180 (penumbra corregida a medias) se deja intacta.
         r *= 0.9;
         g *= 0.9;
         bch *= 0.9;
@@ -198,9 +206,9 @@ function receiptEnhance(data: ImageData): ImageData {
   }
 
   // Estiramiento: el percentil 5 (la tinta mas oscura presente) va a
-  // negro y el 99 a blanco. El piso en 120 evita machacar imagenes que
-  // no tienen tinta oscura de verdad.
-  const lo = Math.min(percentileF32(norm, 0.05), 120);
+  // negro y el 99 a blanco. El piso en 150 permite que hasta la tinta
+  // PALIDA (texto gris/verde claro ~150-190) gane contraste real.
+  const lo = Math.min(percentileF32(norm, 0.05), 150);
   const hi = Math.max(percentileF32(norm, 0.99), lo + 30);
   const scale = 255 / (hi - lo);
 
@@ -209,7 +217,7 @@ function receiptEnhance(data: ImageData): ImageData {
   // pixel (2.7M llamadas a resolucion de camara).
   const gammaLut = new Uint8ClampedArray(256);
   for (let v = 0; v < 256; v++) {
-    gammaLut[v] = 255 * Math.pow(v / 255, 1.3);
+    gammaLut[v] = 255 * Math.pow(v / 255, 1.45);
   }
 
   for (let j = 0, i = 0; j < norm.length; j++, i += 4) {
