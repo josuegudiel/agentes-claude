@@ -22,8 +22,11 @@ from . import config as cfgmod
 from . import keypress
 from .audio import Recorder
 from .events import EventBus, EventType
+from .head_gestures import GestureDetector
+from .headtrack import HeadPose, HeadTracker
 from .hotas import HotasListener
 from .llm import LLMIntentResolver, OllamaClient
+from .opentrack_out import OpenTrackSender
 from .paths import bundled_voices_dir, default_paths, piper_exe_path
 from .profiles import ProfileRegistry
 from .script import StepExecutionState, StepExecutor
@@ -92,6 +95,9 @@ class Orchestrator:
         self._tts: PiperTTS | None = None
         self._hotas: HotasListener | None = None
         self._llm: LLMIntentResolver | None = None
+        self._head: HeadTracker | None = None
+        self._opentrack: OpenTrackSender | None = None
+        self._gestures = GestureDetector()
         self._script_executor: StepExecutor | None = None
         self._script_states: dict[str, StepExecutionState] = {}
         self._script_cancel = threading.Event()
@@ -130,6 +136,7 @@ class Orchestrator:
             self._executor.submit(self._load_model)
         self._start_keyboard_listeners()
         self._start_hotas_listener()
+        self._start_head_tracker()
         self._start_watchdog()
 
     def shutdown(self) -> None:
@@ -139,6 +146,10 @@ class Orchestrator:
         self._script_cancel.set()
         if self._hotas:
             self._hotas.stop()
+        if self._head:
+            self._head.stop()
+        if self._opentrack:
+            self._opentrack.close()
         if self._tts:
             self._tts.shutdown()
         self._stop_watchdog()
@@ -285,6 +296,10 @@ class Orchestrator:
                 self._hotas.stop()
                 self._hotas = None
             self._start_hotas_listener()
+        if "headtrack" in changes:
+            # Cambios en cámara/opentrack/backend requieren reconstruir el tracker.
+            self._stop_head_tracker()
+            self._start_head_tracker()
         if "llm" in changes:
             self._build_llm_if_enabled()
         if "active_language" in changes and old.active_language != self._settings.active_language:
@@ -447,6 +462,59 @@ class Orchestrator:
         self._hotas.set_binding(cfg.button_binding)
         self._hotas.start()
         self._bus.emit(EventType.HOTAS_BUTTON_PRESSED, {"event": "listener_started", "binding": cfg.button_binding})
+
+    # ----- Head tracking -----
+
+    def _start_head_tracker(self) -> None:
+        cfg = self._settings.headtrack
+        if not cfg.enabled:
+            return
+        if cfg.opentrack.enabled:
+            self._opentrack = OpenTrackSender(cfg.opentrack.host, cfg.opentrack.port)
+            self._opentrack.open()
+        self._gestures.reset()
+        self._head = HeadTracker(cfg, self._bus, on_pose=self._on_head_pose)
+        self._head.start()
+
+    def _stop_head_tracker(self) -> None:
+        if self._head:
+            self._head.stop()
+            self._head = None
+        if self._opentrack:
+            self._opentrack.close()
+            self._opentrack = None
+
+    def calibrate_head(self) -> None:
+        """Marca la pose actual como el centro (llamado desde la UI)."""
+        if self._head:
+            self._head.calibrate()
+
+    def _on_head_pose(self, pose: HeadPose) -> None:
+        # 1) OpenTrack: reenvía la pose 6DoF para el head-look del juego.
+        if self._opentrack is not None:
+            self._opentrack.send(*pose.as_tuple())
+        # 2) Gestos → comando (reusa el dispatch endurecido).
+        gesture = self._gestures.feed(pose, time.monotonic())
+        if gesture is None:
+            return
+        self._bus.emit(EventType.HEAD_GESTURE, {"gesture": gesture})
+        # Solo actuamos si no estamos ocupados (evita pisar un PTT en curso).
+        with self._state_lock:
+            if self._state in _BUSY_STATES or self._state in (
+                State.PAUSED, State.LOADING, State.ERROR, State.RECORDING
+            ):
+                return
+        binding = next(
+            (b for b in self._settings.headtrack.gestures
+             if b.enabled and b.gesture == gesture),
+            None,
+        )
+        if binding is None:
+            return
+        prof = self._profiles.active()
+        cmd = next((c for c in prof.commands if c.id == binding.command_id), None)
+        if cmd is not None:
+            self._dispatch_command(cmd, self._settings.active_language)
 
     # ----- PTT flow -----
 

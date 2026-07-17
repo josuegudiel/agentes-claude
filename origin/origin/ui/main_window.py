@@ -23,6 +23,7 @@ from .i18n.tr import register_retranslatable, tr
 from .pages.about import AboutPage
 from .pages.commands_editor import CommandsEditorPage
 from .pages.dashboard import DashboardPage
+from .pages.headtrack import HeadTrackPage
 from .pages.logs_viewer import LogsViewerPage
 from .pages.profiles_manager import ProfilesManagerPage
 from .pages.settings import SettingsPage
@@ -34,6 +35,7 @@ SIDEBAR = [
     ("dashboard", "sidebar.dashboard"),
     ("commands", "sidebar.commands"),
     ("profiles", "sidebar.profiles"),
+    ("headtrack", "sidebar.headtrack"),
     ("settings", "sidebar.settings"),
     ("logs", "sidebar.logs"),
     ("about", "sidebar.about"),
@@ -124,6 +126,7 @@ class MainWindow(QWidget):
 
         self._stack = QStackedWidget()
         self._pages: dict[str, QWidget] = {
+            "headtrack": HeadTrackPage(self._orch, self._bridge),
             "dashboard": DashboardPage(self._orch, self._bridge),
             "commands": CommandsEditorPage(self._orch, self._bridge),
             "profiles": ProfilesManagerPage(self._orch, self._bridge),

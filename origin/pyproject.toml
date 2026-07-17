@@ -19,6 +19,11 @@ dependencies = [
     # pydirectinput / inputs son Windows-only; el engine y los tests funcionan en Linux para dev
     "pydirectinput>=1.0.4 ; sys_platform == 'win32'",
     "inputs>=0.5 ; sys_platform == 'win32'",
+    # Head tracking por webcam (clon de Beam). Deps de CV pesadas, Windows-only:
+    # el engine importa lazy y los tests usan el backend 'mock', así que corren
+    # en Linux sin cv2/mediapipe.
+    "opencv-python>=4.9 ; sys_platform == 'win32'",
+    "mediapipe>=0.10 ; sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]

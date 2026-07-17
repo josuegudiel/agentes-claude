@@ -102,6 +102,83 @@ class LlmSettings(BaseModel):
         return v
 
 
+GESTURES = ("nod", "shake", "tilt_left", "tilt_right", "lean_in", "lean_out")
+
+
+class HeadAxis(BaseModel):
+    """Configuración por eje de la pose de cabeza (sens/invert/deadzone)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    sensitivity: float = Field(default=1.0, ge=0.0, le=8.0)
+    invert: bool = False
+    deadzone: float = Field(default=0.0, ge=0.0, le=45.0)
+
+
+class OpenTrackSettings(BaseModel):
+    """Salida UDP hacia OpenTrack (6DoF → head-look en SC y 200+ juegos)."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True, frozen=True)
+
+    enabled: bool = True
+    host: str = "127.0.0.1"
+    port: int = Field(default=4242, ge=1, le=65535)
+
+    @field_validator("host")
+    @classmethod
+    def _host_safe(cls, v: str) -> str:
+        # SEGURIDAD: la pose de cabeza sale por UDP a host:port. Restringir a
+        # loopback/LAN por default evita mandar el stream a un host arbitrario
+        # de Internet desde un perfil compartido. Se acepta hostname o IP.
+        if not v or "/" in v or "\\" in v or ":" in v:
+            raise ValueError(f"host inválido: '{v}'")
+        return v
+
+
+class GestureBinding(BaseModel):
+    """Mapea un gesto de cabeza a un comando del perfil (por id)."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True, frozen=True)
+
+    gesture: Literal["nod", "shake", "tilt_left", "tilt_right", "lean_in", "lean_out"]
+    command_id: str
+    enabled: bool = True
+
+    @field_validator("command_id")
+    @classmethod
+    def _cmd_id_format(cls, v: str) -> str:
+        if not ID_RE.match(v):
+            raise ValueError(f"command_id inválido '{v}'")
+        return v
+
+
+class HeadTrackSettings(BaseModel):
+    """Head tracking por webcam (clon del núcleo de Beam Eye Tracker).
+
+    Estima la pose de la cabeza (yaw/pitch/roll + x/y/z) desde una webcam y la
+    manda a OpenTrack (head-look 6DoF) y/o dispara comandos por gestos.
+    """
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True, frozen=True)
+
+    enabled: bool = False
+    camera_index: int = Field(default=0, ge=0, le=16)
+    backend: Literal["mediapipe", "mock"] = "mediapipe"
+    fps_target: int = Field(default=30, ge=10, le=120)
+    # Suavizado exponencial (EMA). 0 = sin suavizado, 0.9 = muy suave/lento.
+    smoothing: float = Field(default=0.35, ge=0.0, le=0.95)
+
+    yaw: HeadAxis = Field(default_factory=HeadAxis)
+    pitch: HeadAxis = Field(default_factory=HeadAxis)
+    roll: HeadAxis = Field(default_factory=HeadAxis)
+    pos_x: HeadAxis = Field(default_factory=HeadAxis)
+    pos_y: HeadAxis = Field(default_factory=HeadAxis)
+    pos_z: HeadAxis = Field(default_factory=HeadAxis)
+
+    opentrack: OpenTrackSettings = Field(default_factory=OpenTrackSettings)
+    gestures: list[GestureBinding] = Field(default_factory=list)
+
+
 class Settings(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True, frozen=True)
 
@@ -128,6 +205,7 @@ class Settings(BaseModel):
     tts: TtsSettings = Field(default_factory=TtsSettings)
     hotas: HotasSettings = Field(default_factory=HotasSettings)
     llm: LlmSettings = Field(default_factory=LlmSettings)
+    headtrack: HeadTrackSettings = Field(default_factory=HeadTrackSettings)
 
 
 # ============================================================================
@@ -393,14 +471,15 @@ class CommandsFileV3(BaseModel):
         raise KeyError(profile_id)
 
     def with_settings(self, **changes: Any) -> CommandsFileV3:
-        """Cambios flat + cambios anidados a sub-settings (tts, hotas, llm).
+        """Cambios flat + cambios anidados a sub-settings (tts, hotas, llm, headtrack).
 
         Ej: cf.with_settings(active_language="en")
             cf.with_settings(tts={"enabled": True, "voice_es": "..."}}
+            cf.with_settings(headtrack={"enabled": True})
         """
         merged = self.settings.model_dump()
         for k, v in changes.items():
-            if k in ("tts", "hotas", "llm") and isinstance(v, dict):
+            if k in ("tts", "hotas", "llm", "headtrack") and isinstance(v, dict):
                 merged[k] = {**merged.get(k, {}), **v}
             else:
                 merged[k] = v
