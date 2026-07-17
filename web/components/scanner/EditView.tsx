@@ -216,7 +216,7 @@ export function EditView({ image, onConfirm, onBack }: Props): React.ReactElemen
   const draggingRef = useRef<{ corner: number; rect: DOMRect } | null>(null);
 
   const onPointerDown = useCallback(
-    (corner: number) => (e: React.PointerEvent<HTMLDivElement>) => {
+    (corner: number) => (e: React.PointerEvent<HTMLElement>) => {
       e.preventDefault();
       const overlay = e.currentTarget.parentElement;
       if (!overlay) return;
@@ -284,7 +284,18 @@ export function EditView({ image, onConfirm, onBack }: Props): React.ReactElemen
     ctx.stroke();
   }, [dragCorner, quad]);
 
+  // Guarda contra doble-confirmacion: un doble tap antes de que el
+  // re-render aplique disabled={confirming} podria encolar dos paginas.
+  const confirmedRef = useRef(false);
+  useEffect(() => {
+    return () => {
+      confirmedRef.current = true; // al desmontar, cancela cualquier rAF pendiente
+    };
+  }, []);
+
   const handleConfirm = useCallback(() => {
+    if (confirmedRef.current) return;
+    confirmedRef.current = true;
     // El warp sobre una imagen grande puede tomar unos cientos de ms —
     // deshabilitamos el boton y dejamos que el browser pinte antes.
     setConfirming(true);
@@ -293,7 +304,11 @@ export function EditView({ image, onConfirm, onBack }: Props): React.ReactElemen
         const state: EditState = { rotation, filter, quad };
         const final = renderEdited(image, state);
         onConfirm(final, state);
-      } finally {
+        // No reseteamos confirming aqui: onConfirm desmonta este editor
+        // (avanza la cola). Resetear seria setState tras unmount.
+      } catch {
+        // renderEdited fallo: rehabilitar para reintentar.
+        confirmedRef.current = false;
         setConfirming(false);
       }
     });
@@ -318,7 +333,22 @@ export function EditView({ image, onConfirm, onBack }: Props): React.ReactElemen
           >
             <QuadOverlay quad={quad} />
             {quad.map((p, i) => (
-              <Handle key={i} point={p} onDown={onPointerDown(i)} label={CORNER_LABELS[i]!} />
+              <Handle
+                key={i}
+                point={p}
+                onDown={onPointerDown(i)}
+                onNudge={(dx, dy) =>
+                  setQuad((prev) => {
+                    const next = cloneQuad(prev);
+                    next[i] = {
+                      x: clamp01(next[i]!.x + dx),
+                      y: clamp01(next[i]!.y + dy),
+                    };
+                    return next;
+                  })
+                }
+                label={CORNER_LABELS[i]!}
+              />
             ))}
           </div>
         )}
@@ -532,18 +562,38 @@ function QuadOverlay({ quad }: { quad: Quad }): React.ReactElement {
 function Handle({
   point,
   onDown,
+  onNudge,
   label,
 }: {
   point: Point;
-  onDown: (e: React.PointerEvent<HTMLDivElement>) => void;
+  onDown: (e: React.PointerEvent<HTMLElement>) => void;
+  onNudge: (dx: number, dy: number) => void;
   label: string;
 }): React.ReactElement {
+  // Un handle de esquina es 2D — no un slider de un valor. Es un boton
+  // enfocable que ademas de arrastrarse se puede mover con las flechas
+  // (1% por pulsacion), asi el recorte es operable sin puntero.
+  const onKeyDown = (e: React.KeyboardEvent): void => {
+    const step = e.shiftKey ? 0.05 : 0.01;
+    const moves: Record<string, [number, number]> = {
+      ArrowLeft: [-step, 0],
+      ArrowRight: [step, 0],
+      ArrowUp: [0, -step],
+      ArrowDown: [0, step],
+    };
+    const m = moves[e.key];
+    if (m) {
+      e.preventDefault();
+      onNudge(m[0], m[1]);
+    }
+  };
   return (
-    <div
-      role="slider"
-      aria-label={label}
+    <button
+      type="button"
+      aria-label={`${label}: ${Math.round(point.x * 100)}% horizontal, ${Math.round(point.y * 100)}% vertical. Usa las flechas para ajustar.`}
       onPointerDown={onDown}
-      className="absolute h-8 w-8 -translate-x-1/2 -translate-y-1/2 cursor-move rounded-full border-[3px] border-cocoa-900 bg-paper shadow-paper-ink-sm"
+      onKeyDown={onKeyDown}
+      className="absolute h-8 w-8 -translate-x-1/2 -translate-y-1/2 cursor-move rounded-full border-[3px] border-cocoa-900 bg-paper shadow-paper-ink-sm outline-none focus-visible:ring-2 focus-visible:ring-stamp-600"
       style={{
         left: `${point.x * 100}%`,
         top: `${point.y * 100}%`,
