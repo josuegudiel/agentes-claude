@@ -25,6 +25,9 @@ VAR_RE = re.compile(r"^[a-z_][a-z0-9_]*$")
 KEYCOMBO_RE = re.compile(r"^[a-z0-9_+]+$")
 # Operadores aceptados por el evaluador de `if` en script.py.
 COND_RE = re.compile(r"^\s*[a-z_][a-z0-9_]*\s*(==|!=|>=|<=|>|<)\s*.+\s*$")
+# SEGURIDAD: nombre de voz TTS. Sin `/`, `\` ni `..` → previene path traversal
+# que cargaría un `.onnx` arbitrario del disco en piper/onnxruntime.
+VOICE_STEM_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 
 MAX_STEPS_PER_COMMAND = 100
 
@@ -49,6 +52,17 @@ class TtsSettings(BaseModel):
     speed: float = Field(default=1.0, ge=0.5, le=2.0)
     volume: float = Field(default=1.0, ge=0.0, le=1.5)
 
+    @field_validator("voice_es", "voice_en")
+    @classmethod
+    def _voice_stem_safe(cls, v: str) -> str:
+        # SEGURIDAD: el stem se interpola en un path (`voices/<stem>.onnx`).
+        # Rechazar separadores y `..` evita cargar un `.onnx` arbitrario del disco.
+        if not VOICE_STEM_RE.match(v):
+            raise ValueError(
+                f"nombre de voz inválido '{v}': solo letras, dígitos, '.', '_' y '-'"
+            )
+        return v
+
 
 class HotasSettings(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True, frozen=True)
@@ -68,6 +82,24 @@ class LlmSettings(BaseModel):
     floor_score: int = Field(default=60, ge=0, le=100)
     temperature: float = Field(default=0.2, ge=0.0, le=2.0)
     max_commands_per_resolution: int = Field(default=5, ge=1, le=20)
+
+    @field_validator("base_url")
+    @classmethod
+    def _base_url_safe(cls, v: str) -> str:
+        # SEGURIDAD: la transcripción del micrófono viaja en el body del POST a
+        # base_url. Restringir el scheme a http/https evita que httpx siga
+        # esquemas raros, y bloquear IPs de metadata cloud corta el SSRF clásico.
+        # (El aviso de exfiltración a un host no-loopback lo emite llm.preflight.)
+        from urllib.parse import urlparse
+
+        parsed = urlparse(v)
+        if parsed.scheme not in ("http", "https"):
+            raise ValueError(f"base_url debe ser http(s), no '{parsed.scheme}': {v}")
+        host = (parsed.hostname or "").lower()
+        blocked = {"169.254.169.254", "metadata.google.internal", "metadata"}
+        if host in blocked:
+            raise ValueError(f"base_url apunta a un endpoint de metadata bloqueado: {host}")
+        return v
 
 
 class Settings(BaseModel):
@@ -114,6 +146,13 @@ class KeyStep(BaseModel):
     def _combo_format(cls, v: str) -> str:
         if not KEYCOMBO_RE.match(v.lower()):
             raise ValueError(f"combo inválido '{v}'")
+        # SEGURIDAD: validación semántica al cargar (no solo formato) — rechaza
+        # `win+*` y atajos de sistema en el paso de config, para que un perfil
+        # malicioso se rechace al importarlo, no en silencio al ejecutarlo.
+        from . import keypress
+        err = keypress.validate(v)
+        if err:
+            raise ValueError(err)
         return v.lower()
 
 
@@ -247,9 +286,14 @@ class Command(BaseModel):
     @field_validator("keys")
     @classmethod
     def _keys_format(cls, v: list[str]) -> list[str]:
+        from . import keypress
         for k in v:
             if not KEYCOMBO_RE.match(k.lower()):
                 raise ValueError(f"combo inválido '{k}': usar p.ej. 'alt+n', 'l', 'ctrl+shift+x'")
+            # SEGURIDAD: rechaza `win+*` y atajos de sistema al cargar (v1/v2).
+            err = keypress.validate(k)
+            if err:
+                raise ValueError(err)
         return [k.lower() for k in v]
 
     @model_validator(mode="after")

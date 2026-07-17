@@ -32,6 +32,37 @@ from ..i18n.tr import register_retranslatable, tr
 logger = logging.getLogger(__name__)
 
 
+def _collect_combos_from_raw_profile(raw: dict[str, Any]) -> set[str]:
+    """Extrae las combinaciones de teclas de un perfil crudo (dict del YAML),
+    incluyendo tanto `keys:` como los `KeyStep` de `steps:` (recursivo en
+    if/repeat). Usado para la preview de seguridad al importar."""
+    combos: set[str] = set()
+
+    def walk_steps(steps: Any) -> None:
+        if not isinstance(steps, list):
+            return
+        for s in steps:
+            if not isinstance(s, dict):
+                continue
+            t = s.get("type")
+            if t == "key" and isinstance(s.get("combo"), str):
+                combos.add(s["combo"])
+            elif t == "if":
+                walk_steps(s.get("then"))
+                walk_steps(s.get("else"))
+            elif t == "repeat":
+                walk_steps(s.get("steps"))
+
+    for cmd in raw.get("commands", []):
+        if not isinstance(cmd, dict):
+            continue
+        for k in cmd.get("keys", []) or []:
+            if isinstance(k, str):
+                combos.add(k)
+        walk_steps(cmd.get("steps"))
+    return combos
+
+
 class ProfilesManagerPage(QWidget):
     def __init__(self, orch: Orchestrator, bridge: EngineBridge, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -232,7 +263,8 @@ class ProfilesManagerPage(QWidget):
         if not path:
             return
         try:
-            raw = yaml.safe_load(open(path, encoding="utf-8"))
+            with open(path, encoding="utf-8") as f:
+                raw = yaml.safe_load(f)
         except Exception as e:
             QMessageBox.warning(self, tr("common.error"), str(e))
             return
@@ -242,6 +274,22 @@ class ProfilesManagerPage(QWidget):
         cf = self._orch.config
         if any(p.id == raw["id"] for p in cf.profiles):
             QMessageBox.warning(self, tr("common.error"), tr("commands.error.duplicate_id"))
+            return
+        # SEGURIDAD (defense-in-depth): un perfil compartido inyecta teclas al SO.
+        # Mostrar las teclas distintas antes de aplicar deja al usuario ver qué va
+        # a ejecutar. La validación de keypress ya bloquea combos peligrosos, pero
+        # esto hace visible el contenido de un perfil de origen no confiable.
+        combos = _collect_combos_from_raw_profile(raw)
+        preview = ", ".join(sorted(combos)[:30]) or "(ninguna)"
+        n_cmds = len(raw.get("commands", []))
+        confirm = QMessageBox.question(
+            self,
+            tr("profiles.import"),
+            f"Perfil '{raw['id']}' — {n_cmds} comandos.\n\n"
+            f"Teclas que puede enviar:\n{preview}\n\n"
+            "Importá solo perfiles de fuentes en las que confiás. ¿Continuar?",
+        )
+        if confirm != QMessageBox.Yes:
             return
         new_profiles = [p.model_dump() for p in cf.profiles]
         new_profiles.append(raw)

@@ -68,13 +68,24 @@ def bundled_resource_dir() -> Path:
 
 
 def piper_exe_path() -> Path | None:
-    """Localiza piper.exe (frozen → bundle, dev → %APPDATA%/Origin/piper/). None si no existe."""
-    candidates: list[Path] = []
+    """Localiza piper.exe. None si no existe.
+
+    SEGURIDAD (binary planting / EoP): en un build empaquetado (frozen) piper se
+    resuelve EXCLUSIVAMENTE desde el bundle read-only (`sys._MEIPASS`), nunca
+    desde `%APPDATA%/Origin/piper/` que es escribible por cualquier proceso del
+    usuario. Sin esto, un proceso sin privilegios podía plantar un `piper.exe`
+    troyano ahí y Origin lo ejecutaba — con token de admin si el usuario la
+    lanzó elevada (el MANUAL lo instruye por Easy Anti-Cheat). El fallback a
+    `%APPDATA%` queda SOLO para desarrollo (no-frozen), donde no hay bundle.
+    """
     if getattr(sys, "frozen", False):
-        candidates.append(bundled_resource_dir() / "piper" / "piper.exe")
-    candidates.append(default_paths().base / "piper" / "piper.exe")
-    candidates.append(default_paths().base / "piper" / "piper")  # linux dev
-    for c in candidates:
+        c = bundled_resource_dir() / "piper" / "piper.exe"
+        return c if c.exists() else None
+    # Dev (no-frozen): sin bundle, buscamos en %APPDATA%.
+    for c in (
+        default_paths().base / "piper" / "piper.exe",
+        default_paths().base / "piper" / "piper",  # linux dev
+    ):
         if c.exists():
             return c
     return None
