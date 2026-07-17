@@ -48,6 +48,16 @@ export function CaptureView({ onCapture, onCancel }: Props): React.ReactElement 
     setErrorMsg(null);
     setMode('starting');
 
+    // Detener el stream previo AHORA, no solo en el camino de exito: si
+    // este intento falla (permiso revocado, camara ocupada), el anterior
+    // no debe quedar vivo con la luz encendida mientras se muestra el
+    // fallback.
+    const prevStream = streamRef.current;
+    if (prevStream) {
+      for (const track of prevStream.getTracks()) track.stop();
+      streamRef.current = null;
+    }
+
     if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
       if (!cancellation.cancelled) setMode('fallback');
       return;
@@ -68,11 +78,6 @@ export function CaptureView({ onCapture, onCancel }: Props): React.ReactElement 
         return;
       }
 
-      // Si habia un stream previo todavia vivo, paralo antes de sustituirlo.
-      const prev = streamRef.current;
-      if (prev && prev !== stream) {
-        for (const track of prev.getTracks()) track.stop();
-      }
       streamRef.current = stream;
 
       const v = videoRef.current;

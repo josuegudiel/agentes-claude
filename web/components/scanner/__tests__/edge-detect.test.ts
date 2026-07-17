@@ -209,6 +209,24 @@ describe('detectDocumentQuad', () => {
     expectCornerNear(quad![2]!, rect[2]!, w, h, 8);
   });
 
+  it('detecta un documento con bordes casi VERTICALES (regresion Hough theta<0)', () => {
+    // Bordes verticales = gradiente casi horizontal (base<6): el bug de
+    // theta negativo perdia justo estos votos. Documento alto y angosto.
+    const w = 128;
+    const h = 160;
+    const rect: Point[] = [
+      { x: 44, y: 18 },
+      { x: 86, y: 18 },
+      { x: 86, y: 142 },
+      { x: 44, y: 142 },
+    ];
+    const quad = detectDocumentQuad(docImage(w, h, rect));
+    expect(quad).not.toBeNull();
+    for (let i = 0; i < 4; i++) {
+      expectCornerNear(quad![i]!, rect[i]!, w, h, 8);
+    }
+  });
+
   it('rechaza un quad SIN contraste real con el alrededor', () => {
     // Rectangulo con borde marcado pero interior casi igual al fondo
     // (145 vs 128): hay lineas detectables, pero no es un documento.

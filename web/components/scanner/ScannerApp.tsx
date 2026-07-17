@@ -46,6 +46,13 @@ export function ScannerApp(): React.ReactElement {
   // hydrated evita que el effect de persistencia escriba [] en IndexedDB
   // antes de que la restauracion inicial termine (borraria la sesion).
   const hydratedRef = useRef(false);
+  // El usuario ya capturo/actuo: la restauracion NO debe pisar su trabajo
+  // (race: loadPages resuelve despues de la primera captura -> perdia la
+  // pagina nueva). Se marca en el primer handleCapture.
+  const userActedRef = useRef(false);
+  // Aviso de que la persistencia fallo (cuota / modo privado): el usuario
+  // debe saber que su sesion NO sobrevivira un refresh.
+  const [persistError, setPersistError] = useState(false);
 
   // Restauracion al montar.
   useEffect(() => {
@@ -54,13 +61,15 @@ export function ScannerApp(): React.ReactElement {
       try {
         if (!isStorageAvailable()) return;
         const blobs = await loadPages();
-        if (cancelled || blobs.length === 0) return;
+        // Si el usuario ya capturo algo mientras cargaba, NO restaurar:
+        // pisaria su pagina nueva (y la persistencia la borraria en disco).
+        if (cancelled || userActedRef.current || blobs.length === 0) return;
         const restored: Page[] = [];
         for (const blob of blobs) {
           const canvas = await blobToCanvas(blob);
           restored.push({ canvas, thumb: canvas.toDataURL('image/jpeg', 0.6) });
         }
-        if (cancelled) return;
+        if (cancelled || userActedRef.current) return;
         setPages(restored);
         setRestoredCount(restored.length);
         setStage('export');
@@ -75,8 +84,7 @@ export function ScannerApp(): React.ReactElement {
     };
   }, []);
 
-  // Persistencia: cada cambio en pages re-escribe IndexedDB. Guardamos
-  // fire-and-forget — un fallo de cuota no debe romper el flujo de scan.
+  // Persistencia: cada cambio en pages re-escribe IndexedDB.
   useEffect(() => {
     if (!hydratedRef.current || !isStorageAvailable()) return;
     let cancelled = false;
@@ -86,9 +94,14 @@ export function ScannerApp(): React.ReactElement {
         for (const p of pages) {
           blobs.push(await canvasToBlob(p.canvas));
         }
-        if (!cancelled) await savePages(blobs);
+        if (!cancelled) {
+          await savePages(blobs);
+          setPersistError(false);
+        }
       } catch {
-        // Sin espacio / modo privado: seguimos sin persistir.
+        // Sin espacio / modo privado: la app sigue, pero avisamos que la
+        // sesion no se guardara.
+        if (!cancelled && pages.length > 0) setPersistError(true);
       }
     })();
     return () => {
@@ -97,6 +110,7 @@ export function ScannerApp(): React.ReactElement {
   }, [pages]);
 
   const handleCapture = useCallback(async (files: File[]) => {
+    userActedRef.current = true;
     setLoadError(null);
     try {
       const loaded: PendingImage[] = [];
@@ -168,6 +182,13 @@ export function ScannerApp(): React.ReactElement {
         <div className="stage-in rounded-lg border-2 border-stamp-600 bg-stamp-50 px-4 py-3 text-sm text-stamp-700 shadow-paper-sm">
           <strong className="font-semibold">Error cargando imagen:</strong>{' '}
           {loadError}
+        </div>
+      )}
+
+      {persistError && pages.length > 0 && (
+        <div className="stage-in rounded-lg border-2 border-note-300 bg-note-100 px-4 py-2.5 text-sm text-note-700 shadow-paper-sm">
+          No se pudo guardar la sesion (almacenamiento lleno o modo
+          privado). Exporta ahora — si recargas, perderas las paginas.
         </div>
       )}
 

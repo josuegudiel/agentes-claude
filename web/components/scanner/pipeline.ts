@@ -144,31 +144,49 @@ function cropBoundingBox(
   return ictx.getImageData(x0, y0, w, h);
 }
 
+/** Lado maximo tras el downscale para el pipeline (filtros/warp O(n)). */
+const MAX_SIDE = 4096;
+/**
+ * Tope duro de megapixeles ANTES de aceptar la imagen. Un PNG de pocos KB
+ * puede declarar 30000x30000 (bomba de descompresion): el browser intenta
+ * materializar ~3.6 GB de bitmap y tumba la pestana. 100 MP (~10000x10000)
+ * es mas que cualquier camara de telefono y acota la memoria del decode.
+ */
+const MAX_MEGAPIXELS = 100;
+
 /**
  * Toma un File (camera o input) y lo carga como HTMLImageElement listo
- * para usar en `renderEdited`. Si la imagen es enorme (>4096 lado mayor),
- * la pre-escala — los filtros y el warp corren O(n) en pixeles y en un
- * movil de gama media 16MP ya se siente.
+ * para usar en `renderEdited`. Rechaza imagenes absurdamente grandes
+ * (bomba de descompresion / OOM) y pre-escala las que superan MAX_SIDE.
  */
 export async function loadImageFromFile(file: File): Promise<HTMLImageElement> {
   const url = URL.createObjectURL(file);
   try {
     const img = await loadImage(url);
-    const MAX = 4096;
-    const longest = Math.max(img.naturalWidth, img.naturalHeight);
-    if (longest <= MAX) return img;
+    const nw = img.naturalWidth;
+    const nh = img.naturalHeight;
 
-    const scale = MAX / longest;
+    // Guarda anti-OOM: si el decode devolvio dimensiones absurdas,
+    // abortar con error claro en vez de arrastrar cientos de MB.
+    if (!nw || !nh) throw new Error('La imagen no tiene dimensiones validas');
+    if ((nw * nh) / 1e6 > MAX_MEGAPIXELS) {
+      throw new Error(
+        `Imagen demasiado grande (${Math.round((nw * nh) / 1e6)} MP). Maximo ${MAX_MEGAPIXELS} MP.`,
+      );
+    }
+
+    const longest = Math.max(nw, nh);
+    if (longest <= MAX_SIDE) return img;
+
+    const scale = MAX_SIDE / longest;
     const c = document.createElement('canvas');
-    c.width = Math.round(img.naturalWidth * scale);
-    c.height = Math.round(img.naturalHeight * scale);
+    c.width = Math.round(nw * scale);
+    c.height = Math.round(nh * scale);
     const ctx = c.getContext('2d');
     if (!ctx) return img;
     ctx.drawImage(img, 0, 0, c.width, c.height);
     return await loadImage(c.toDataURL('image/jpeg', 0.92));
   } finally {
-    // url se libera tras el .decode(); si ya cargamos una version escalada
-    // a partir de data URL, el blob original ya no se necesita.
     URL.revokeObjectURL(url);
   }
 }

@@ -301,8 +301,11 @@ function detectByHoughLines(edges: EdgeData, allowBorders: boolean, minArea: num
       let base = (angle[i]! * 180) / Math.PI;
       if (base < 0) base += 360;
       for (let d = -GRAD_TOLERANCE; d <= GRAD_TOLERANCE; d++) {
-        let t = Math.round(base + d) % 360;
-        if (t >= 180) t -= 180;
+        // Plegado a [0,180) robusto a AMBOS extremos: `base+d` puede ser
+        // negativo (gradiente casi horizontal, base<6) y `%360` en JS
+        // conserva el signo -> t negativo -> cosT[t] undefined -> rho NaN
+        // -> voto perdido. `((x % 180) + 180) % 180` normaliza siempre.
+        const t = (((Math.round(base + d) % 180) + 180) % 180);
         // OJO: no hay que "compensar" el plegado con un cambio de signo
         // en rho — cos/sin del angulo YA plegado codifican el signo
         // correcto por si solos (cos(t-180) = -cos t hace el trabajo).
