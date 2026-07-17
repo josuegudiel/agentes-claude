@@ -165,6 +165,34 @@ Funciona en paralelo con el teclado: podés usar F12 o el botón del HOTAS, los 
 
 ---
 
+## 12b. Head tracking: mover la cabeza para mirar en el juego
+
+Origin puede usar tu **webcam** como head-tracker (parecido a Beam o TrackIR): movés la cabeza y el juego mira para ese lado. Ideal para mirar los espejos o la cabina de tu nave sin sacar las manos de los controles.
+
+**Qué necesitás:** una webcam (la integrada de la laptop sirve). En Windows, Origin instala solo lo necesario; no hace falta hardware especial.
+
+**Para el head-look en el juego (recomendado), necesitás OpenTrack** (gratis, https://github.com/opentrack/opentrack):
+
+1. Instalá y abrí **OpenTrack**.
+2. En OpenTrack, elegí **Input: "UDP over network"** y dejá el puerto en **4242**.
+3. Elegí **Output: "freetrack 2.0 Enhanced"** (el que usa Star Citizen).
+4. En Origin, andá a la página **"Cabeza"**, activá **"Activar head tracking"** y dejá **"Enviar a OpenTrack"** tildado.
+5. Poné la cabeza derecha y mirando al frente, y apretá **"Centrar (calibrar)"**.
+6. Dale **Start** en OpenTrack. Movés la cabeza y deberías ver la pose moverse en Origin y en OpenTrack.
+7. En Star Citizen, activá TrackIR en las opciones y ya deberías tener head-look.
+
+**Ajustes útiles** (página "Cabeza"):
+- **Sensibilidad por eje**: subí el yaw/pitch si querés mirar más lejos con menos movimiento.
+- **Invertir**: si un eje va al revés de lo que esperás, tildá "invert".
+- **Zona muerta (deadzone)**: subila si tu cabeza tiembla un poco en reposo y no querés que el juego se mueva.
+- **Suavizado**: más alto = más suave pero con un pelín de retraso.
+
+**Gestos de cabeza → comandos** (opcional): además del head-look, podés hacer que un gesto dispare un comando. En la sección "Gestos → comandos" agregás filas: elegís el gesto (cabecear, negar, inclinar a un lado, acercarte/alejarte) y escribís el **ID del comando** de tu perfil que querés ejecutar. Por ejemplo: cabecear → `request_landing`.
+
+**Privacidad:** el video de la webcam se procesa **localmente** en tu PC para estimar la pose; no se graba ni se envía a ningún lado. Lo único que sale por la red es la pose (6 números) por UDP a OpenTrack, en tu propia máquina (127.0.0.1) por default.
+
+---
+
 ## 13. LLM: el "modo IA" opcional
 
 Esto es para usuarios que quieren ir más allá del preset fijo. Requiere Ollama instalado.

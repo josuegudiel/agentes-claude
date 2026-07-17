@@ -29,6 +29,10 @@ class EngineBridge(QObject):
     hotas_event = Signal(dict)
     llm_intent_resolved = Signal(dict)
     script_step_executed = Signal(dict)
+    # ===== head tracking =====
+    head_pose = Signal(dict)
+    head_track_state = Signal(dict)
+    head_gesture = Signal(dict)
 
     def __init__(self, bus: EventBus, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -54,6 +58,9 @@ class EngineBridge(QObject):
             sub(EventType.HOTAS_BUTTON_PRESSED, lambda p: self.hotas_event.emit(dict(p))),
             sub(EventType.LLM_INTENT_RESOLVED, lambda p: self.llm_intent_resolved.emit(dict(p))),
             sub(EventType.SCRIPT_STEP_EXECUTED, lambda p: self.script_step_executed.emit(dict(p))),
+            sub(EventType.HEAD_POSE, lambda p: self.head_pose.emit(dict(p))),
+            sub(EventType.HEAD_TRACK_STATE, lambda p: self.head_track_state.emit(dict(p))),
+            sub(EventType.HEAD_GESTURE, lambda p: self.head_gesture.emit(dict(p))),
         ])
 
     def teardown(self) -> None:

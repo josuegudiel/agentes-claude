@@ -4,6 +4,10 @@ App de escritorio para Windows que escucha comandos por **Push-to-Talk** (PTT), 
 
 **Sin Internet** después de la primera descarga del modelo. Sin telemetría. Sin pagos por API.
 
+## Novedades
+
+- **Head tracking por webcam (nuevo)** — convertí tu webcam común en un head-tracker (misma idea que Beam Eye Tracker): estima la pose 6DoF de tu cabeza y la manda a **OpenTrack** para tener *head-look* en Star Citizen (mirar la cabina/espejos moviendo la cabeza, sin TrackIR). Además, **gestos de cabeza** (cabecear, negar, inclinar, acercarse) pueden disparar comandos del perfil. Página "Cabeza" en la GUI con pose en vivo, calibración, sensibilidad por eje y bindings de gestos. Usa MediaPipe + OpenCV (Windows); el engine y los tests corren en Linux con un backend mock.
+
 ## Novedades v0.3
 
 - **TTS local con Piper** — Origin te responde por voz tras matchear ("hangar solicitado, capitán"). Una voz fija ES + una EN configurables; bundle del `.exe` incluye `piper.exe` + 2 modelos ONNX.

@@ -17,11 +17,13 @@ def test_main_window_builds_and_navigates(qtbot, stub_orch):
     bridge = EngineBridge(bus)
     w = MainWindow(orch, bridge)
     qtbot.addWidget(w)
-    assert w._sidebar.count() == 6
+    assert w._sidebar.count() == 7  # + headtrack
     w._sidebar.setCurrentRow(2)  # profiles
     assert w._stack.currentIndex() == 2
-    w._sidebar.setCurrentRow(3)  # settings
+    w._sidebar.setCurrentRow(3)  # headtrack
     assert w._stack.currentIndex() == 3
+    w._sidebar.setCurrentRow(4)  # settings
+    assert w._stack.currentIndex() == 4
 
 
 @pytest.mark.gui

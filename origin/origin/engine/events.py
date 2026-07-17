@@ -30,6 +30,10 @@ class EventType(str, Enum):
     HOTAS_BUTTON_PRESSED = "hotas_button_pressed"
     LLM_INTENT_RESOLVED = "llm_intent_resolved"
     SCRIPT_STEP_EXECUTED = "script_step_executed"
+    # ===== head tracking (webcam) =====
+    HEAD_POSE = "head_pose"
+    HEAD_TRACK_STATE = "head_track_state"
+    HEAD_GESTURE = "head_gesture"
 
 
 Listener = Callable[[dict[str, Any]], None]
