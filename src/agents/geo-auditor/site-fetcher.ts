@@ -1,3 +1,4 @@
+import { lookup } from 'node:dns/promises';
 import { logger } from '../../core/logger.js';
 import { AppError } from '../../core/errors.js';
 
@@ -48,7 +49,34 @@ const PRIVATE_HOST_PATTERNS: RegExp[] = [
   /^\[?f[cd][0-9a-f]{2}:/i, // IPv6 ULA
 ];
 
-/** Guard anti-SSRF: nunca auditar hosts internos desde el servidor. */
+/**
+ * Rangos IP privados/reservados a nivel de OCTETOS ya resueltos — esto
+ * cierra el DNS rebinding (evil.com -> 169.254.169.254) que el chequeo de
+ * STRING del hostname no puede ver.
+ */
+function isPrivateIp(ip: string): boolean {
+  // IPv6 (incluye ::ffff:a.b.c.d mapeadas).
+  if (ip.includes(':')) {
+    const low = ip.toLowerCase();
+    if (low === '::1' || low === '::') return true;
+    if (low.startsWith('fe80:') || low.startsWith('fc') || low.startsWith('fd')) return true;
+    const m = low.match(/::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+    if (m) return isPrivateIp(m[1]!);
+    return false;
+  }
+  const o = ip.split('.').map(Number);
+  if (o.length !== 4 || o.some((n) => Number.isNaN(n) || n < 0 || n > 255)) return true;
+  const [a, b] = o as [number, number, number, number];
+  if (a === 0 || a === 10 || a === 127) return true;
+  if (a === 169 && b === 254) return true; // link-local / metadata
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  if (a === 192 && b === 168) return true;
+  if (a === 100 && b >= 64 && b <= 127) return true; // CGNAT
+  if (a >= 224) return true; // multicast / reservado
+  return false;
+}
+
+/** Guard anti-SSRF por STRING: bloquea hosts internos evidentes. */
 export function assertPublicHost(url: URL): void {
   const host = url.hostname;
   if (PRIVATE_HOST_PATTERNS.some((p) => p.test(host))) {
@@ -61,12 +89,45 @@ export function assertPublicHost(url: URL): void {
   }
 }
 
+/**
+ * Guard anti-SSRF por IP RESUELTA: valida que TODAS las direcciones a las
+ * que resuelve el host sean publicas. Cierra el DNS rebinding. Se permite
+ * inyectar el resolver para test (default: dns.lookup del OS).
+ */
+export async function assertPublicResolved(
+  url: URL,
+  resolver: (host: string) => Promise<string[]> = defaultResolve,
+): Promise<void> {
+  assertPublicHost(url);
+  // Si el host ya es un literal IP, assertPublicHost + isPrivateIp bastan.
+  let ips: string[];
+  try {
+    ips = await resolver(url.hostname);
+  } catch {
+    throw new SiteFetchError(`No se pudo resolver ${url.hostname}`, { code: 'DNS' });
+  }
+  if (ips.length === 0 || ips.some(isPrivateIp)) {
+    throw new SiteFetchError(`Host resuelve a una IP no permitida: ${url.hostname}`, {
+      code: 'PRIVATE_IP',
+    });
+  }
+}
+
+async function defaultResolve(host: string): Promise<string[]> {
+  const res = await lookup(host, { all: true });
+  return res.map((r) => r.address);
+}
+
+/** Maximo de saltos de redirect a seguir (cada uno re-validado). */
+const MAX_REDIRECTS = 5;
+
 export async function fetchSite(
   rawUrl: string,
-  opts?: { timeoutMs?: number },
+  opts?: { timeoutMs?: number; resolver?: (host: string) => Promise<string[]> },
 ): Promise<FetchedSite> {
   const log = logger.child({ component: 'geo-auditor.fetch' });
   const timeoutMs = opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const resolver = opts?.resolver;
 
   let url: URL;
   try {
@@ -74,9 +135,9 @@ export async function fetchSite(
   } catch {
     throw new SiteFetchError(`URL invalida: ${rawUrl}`, { code: 'BAD_URL' });
   }
-  assertPublicHost(url);
+  await assertPublicResolved(url, resolver);
 
-  const { html, finalUrl, truncated } = await fetchHtml(url, timeoutMs);
+  const { html, finalUrl, truncated } = await fetchHtml(url, timeoutMs, resolver);
   // debug y no info: el CLI escribe su propio progreso en stdout y un INFO
   // de pino por cada fetch se intercalaria en medio de esas lineas.
   log.debug({ url: url.href, finalUrl, bytes: html.length, truncated }, 'HTML descargado');
@@ -84,9 +145,9 @@ export async function fetchSite(
   // Los auxiliares se buscan en el origen FINAL (tras redirects www/https).
   const origin = new URL(finalUrl).origin;
   const [robotsTxt, sitemap, llmsTxt] = await Promise.all([
-    fetchRobots(`${origin}/robots.txt`),
-    fetchAuxStatus(`${origin}/sitemap.xml`),
-    fetchAuxStatus(`${origin}/llms.txt`),
+    fetchRobots(`${origin}/robots.txt`, resolver),
+    fetchAuxStatus(`${origin}/sitemap.xml`, resolver),
+    fetchAuxStatus(`${origin}/llms.txt`, resolver),
   ]);
 
   return {
@@ -104,17 +165,38 @@ export async function fetchSite(
 async function fetchHtml(
   url: URL,
   timeoutMs: number,
+  resolver?: (host: string) => Promise<string[]>,
 ): Promise<{ html: string; finalUrl: string; truncated: boolean }> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    const res = await fetch(url.href, {
-      headers: { 'user-agent': USER_AGENT, accept: 'text/html,*/*' },
-      signal: controller.signal,
-      redirect: 'follow',
-    });
+    // Redirect MANUAL: seguir cada salto validando host+IP resuelta. Con
+    // redirect:'follow' undici saltaria a un host interno sin re-chequear
+    // (el bypass clasico de SSRF: 302 -> http://169.254.169.254/...).
+    let current = url;
+    let res: Response | null = null;
+    for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
+      res = await fetch(current.href, {
+        headers: { 'user-agent': USER_AGENT, accept: 'text/html,*/*' },
+        signal: controller.signal,
+        redirect: 'manual',
+      });
+      if (res.status >= 300 && res.status < 400) {
+        const loc = res.headers.get('location');
+        await res.body?.cancel();
+        if (!loc) break;
+        if (hop === MAX_REDIRECTS) {
+          throw new SiteFetchError('Demasiados redirects.', { code: 'TOO_MANY_REDIRECTS' });
+        }
+        current = new URL(loc, current);
+        await assertPublicResolved(current, resolver); // re-valida CADA salto
+        continue;
+      }
+      break;
+    }
 
+    if (!res) throw new SiteFetchError('Sin respuesta.', { code: 'NO_RESPONSE' });
     if (!res.ok) {
       throw new SiteFetchError(
         `El sitio respondio HTTP ${res.status} (${res.statusText || 'sin detalle'}).`,
@@ -123,7 +205,7 @@ async function fetchHtml(
     }
 
     const { text, truncated } = await readCapped(res, MAX_HTML_BYTES);
-    return { html: text, finalUrl: res.url || url.href, truncated };
+    return { html: text, finalUrl: current.href, truncated };
   } catch (err) {
     if (err instanceof SiteFetchError) throw err;
     if (err instanceof Error && err.name === 'AbortError') {
@@ -175,9 +257,12 @@ async function readCapped(
   return { text: Buffer.concat(chunks).toString('utf8'), truncated };
 }
 
-async function fetchRobots(url: string): Promise<FetchedSite['robotsTxt']> {
+async function fetchRobots(
+  url: string,
+  resolver?: (host: string) => Promise<string[]>,
+): Promise<FetchedSite['robotsTxt']> {
   try {
-    const res = await fetchAux(url);
+    const res = await fetchAux(url, resolver);
     if (res.ok) {
       const { text } = await readCapped(res, 256 * 1024);
       return { status: 'ok', content: text };
@@ -189,9 +274,12 @@ async function fetchRobots(url: string): Promise<FetchedSite['robotsTxt']> {
   }
 }
 
-async function fetchAuxStatus(url: string): Promise<AuxStatus> {
+async function fetchAuxStatus(
+  url: string,
+  resolver?: (host: string) => Promise<string[]>,
+): Promise<AuxStatus> {
   try {
-    const res = await fetchAux(url);
+    const res = await fetchAux(url, resolver);
     // Drenar/cancelar el body para no dejar la conexion abierta.
     await res.body?.cancel();
     if (res.ok) return 'ok';
@@ -202,14 +290,21 @@ async function fetchAuxStatus(url: string): Promise<AuxStatus> {
   }
 }
 
-async function fetchAux(url: string): Promise<Response> {
+async function fetchAux(
+  url: string,
+  resolver?: (host: string) => Promise<string[]>,
+): Promise<Response> {
+  // El origen ya fue validado en fetchSite, pero los auxiliares son URLs
+  // nuevas: re-validar host+IP. redirect:'manual' -> no seguimos saltos
+  // en auxiliares (si redirigen, lo tratamos como no disponible).
+  await assertPublicResolved(new URL(url), resolver);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), AUX_TIMEOUT_MS);
   try {
     return await fetch(url, {
       headers: { 'user-agent': USER_AGENT },
       signal: controller.signal,
-      redirect: 'follow',
+      redirect: 'manual',
     });
   } finally {
     clearTimeout(timer);

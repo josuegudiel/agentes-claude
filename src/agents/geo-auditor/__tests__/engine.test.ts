@@ -38,6 +38,8 @@ function fakeTavily(results: Array<{ title: string; url: string; content: string
   } as unknown as TavilyClient;
 }
 
+const PUB_RESOLVER = async (): Promise<string[]> => ['93.184.216.34'];
+
 describe('runGeoAudit', () => {
   let fetchSpy: ReturnType<typeof vi.spyOn>;
 
@@ -59,6 +61,7 @@ describe('runGeoAudit', () => {
   it('pipeline completo: checks de las 3 categorias, scores, resumen y eventos en orden', async () => {
     const events: AuditEvent[] = [];
     const report = await runGeoAudit(REQUEST, {
+      resolver: PUB_RESOLVER,
       chat: fakeChat(),
       tavily: fakeTavily([
         {
@@ -94,7 +97,8 @@ describe('runGeoAudit', () => {
   });
 
   it('sin Tavily: presencia omitida, score presence null y warning visible', async () => {
-    const report = await runGeoAudit(REQUEST, { chat: fakeChat(), tavily: null });
+    const report = await runGeoAudit(REQUEST, {
+      resolver: PUB_RESOLVER, chat: fakeChat(), tavily: null });
     expect(report.presence.skipped).toBe(true);
     expect(report.scores.presence).toBeNull();
     expect(report.warnings.join(' ')).toContain('TAVILY_API_KEY');
@@ -106,7 +110,8 @@ describe('runGeoAudit', () => {
         throw new Error('tavily caido');
       },
     } as unknown as TavilyClient;
-    const report = await runGeoAudit(REQUEST, { chat: fakeChat(), tavily: broken });
+    const report = await runGeoAudit(REQUEST, {
+      resolver: PUB_RESOLVER, chat: fakeChat(), tavily: broken });
     expect(report.presence.skipped).toBe(true);
     expect(report.scores.presence).toBeNull();
     expect(report.warnings.join(' ')).toContain('tavily caido');
@@ -114,6 +119,7 @@ describe('runGeoAudit', () => {
 
   it('si el LLM falla, entrega el reporte numerico con executiveSummary null', async () => {
     const report = await runGeoAudit(REQUEST, {
+      resolver: PUB_RESOLVER,
       chat: fakeChat({
         generate: async () => {
           throw new Error('groq caido');
@@ -128,7 +134,8 @@ describe('runGeoAudit', () => {
   });
 
   it('modo sin LLM (chat: null): no llama a ningun proveedor', async () => {
-    const report = await runGeoAudit(REQUEST, { chat: null, tavily: null });
+    const report = await runGeoAudit(REQUEST, {
+      resolver: PUB_RESOLVER, chat: null, tavily: null });
     expect(report.executiveSummary).toBeNull();
     expect(report.warnings.join(' ')).toContain('modo sin LLM');
   });
@@ -137,7 +144,7 @@ describe('runGeoAudit', () => {
     const search = vi.fn();
     const report = await runGeoAudit(
       { ...REQUEST, skipPresence: true },
-      { chat: null, tavily: { search } as unknown as TavilyClient },
+      { resolver: PUB_RESOLVER, chat: null, tavily: { search } as unknown as TavilyClient },
     );
     expect(report.presence.skipped).toBe(true);
     expect(search).not.toHaveBeenCalled();
@@ -145,7 +152,8 @@ describe('runGeoAudit', () => {
 
   it('si el sitio no responde, lanza SiteFetchError', async () => {
     fetchSpy.mockRejectedValue(new TypeError('fetch failed'));
-    await expect(runGeoAudit(REQUEST, { chat: null, tavily: null })).rejects.toMatchObject({
+    await expect(runGeoAudit(REQUEST, {
+      resolver: PUB_RESOLVER, chat: null, tavily: null })).rejects.toMatchObject({
       name: 'SiteFetchError',
     });
   });
