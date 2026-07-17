@@ -32,11 +32,29 @@ class IntentResolution(BaseModel):
     reasoning: str = ""
 
 
+# SEGURIDAD (DoS): un Ollama comprometido/MITM podría devolver un body enorme
+# y agotar memoria en `r.json()`. Cortamos en 8 MB — una respuesta de intent
+# legítima son cientos de bytes.
+_MAX_RESPONSE_BYTES = 8 * 1024 * 1024
+
+
+def _is_loopback_base_url(base_url: str) -> bool:
+    from urllib.parse import urlparse
+
+    host = (urlparse(base_url).hostname or "").lower()
+    return host in ("localhost", "127.0.0.1", "::1", "")
+
+
 class OllamaClient:
     def __init__(self, base_url: str, model: str, timeout_ms: int) -> None:
         self._base = base_url.rstrip("/")
         self._model = model
         self._timeout = max(0.5, timeout_ms / 1000.0)
+
+    @staticmethod
+    def _guard_size(r: httpx.Response) -> None:
+        if len(r.content) > _MAX_RESPONSE_BYTES:
+            raise OllamaError(f"ollama_response_too_large: {len(r.content)} bytes")
 
     def chat_json(self, system: str, user: str, *, temperature: float = 0.2) -> dict[str, Any]:
         body = {
@@ -54,6 +72,7 @@ class OllamaClient:
             r.raise_for_status()
         except httpx.HTTPError as e:
             raise OllamaError(f"ollama_http_error: {e}") from e
+        self._guard_size(r)
         try:
             content = r.json()["message"]["content"]
             return json.loads(content)
@@ -62,6 +81,15 @@ class OllamaClient:
 
     def preflight(self) -> str | None:
         """None si OK; mensaje legible si no. Verifica conexión + modelo pulled."""
+        # SEGURIDAD: la transcripción del micrófono viaja al servidor LLM. Si el
+        # host no es loopback, avisar — un perfil compartido puede haber apuntado
+        # base_url a un host que exfiltra el audio transcrito.
+        if not _is_loopback_base_url(self._base):
+            logger.warning(
+                "llm_base_url_not_loopback host=%s — las transcripciones de voz "
+                "salen a un host remoto",
+                self._base,
+            )
         try:
             r = httpx.get(f"{self._base}/api/tags", timeout=5.0)
             r.raise_for_status()

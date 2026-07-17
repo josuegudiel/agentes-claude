@@ -15,7 +15,13 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-MODIFIERS = ("ctrl", "shift", "alt", "win")
+# SEGURIDAD: la tecla Windows/Super/Cmd fue REMOVIDA a propósito. No tiene uso
+# legítimo en binds de Star Citizen (minimiza el juego) y era el vector principal
+# de RCE: un perfil malicioso compartido podía declarar `win+r` → escribir un
+# comando → `enter` y ejecutar código arbitrario con los privilegios de admin
+# con los que corre Origin (por Easy Anti-Cheat). Ver `_DANGEROUS_COMBOS` abajo
+# para el resto de los atajos de sistema bloqueados.
+MODIFIERS = ("ctrl", "shift", "alt")
 MODIFIER_SET = set(MODIFIERS)
 MODIFIER_ORDER = {m: i for i, m in enumerate(MODIFIERS)}
 
@@ -27,10 +33,17 @@ KEY_ALIASES = {
     "del": "delete",
     "pgup": "pageup",
     "pgdn": "pagedown",
-    "super": "win",
-    "cmd": "win",
     "control": "ctrl",
     "option": "alt",
+}
+
+# Combos de sistema operativo bloqueados por seguridad, representados como
+# (frozenset de modificadores, tecla final normalizada). Aunque removimos `win`,
+# quedan atajos que abren UI del SO y que un perfil malicioso no debe poder
+# disparar en una app que corre como administrador.
+_DANGEROUS_COMBOS: set[tuple[frozenset[str], str]] = {
+    (frozenset({"ctrl", "shift"}), "escape"),   # Administrador de tareas
+    (frozenset({"ctrl", "alt"}), "delete"),     # SAS (no inyectable, pero lo bloqueamos igual)
 }
 
 _LETTERS = {chr(c) for c in range(ord("a"), ord("z") + 1)}
@@ -77,6 +90,11 @@ def parse_combo(combo: str) -> tuple[list[str], str]:
         # 'ctrl+shift' / 'alt+ctrl' sin tecla final → inválido.
         raise KeyError_(
             f"'{combo}' es solo modificadores; agregá una tecla final (ej. ctrl+shift+a)"
+        )
+    # SEGURIDAD: rechazar atajos de sistema (defense-in-depth vs perfiles maliciosos).
+    if (frozenset(mods), key) in _DANGEROUS_COMBOS:
+        raise KeyError_(
+            f"'{combo}' es un atajo de sistema bloqueado por seguridad"
         )
     return mods, key
 

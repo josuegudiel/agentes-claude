@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import re
 import threading
+import time
 from collections.abc import Callable
 from typing import Any
 
@@ -33,6 +34,12 @@ from .events import EventBus, EventType
 logger = logging.getLogger(__name__)
 
 _COND_RE = re.compile(r"^\s*([a-z_][a-z0-9_]*)\s*(==|!=|>=|<=|>|<)\s*(.+?)\s*$")
+
+# SEGURIDAD (DoS): tope de wall-clock por ejecución de comando. El tope de 100
+# steps NO frena un `label → wait 30000 → goto label` (cuenta 3 steps estáticos
+# pero ejecuta ~33 iteraciones × 30 s ≈ 16 min bloqueando el worker). Este
+# presupuesto lo corta en 60 s reales.
+MAX_SCRIPT_WALL_SECONDS = 60.0
 
 
 class StepExecutionState:
@@ -99,6 +106,7 @@ class StepExecutor:
         self._i18n_say = i18n_say
         self._dry_run = dry_run
         self._steps_run = 0
+        self._deadline = 0.0
 
     def execute(
         self,
@@ -111,6 +119,7 @@ class StepExecutor:
         if not steps:
             return
         self._steps_run = 0
+        self._deadline = time.monotonic() + MAX_SCRIPT_WALL_SECONDS
         labels = self._index_labels(steps)
         self._run_block(steps, labels, state, lang, cancel)
 
@@ -141,6 +150,11 @@ class StepExecutor:
             if self._steps_run >= MAX_STEPS_PER_COMMAND:
                 logger.warning(
                     "script_step_limit_reached limit=%d", MAX_STEPS_PER_COMMAND
+                )
+                return
+            if time.monotonic() >= self._deadline:
+                logger.warning(
+                    "script_wall_limit_reached limit=%.0fs", MAX_SCRIPT_WALL_SECONDS
                 )
                 return
             step = steps[pc]
