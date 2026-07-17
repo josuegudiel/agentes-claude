@@ -263,6 +263,13 @@ function canvasToBlob(canvas: HTMLCanvasElement): Promise<Blob> {
   });
 }
 
+// Tope de megapixeles para el path de RESTAURACION (mismo que
+// loadImageFromFile). En operacion normal los blobs guardados vienen de
+// canvases ya acotados a <=4096px, pero si la IndexedDB del origen fuera
+// manipulada (dispositivo compartido / otra pestana comprometida) un blob
+// con dimensiones gigantes causaria OOM al recargar. Defensa en profundidad.
+const RESTORE_MAX_MEGAPIXELS = 100;
+
 async function blobToCanvas(blob: Blob): Promise<HTMLCanvasElement> {
   const url = URL.createObjectURL(blob);
   try {
@@ -272,9 +279,14 @@ async function blobToCanvas(blob: Blob): Promise<HTMLCanvasElement> {
       el.onerror = () => reject(new Error('No se pudo restaurar la pagina'));
       el.src = url;
     });
+    const nw = img.naturalWidth;
+    const nh = img.naturalHeight;
+    if (!nw || !nh || (nw * nh) / 1e6 > RESTORE_MAX_MEGAPIXELS) {
+      throw new Error('Pagina guardada con dimensiones invalidas');
+    }
     const canvas = document.createElement('canvas');
-    canvas.width = img.naturalWidth;
-    canvas.height = img.naturalHeight;
+    canvas.width = nw;
+    canvas.height = nh;
     const ctx = canvas.getContext('2d');
     if (!ctx) throw new Error('canvas 2d no disponible');
     ctx.drawImage(img, 0, 0);

@@ -31,6 +31,8 @@ export interface GeoAuditOptions {
   /** Inyectable para tests; default TavilyClient si hay API key. */
   tavily?: TavilyClient | null;
   onEvent?: (event: AuditEvent) => void;
+  /** Resolver DNS inyectable para tests (default: dns.lookup del OS). */
+  resolver?: (host: string) => Promise<string[]>;
 }
 
 export async function runGeoAudit(
@@ -52,7 +54,7 @@ export async function runGeoAudit(
 
   // --- 1. Fetch del sitio (si esto falla, falla la auditoria entera) ---
   emit({ type: 'phase', phase: 'fetch', status: 'running' });
-  const fetched = await fetchSite(req.url);
+  const fetched = await fetchSite(req.url, opts.resolver ? { resolver: opts.resolver } : undefined);
   const site = parseSiteHtml(fetched.html, {
     baseHost: new URL(fetched.finalUrl).hostname,
   });

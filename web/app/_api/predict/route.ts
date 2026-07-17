@@ -15,7 +15,7 @@ export const runtime = 'nodejs';
 export const maxDuration = 60;
 
 const RequestSchema = z.object({
-  series: z.array(z.number().finite()).min(8),
+  series: z.array(z.number().finite()).min(8).max(4096),
   horizon: z.number().int().min(1).max(64).default(12),
   question: z.string().max(500).optional(),
 });
