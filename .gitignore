@@ -38,3 +38,9 @@ pnpm-lock.yaml
 web/.next/
 web/out/
 web/next-env.d.ts.bak
+
+# Bundles extraidos de agentes (source si, artefactos no)
+_split/**/node_modules
+_split/**/.next
+_split/**/*.tsbuildinfo
+_split/**/next-env.d.ts
