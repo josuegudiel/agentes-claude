@@ -38,3 +38,10 @@ pnpm-lock.yaml
 web/.next/
 web/out/
 web/next-env.d.ts.bak
+
+# Copias de trabajo de los flujos de la biblioteca TEA. Los originales viven en
+# el repo josuegudiel/autism (agente-autismo/scripts/workflows/); aqui solo se
+# copian porque la herramienta de workflows exige que scriptPath este dentro del
+# directorio de trabajo. Versionarlos crearia una segunda copia que se
+# desincroniza de la buena.
+.workflows-tea/
