@@ -1,3 +1,5 @@
+import { estimatePaper, paperRows } from './paper';
+
 /**
  * Filtros tipo "scanner de movil" sobre un canvas 2D.
  *
@@ -6,15 +8,15 @@
  * filtros sin pasar canvas para todos lados.
  *
  * La suite cubre tres usos:
- *   - Papeleria (doc, receipt, bw): correccion de iluminacion — se estima
- *     el "fondo" (el papel) con dilatacion + blur a escala reducida y se
- *     normaliza la imagen contra el; las sombras y la luz despareja
- *     desaparecen y el papel queda blanco.
+ *   - Papeleria (magic, doc, grayscale, receipt, shadow, bw): el nucleo de
+ *     las apps de escaneo comerciales — se estima el color del papel por
+ *     zona y por canal (paper.ts) y se divide por el: sombras, caida de
+ *     luz y dominante de color fuera; luego curva tonal con recorte a
+ *     blanco que respeta el color de la tinta.
  *   - Fotos (photo, vivid): balance de blancos gray-world, estiramiento
  *     de luminancia por percentiles y curva S — sin los viros de color
  *     del clip por canal.
- *   - Generales (magic, grayscale, sharpen): auto-mejora, grises con
- *     contraste y enfoque unsharp.
+ *   - Generales (sharpen): enfoque unsharp de luminancia.
  */
 
 export type FilterId =
@@ -77,128 +79,539 @@ export function applyFilter(data: ImageData, filter: FilterId): ImageData {
 }
 
 // ---------------------------------------------------------------------------
-// Papeleria
+// Papeleria: nucleo de escaneo (normalizacion de papel + curva tonal)
 // ---------------------------------------------------------------------------
+//
+// Mismo esqueleto que las apps comerciales (ver paper.ts):
+//
+//   1. Enfoque de luminancia ANTES de todo: enfocar despues del recorte a
+//      blanco dibuja halos oscuros sobre el papel blanco puro.
+//   2. Division por el color del papel local, POR CANAL: sombras, caida de
+//      luz y dominante de color fuera en un paso. El papel queda en ~248
+//      (con margen: el blanco puro lo pone la curva, suavemente).
+//   3. Curva tonal en LUT: punto negro en el percentil de la tinta, punto
+//      blanco en la MEDIANA del papel (la mitad del grano ya es blanco),
+//      gamma que da "peso de tinta" y un hombro suave hacia el blanco.
+//   4. Recorte a blanco que depende del COLOR: solo lo casi neutro y claro
+//      se vuelve blanco puro. Resaltador, sellos, lapiz azul claro: nunca.
+//   5. Saturacion leve (x1.1-1.2) de la tinta de color, escalada con la
+//      luminancia (sin virar el tono).
+
+interface ScanPreset {
+  /** >1 da "peso" a la tinta (oscurece medios-bajos). */
+  gamma: number;
+  /** Desde donde (0..1 del rango) el papel rueda a blanco puro. */
+  knee: number;
+  /** Percentil del punto negro (0..1). */
+  blackP: number;
+  /** Tope del punto negro (no aplastar documentos sin tinta oscura). */
+  blackCap: number;
+  /** Refuerzo de croma de la tinta (1 = fiel). */
+  chroma: number;
+  /** Salida en escala de grises. */
+  gray: boolean;
+  /** Enfoque de luminancia previo (0 = off). */
+  sharpen: number;
+}
+
+/** Nivel al que la division lleva el papel (margen bajo 255 para la curva). */
+const PAPER_LEVEL = 248;
+/** Ganancia maxima de la division: mas alla solo se amplifica ruido. */
+const MAX_GAIN = 4;
+const LUT_SCALE = 3; // LUT de 0..~340 en pasos de 1/3 de nivel
+const LUT_SIZE = 1024;
+
+function scannerCore(data: ImageData, o: ScanPreset): ImageData {
+  const { width: w, height: h } = data;
+  const px = data.data;
+  if (w < 16 || h < 16) {
+    // Demasiado chica para estimar el papel: solo el modo de color.
+    if (o.gray) {
+      for (let i = 0; i < px.length; i += 4) {
+        const v = 0.299 * px[i]! + 0.587 * px[i + 1]! + 0.114 * px[i + 2]!;
+        px[i] = v;
+        px[i + 1] = v;
+        px[i + 2] = v;
+      }
+    }
+    return data;
+  }
+  const n = w * h;
+
+  // Luminancia (8 bits) y su version suavizada 3x3: la usan el enfoque y
+  // la decision de "esto es papel blanco" (sobre la suavizada, el ruido
+  // del sensor amplificado en las sombras no deja puntitos grises).
+  const L = new Uint8Array(n);
+  for (let j = 0, i = 0; j < n; j++, i += 4) {
+    L[j] = (77 * px[i]! + 150 * px[i + 1]! + 29 * px[i + 2]! + 128) >> 8;
+  }
+  const Lb = box3u8(L, w, h);
+
+  const map = estimatePaper(data);
+  const rows = paperRows(w, map, MAX_GAIN);
+  const PLV = PAPER_LEVEL;
+
+  // --- Estadisticas sobre una muestra (1 de cada 3x3) ----------------------
+  const hist = new Uint32Array(LUT_SIZE);
+  let total = 0;
+  const step = n > 400_000 ? 3 : 1;
+  for (let y = 0; y < h; y += step) {
+    rows.load(y);
+    const IR = rows.ir, IG = rows.ig, IB = rows.ib;
+    for (let x = 0, i = y * w * 4; x < w; x += step, i += 4 * step) {
+      const yv = PLV * (0.299 * px[i]! * IR[x]! + 0.587 * px[i + 1]! * IG[x]! + 0.114 * px[i + 2]! * IB[x]!);
+      const idx = (yv * LUT_SCALE + 0.5) | 0;
+      hist[idx < LUT_SIZE ? idx : LUT_SIZE - 1]!++;
+      total++;
+    }
+  }
+  const pct = (p: number): number => {
+    const target = total * p;
+    let cum = 0;
+    for (let v = 0; v < LUT_SIZE; v++) {
+      cum += hist[v]!;
+      if (cum >= target) return v / LUT_SCALE;
+    }
+    return 255;
+  };
+  const bp = Math.min(pct(o.blackP), o.blackCap);
+  // Punto blanco: mediana de lo que es papel (cerca del nivel de papel).
+  let wp = PAPER_LEVEL;
+  {
+    const lo = Math.round((PAPER_LEVEL - 40) * LUT_SCALE);
+    let cnt = 0;
+    for (let v = lo; v < LUT_SIZE; v++) cnt += hist[v]!;
+    let cum = 0;
+    for (let v = lo; v < LUT_SIZE; v++) {
+      cum += hist[v]!;
+      if (cum >= cnt / 2) {
+        wp = v / LUT_SCALE;
+        break;
+      }
+    }
+  }
+  wp = clampRange(wp, 200, 252);
+  const range = Math.max(40, wp - bp);
+
+  // --- LUT de la curva -----------------------------------------------------
+  const lut = new Float32Array(LUT_SIZE);
+  for (let v = 0; v < LUT_SIZE; v++) {
+    let t = (v / LUT_SCALE - bp) / range;
+    t = t < 0 ? 0 : t > 1 ? 1 : t;
+    const base = Math.pow(t, o.gamma);
+    let k = (t - o.knee) / (1 - o.knee);
+    k = k < 0 ? 0 : k > 1 ? 1 : k;
+    const roll = k * k * (3 - 2 * k);
+    lut[v] = 255 * (base + (1 - base) * roll);
+  }
+  const whiteLo = wp - 30;
+  const amount = o.sharpen;
+  const [pr0, pg0, pb0] = map.paper;
+  const paperLum = 0.299 * pr0 + 0.587 * pg0 + 0.114 * pb0;
+
+  // --- Pasada unica a resolucion completa ----------------------------------
+  // (px es Uint8ClampedArray: la asignacion ya recorta a 0..255 y redondea.)
+  const gray = o.gray;
+  const chroma = o.chroma;
+  for (let y = 0; y < h; y++) {
+    rows.load(y);
+    const IR = rows.ir, IG = rows.ig, IB = rows.ib, IL = rows.il, CT = rows.ct;
+    for (let x = 0, j = y * w, i = j * 4; x < w; x++, j++, i += 4) {
+      // 1. Enfoque (unsharp de luminancia con umbral) como ganancia.
+      const l = L[j]!;
+      let sg = PLV;
+      if (amount > 0 && l > 0) {
+        const d = l - Lb[j]!;
+        if (d > 3 || d < -3) {
+          let q = (l + amount * d) / l;
+          q = q < 0 ? 0 : q > 3 ? 3 : q;
+          sg = PLV * q;
+        }
+      }
+      // 2. Division por el papel local, por canal.
+      const nr = px[i]! * sg * IR[x]!;
+      const ng = px[i + 1]! * sg * IG[x]!;
+      const nb = px[i + 2]! * sg * IB[x]!;
+      const yv = 0.299 * nr + 0.587 * ng + 0.114 * nb;
+      // 3. Curva tonal. En contenido (fotos, recuadros) la curva nunca deja
+      // el pixel mas oscuro que el original: la curva es para tinta sobre
+      // papel, no para aplastar una foto oscura.
+      const idx = (yv * LUT_SCALE + 0.5) | 0;
+      let t = lut[idx < LUT_SIZE ? idx : LUT_SIZE - 1]!;
+      const cw = CT[x]!;
+      if (cw > 0.01 && t < l) t += (l - t) * cw;
+      // 4. Recorte a blanco segun claridad (sobre la luminancia suavizada:
+      // inmune al ruido) y color (lo que tiene color nunca se blanquea).
+      const ys = Lb[j]! * PLV * IL[x]!;
+      const yw = ys > yv ? ys : yv;
+      if (gray) {
+        let wg = (yw - whiteLo) / 30;
+        wg = wg < 0 ? 0 : wg > 1 ? 1 : wg;
+        const v = t + (255 - t) * wg * wg * (3 - 2 * wg);
+        px[i] = v;
+        px[i + 1] = v;
+        px[i + 2] = v;
+        continue;
+      }
+      if (yw <= whiteLo) {
+        // Tinta / zona oscura: solo color.
+        let ratio = t / (yv > 1 ? yv : 1);
+        ratio = ratio < 0.35 ? 0.35 : ratio > 1.4 ? 1.4 : ratio;
+        const k = chroma * (0.45 + 0.55 * ratio);
+        px[i] = t + (nr - yv) * k;
+        px[i + 1] = t + (ng - yv) * k;
+        px[i + 2] = t + (nb - yv) * k;
+        continue;
+      }
+      const mx = nr > ng ? (nr > nb ? nr : nb) : ng > nb ? ng : nb;
+      const mn = nr < ng ? (nr < nb ? nr : nb) : ng < nb ? ng : nb;
+      let wy = (yw - whiteLo) / 30;
+      wy = wy > 1 ? 1 : wy;
+      // El ruido de color crece con la ganancia (sombra levantada): el
+      // umbral de "esto tiene color" crece con ella.
+      const gainHere = IL[x]! * paperLum;
+      let wc = (mx - mn - 14 - 10 * gainHere) / 25;
+      wc = wc < 0 ? 0 : wc > 1 ? 1 : wc;
+      const white = wy * wy * (3 - 2 * wy) * (1 - wc * wc * (3 - 2 * wc));
+      if (white >= 0.999) {
+        px[i] = 255;
+        px[i + 1] = 255;
+        px[i + 2] = 255;
+        continue;
+      }
+      // 5. Color de la tinta: la desviacion respecto del gris, escalada con
+      // el cambio de luminancia (sin virar el tono) y un refuerzo leve.
+      let ratio = t / (yv > 1 ? yv : 1);
+      ratio = ratio < 0.35 ? 0.35 : ratio > 1.4 ? 1.4 : ratio;
+      const k = chroma * (0.45 + 0.55 * ratio) * (1 - white);
+      const base = t + (255 - t) * white;
+      px[i] = base + (nr - yv) * k;
+      px[i + 1] = base + (ng - yv) * k;
+      px[i + 2] = base + (nb - yv) * k;
+    }
+  }
+  cleanBorders(data);
+  return data;
+}
+
+/** Box blur 3x3 sobre luminancia de 8 bits (bordes replicados). */
+function box3u8(src: Uint8Array, w: number, h: number): Uint8Array {
+  const tmp = new Uint16Array(w * h);
+  for (let y = 0; y < h; y++) {
+    const row = y * w;
+    for (let x = 0; x < w; x++) {
+      const a = src[row + (x > 0 ? x - 1 : 0)]!;
+      const c = src[row + (x + 1 < w ? x + 1 : x)]!;
+      tmp[row + x] = a + src[row + x]! + c;
+    }
+  }
+  const out = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    const up = (y > 0 ? y - 1 : 0) * w;
+    const dn = (y + 1 < h ? y + 1 : y) * w;
+    const row = y * w;
+    for (let x = 0; x < w; x++) {
+      out[row + x] = (tmp[up + x]! + tmp[row + x]! + tmp[dn + x]! + 4) / 9;
+    }
+  }
+  return out;
+}
 
 /**
- * "Documento": escaneo de alto contraste — papel blanco puro, tinta
- * asentada, sellos y tintas de color reforzados. Preset fuerte del
- * nucleo profesional.
+ * "Magico": escaneo automatico — papel blanco parejo, tinta firme,
+ * colores fieles. El modo por defecto.
  */
-function docEnhance(data: ImageData): ImageData {
+function magicScan(data: ImageData): ImageData {
   return scannerCore(data, {
-    gamma: 1.3,
-    knee: 0.8,
-    blackP: 0.02,
-    blackCap: 80,
-    chroma: 1.4,
+    gamma: 1.2,
+    knee: 0.82,
+    blackP: 0.015,
+    blackCap: 60,
+    chroma: 1.12,
     gray: false,
-    sharpen: 0.6,
+    sharpen: 0.55,
   });
 }
 
 /**
- * "Sin sombra": SOLO correccion de iluminacion (modelo Lambertiano —
- * imagen / mapa de sombra = reflectancia). Levanta sombras y empareja la
- * luz sin blanquear, sin contraste extra y sin tocar los colores: para
- * cuando Documento resulta demasiado agresivo o para fotos de objetos
- * con sombras de la mano/telefono.
+ * "Documento": como Magico pero con mas peso de tinta y colores mas
+ * vivos — texto muy negro, sellos y firmas bien marcados.
  */
-function shadowLift(data: ImageData): ImageData {
-  const { width: w, height: h } = data;
-  const px = data.data;
-
-  const luma = lumaOf(data);
-  if (w < 32 || h < 32) return data;
-  const bg = estimateShading(luma, w, h);
-
-  // Referencia: el papel mas claro de la imagen — normalizamos hacia el,
-  // no hacia blanco absoluto, para conservar el tono original.
-  let ref = 0;
-  for (let y = 0; y < h; y += 8) {
-    for (let x = 0; x < w; x += 8) {
-      const b = bg.sample(x, y);
-      if (b > ref) ref = b;
-    }
-  }
-  ref = Math.min(250, Math.max(120, ref));
-
-  for (let y = 0, i = 0; y < h; y++) {
-    for (let x = 0; x < w; x++, i += 4) {
-      const b = Math.max(40, bg.sample(x, y));
-      const gain = Math.min(5, ref / b);
-      px[i] = clamp255(px[i]! * gain);
-      px[i + 1] = clamp255(px[i + 1]! * gain);
-      px[i + 2] = clamp255(px[i + 2]! * gain);
-    }
-  }
-  return data;
-}
-
-/**
- * "Factura": para tickets termicos y texto desvanecido — grises con
- * gamma fuerte que vuelve legible la tinta palida.
- */
-function receiptEnhance(data: ImageData): ImageData {
+function docEnhance(data: ImageData): ImageData {
   return scannerCore(data, {
-    gamma: 1.7,
+    gamma: 1.45,
     knee: 0.78,
-    blackP: 0.05,
-    blackCap: 150,
-    chroma: 1,
-    gray: true,
+    blackP: 0.02,
+    blackCap: 70,
+    chroma: 1.25,
+    gray: false,
     sharpen: 0.7,
   });
 }
 
 /**
- * Blanco y negro adaptativo con umbral de Sauvola: t = m*(1 + k*(s/R - 1))
- * donde m y s son media y desvio locales. A diferencia del umbral por
- * media simple, Sauvola usa el desvio local — en zonas planas (papel con
- * manchas suaves) el umbral baja y no aparece pimienta; en zonas de texto
- * el umbral sube y los trazos finos no se comen.
+ * "Gris": escaneo en escala de grises (modo grayscale de un escaner).
+ */
+function grayscaleContrast(data: ImageData): ImageData {
+  return scannerCore(data, {
+    gamma: 1.25,
+    knee: 0.82,
+    blackP: 0.015,
+    blackCap: 60,
+    chroma: 1,
+    gray: true,
+    sharpen: 0.55,
+  });
+}
+
+/**
+ * "Factura": tickets termicos y texto desvanecido — gris con gamma fuerte
+ * y punto negro alto, que vuelve legible la tinta palida.
+ */
+function receiptEnhance(data: ImageData): ImageData {
+  return scannerCore(data, {
+    gamma: 1.8,
+    knee: 0.76,
+    blackP: 0.05,
+    blackCap: 140,
+    chroma: 1,
+    gray: true,
+    sharpen: 0.8,
+  });
+}
+
+/**
+ * "Sin sombra": SOLO empareja la luz. Divide por el papel local y vuelve
+ * a multiplicar por el color del papel en su zona mejor iluminada: la
+ * sombra y la caida de luz desaparecen pero el papel conserva su tono y
+ * no hay curva ni blanqueo.
+ */
+function shadowLift(data: ImageData): ImageData {
+  const { width: w, height: h } = data;
+  if (w < 16 || h < 16) return data;
+  const px = data.data;
+  const map = estimatePaper(data);
+  const rows = paperRows(w, map, MAX_GAIN);
+  const [rr, rg, rb] = map.paper;
+  for (let y = 0; y < h; y++) {
+    rows.load(y);
+    const IR = rows.ir, IG = rows.ig, IB = rows.ib;
+    for (let x = 0, i = y * w * 4; x < w; x++, i += 4) {
+      px[i] = px[i]! * rr * IR[x]!;
+      px[i + 1] = px[i + 1]! * rg * IG[x]!;
+      px[i + 2] = px[i + 2]! * rb * IB[x]!;
+    }
+  }
+  return data;
+}
+
+// ---------------------------------------------------------------------------
+// Blanco y negro
+// ---------------------------------------------------------------------------
+
+/**
+ * Blanco y negro de escaner: la calidad sale del ENTORNO del umbral, no
+ * del umbral en si (con el fondo normalizado, incluso Otsu basta):
+ *
+ *   1. Normalizacion de papel (sombras fuera ANTES de umbralizar).
+ *   2. Sauvola T = m*(1 + k*(s/R - 1)) con ventana del tamano de ~2
+ *      lineas de texto (1/30 del ancho). Media y desvio se calculan a 1/4
+ *      de resolucion e interpolan: 16x menos memoria y trabajo, y la
+ *      superficie de umbral es suave por naturaleza.
+ *   3. Luminancia mezclada con min(R,G,B): el rojo claro y el azul de
+ *      lapicera no se pierden.
+ *   4. Limpieza de motas: componentes negros diminutos (ruido, polvo) se
+ *      borran; puntos de "i" y signos se conservan.
+ *   5. Bordes suavizados (antialias de 1-2 niveles de gris), como el modo
+ *      "antialiased" de los SDK comerciales: letras lisas, no dentadas.
  */
 function sauvolaBw(data: ImageData): ImageData {
   const { width: w, height: h } = data;
   const px = data.data;
+  const n = w * h;
+  const L = new Float32Array(n);
 
-  // Binarizar sobre la luma APLANADA: sombras e iluminacion despareja
-  // fuera ANTES del umbral — como un scanner fisico en modo B/N.
-  const raw = lumaOf(data);
-  const luma = new Float32Array(w * h);
-  if (w >= 32 && h >= 32) {
-    const shade = estimateShading(raw, w, h);
-    for (let y = 0, j = 0; y < h; y++) {
-      for (let x = 0; x < w; x++, j++) {
-        const s = Math.max(40, shade.sample(x, y));
-        luma[j] = Math.min(255, (raw[j]! * 245) / s);
+  if (w >= 16 && h >= 16) {
+    const map = estimatePaper(data);
+    const rows = paperRows(w, map, MAX_GAIN);
+    for (let y = 0; y < h; y++) {
+      rows.load(y);
+      const IR = rows.ir, IG = rows.ig, IB = rows.ib;
+      for (let x = 0, j = y * w, i = j * 4; x < w; x++, j++, i += 4) {
+        const nr = px[i]! * 250 * IR[x]!;
+        const ng = px[i + 1]! * 250 * IG[x]!;
+        const nb = px[i + 2]! * 250 * IB[x]!;
+        const yv = 0.299 * nr + 0.587 * ng + 0.114 * nb;
+        const mn = nr < ng ? (nr < nb ? nr : nb) : ng < nb ? ng : nb;
+        const v = 0.7 * yv + 0.3 * mn;
+        L[j] = v > 255 ? 255 : v;
       }
     }
   } else {
-    luma.set(raw);
+    for (let j = 0, i = 0; j < n; j++, i += 4) {
+      L[j] = 0.299 * px[i]! + 0.587 * px[i + 1]! + 0.114 * px[i + 2]!;
+    }
   }
-  const sq = new Float32Array(w * h);
-  for (let j = 0; j < luma.length; j++) sq[j] = luma[j]! * luma[j]!;
 
-  // Ventana grande (8% del lado menor): una ventana menor que el ancho de
-  // un trazo grueso deja las letras "huecas".
-  const radius = Math.max(12, Math.round(Math.min(w, h) * 0.08));
-  const mean = boxBlurF32(luma, w, h, radius);
-  const meanSq = boxBlurF32(sq, w, h, radius);
-
-  const K = 0.2;
+  // Estadisticas locales a 1/4 de resolucion (promedios de bloque de L y L^2).
+  const f = w * h > 250_000 ? 4 : 1;
+  const sw = Math.ceil(w / f);
+  const sh = Math.ceil(h / f);
+  const s1 = new Float32Array(sw * sh);
+  const s2 = new Float32Array(sw * sh);
+  const cnt = new Float32Array(sw * sh);
+  for (let y = 0; y < h; y++) {
+    const row = ((y / f) | 0) * sw;
+    for (let x = 0, j = y * w; x < w; x++, j++) {
+      const c = row + ((x / f) | 0);
+      const v = L[j]!;
+      s1[c] = s1[c]! + v;
+      s2[c] = s2[c]! + v * v;
+      cnt[c] = cnt[c]! + 1;
+    }
+  }
+  for (let c = 0; c < s1.length; c++) {
+    s1[c] = s1[c]! / cnt[c]!;
+    s2[c] = s2[c]! / cnt[c]!;
+  }
+  const radius = Math.max(2, Math.round(Math.max(w, h) / 60 / f));
+  const mean = boxBlurF32(s1, sw, sh, radius);
+  const meanSq = boxBlurF32(s2, sw, sh, radius);
+  // Umbral por celda.
+  const K = 0.25;
   const R = 128;
-  for (let j = 0, i = 0; j < luma.length; j++, i += 4) {
-    const m = mean[j]!;
-    const variance = Math.max(0, meanSq[j]! - m * m);
-    const std = Math.sqrt(variance);
-    const t = m * (1 + K * (std / R - 1));
-    const v = luma[j]! < t ? 0 : 255;
+  const thr = new Float32Array(sw * sh);
+  for (let c = 0; c < thr.length; c++) {
+    const m = mean[c]!;
+    const sd = Math.sqrt(Math.max(0, meanSq[c]! - m * m));
+    // Con el fondo ya normalizado (papel ~250) los niveles absolutos
+    // significan algo: lo muy oscuro es tinta aunque la ventana entera sea
+    // oscura (Sauvola "vacia" el interior de bloques/titulos anchos) y lo
+    // muy claro es papel aunque la ventana sea clara (resaltador).
+    const tv = m * (1 + K * (sd / R - 1));
+    thr[c] = tv < 110 ? 110 : tv > 200 ? 200 : tv;
+  }
+
+  // Decision dura (para la limpieza de motas) + valor suavizado.
+  const ink = new Uint8Array(n);
+  const out = new Uint8ClampedArray(n);
+  const SOFT = 7; // semiancho de la rampa de antialias, en niveles
+  for (let y = 0; y < h; y++) {
+    let gy = (y + 0.5) / f - 0.5;
+    gy = gy < 0 ? 0 : gy > sh - 1 ? sh - 1 : gy;
+    const y0 = Math.floor(gy);
+    const y1 = Math.min(sh - 1, y0 + 1);
+    const ty = gy - y0;
+    for (let x = 0, j = y * w; x < w; x++, j++) {
+      let gx = (x + 0.5) / f - 0.5;
+      gx = gx < 0 ? 0 : gx > sw - 1 ? sw - 1 : gx;
+      const x0 = Math.floor(gx);
+      const x1 = Math.min(sw - 1, x0 + 1);
+      const tx = gx - x0;
+      const a = thr[y0 * sw + x0]! + (thr[y0 * sw + x1]! - thr[y0 * sw + x0]!) * tx;
+      const b = thr[y1 * sw + x0]! + (thr[y1 * sw + x1]! - thr[y1 * sw + x0]!) * tx;
+      const t = a + (b - a) * ty;
+      const d = L[j]! - t;
+      if (d < 0) ink[j] = 1;
+      const v = 128 + (d * 128) / SOFT;
+      out[j] = v < 0 ? 0 : v > 255 ? 255 : v;
+    }
+  }
+
+  // Motas: componentes de tinta con area menor que ~1/3 de un punto.
+  // Umbral bajo a proposito: el punto de una "i" a 300 dpi ocupa ~20-30
+  // px y NO debe caer (con 2.5x se borraban: "Instalacıon"). El ruido que
+  // sobrevive a la normalizacion es de 1-6 px.
+  const minArea = Math.max(3, Math.round(((Math.max(w, h) / 1000) ** 2) * 0.6));
+  if (w * h > 40_000) removeSpecks(ink, out, w, h, minArea);
+
+  for (let j = 0, i = 0; j < n; j++, i += 4) {
+    const v = out[j]!;
     px[i] = v;
     px[i + 1] = v;
     px[i + 2] = v;
   }
+  cleanBorders(data);
   return data;
+}
+
+/**
+ * Limpieza de bordes: si el recorte quedo 1-2 px por fuera de la hoja, la
+ * mesa aparece como un filo oscuro pegado al borde. Por cada fila/columna
+ * se recorre desde el borde hacia adentro: una corrida oscura que NACE en
+ * el borde y termina antes del 1.2% del lado se pinta de blanco. El texto
+ * nunca toca el borde (margenes), asi que no se ve afectado.
+ */
+function cleanBorders(data: ImageData): void {
+  const { width: w, height: h } = data;
+  const px = data.data;
+  const dark = (i: number): boolean => 0.299 * px[i]! + 0.587 * px[i + 1]! + 0.114 * px[i + 2]! < 170;
+  const paint = (i: number): void => {
+    px[i] = 255;
+    px[i + 1] = 255;
+    px[i + 2] = 255;
+  };
+  const maxX = Math.max(2, Math.round(w * 0.012));
+  const maxY = Math.max(2, Math.round(h * 0.012));
+  const sweep = (count: number, maxDepth: number, idx: (line: number, d: number) => number): void => {
+    for (let line = 0; line < count; line++) {
+      let d = 0;
+      while (d < maxDepth && dark(idx(line, d))) d++;
+      if (d > 0 && d < maxDepth) for (let k = 0; k < d; k++) paint(idx(line, k));
+    }
+  };
+  sweep(h, maxX, (y, d) => (y * w + d) * 4); // izquierda
+  sweep(h, maxX, (y, d) => (y * w + (w - 1 - d)) * 4); // derecha
+  sweep(w, maxY, (x, d) => (d * w + x) * 4); // arriba
+  sweep(w, maxY, (x, d) => ((h - 1 - d) * w + x) * 4); // abajo
+}
+
+/**
+ * Borra componentes conexos (8-vecinos) de tinta con area < minArea.
+ * Cada componente se recorre ENTERO (pila iterativa) para marcarlo como
+ * visto — cortar la exploracion a medias haria que un trozo de una letra
+ * grande pareciera una mota y se borrara. Costo lineal en pixeles.
+ */
+function removeSpecks(
+  ink: Uint8Array,
+  out: Uint8ClampedArray,
+  w: number,
+  h: number,
+  minArea: number,
+): void {
+  const seen = new Uint8Array(w * h);
+  const stack: number[] = [];
+  const comp = new Int32Array(minArea);
+  for (let s = 0; s < ink.length; s++) {
+    if (!ink[s] || seen[s]) continue;
+    let cn = 0;
+    stack.push(s);
+    seen[s] = 1;
+    while (stack.length > 0) {
+      const p = stack.pop()!;
+      if (cn < minArea) comp[cn] = p;
+      cn++;
+      const x = p % w;
+      const row = p - x;
+      for (let dy = -w; dy <= w; dy += w) {
+        const yy = row + dy;
+        if (yy < 0 || yy >= ink.length) continue;
+        for (let dx = -1; dx <= 1; dx++) {
+          const xx = x + dx;
+          if (xx < 0 || xx >= w) continue;
+          const q = yy + xx;
+          if (ink[q] && !seen[q]) {
+            seen[q] = 1;
+            stack.push(q);
+          }
+        }
+      }
+    }
+    if (cn < minArea) {
+      for (let k = 0; k < cn; k++) out[comp[k]!] = 255;
+    }
+  }
+  void h;
 }
 
 // ---------------------------------------------------------------------------
@@ -206,86 +619,9 @@ function sauvolaBw(data: ImageData): ImageData {
 // ---------------------------------------------------------------------------
 
 /**
- * "Magico": escaneo automatico — papel blanco parejo, tinta firme,
- * colores preservados. Preset suave del nucleo profesional.
- */
-function magicScan(data: ImageData): ImageData {
-  return scannerCore(data, {
-    gamma: 1.08,
-    knee: 0.86,
-    blackP: 0.02,
-    blackCap: 90,
-    chroma: 1.15,
-    gray: false,
-    sharpen: 0.45,
-  });
-}
-
-/**
- * Levantado de sombras suave: normaliza contra el mapa de iluminacion
- * con gain acotado. Usado como pre-pase de otros filtros.
- */
-function softShadowLift(data: ImageData, maxGain: number): void {
-  const { width: w, height: h } = data;
-  const px = data.data;
-  const luma = lumaOf(data);
-  const bg = estimateBackground(luma, w, h);
-  for (let y = 0, i = 0; y < h; y++) {
-    for (let x = 0; x < w; x++, i += 4) {
-      const b = Math.max(40, bg.sample(x, y));
-      const gain = Math.min(maxGain, 235 / b);
-      if (gain <= 1) continue;
-      px[i] = clamp255(px[i]! * gain);
-      px[i + 1] = clamp255(px[i + 1]! * gain);
-      px[i + 2] = clamp255(px[i + 2]! * gain);
-    }
-  }
-}
-
-/**
- * Estiramiento global de luminancia por percentiles, aplicado como ratio
- * a RGB (no vira el color). `minRange` evita amplificar ruido en
- * imagenes casi planas.
- */
-function stretchLuma(data: ImageData, pLo: number, pHi: number, minRange: number): void {
-  const px = data.data;
-  const luma = lumaOf(data);
-  const lo = percentileF32(luma, pLo);
-  const hi = percentileF32(luma, pHi);
-  if (hi - lo < minRange) return;
-  const scale = 255 / (hi - lo);
-  for (let j = 0, i = 0; j < luma.length; j++, i += 4) {
-    const l = Math.max(1, luma[j]!);
-    let nl = (l - lo) * scale;
-    nl = nl < 0 ? 0 : nl > 255 ? 255 : nl;
-    const ratio = nl / l;
-    px[i] = clamp255(px[i]! * ratio);
-    px[i + 1] = clamp255(px[i + 1]! * ratio);
-    px[i + 2] = clamp255(px[i + 2]! * ratio);
-  }
-}
-
-/**
- * "Gris": escaneo en escala de grises — mismo nucleo (aplanado + curva)
- * con salida gris. Como un scanner fisico en modo grayscale.
- */
-function grayscaleContrast(data: ImageData): ImageData {
-  return scannerCore(data, {
-    gamma: 1.15,
-    knee: 0.85,
-    blackP: 0.02,
-    blackCap: 90,
-    chroma: 1,
-    gray: true,
-    sharpen: 0.4,
-  });
-}
-
-/**
  * "Nitido": enfoque unsharp-mask sobre LUMINANCIA (no por canal — el
  * enfoque por canal genera franjas de color en los bordes). El umbral
- * evita amplificar ruido del sensor en zonas planas: solo se enfoca
- * donde la diferencia local supera el minimo.
+ * evita amplificar ruido del sensor en zonas planas.
  */
 function unsharp(data: ImageData): ImageData {
   unsharpLuma(data, 1.1, 3);
@@ -388,405 +724,8 @@ function vividBoost(data: ImageData): ImageData {
 }
 
 // ---------------------------------------------------------------------------
-// Nucleo profesional de escaneo (pipeline tipo Dropbox Scanner)
+// Primitivas de mejora (unsharp de luminancia, vibrance)
 // ---------------------------------------------------------------------------
-//
-// Todos los filtros de papeleria comparten UN nucleo, como una app
-// profesional o un scanner fisico:
-//
-//   1. Iluminacion por PERCENTIL POR BLOQUES: en cada bloque (~1/10 del
-//      lado) el percentil 85 de luma es "el papel" de esa zona — robusto
-//      a texto, logos y fotos (a diferencia de la dilatacion, que dejaba
-//      halos alrededor de zonas oscuras grandes). Los bloques dominados
-//      por tinta heredan el papel vecino (max 3x3) y la grilla se suaviza
-//      e interpola bilinealmente.
-//   2. Aplanado: luma / mapa de iluminacion — papel parejo, sombras
-//      fuera, como el vidrio de un scanner.
-//   3. CURVA TONAL SUAVE via LUT: punto negro = percentil de la tinta,
-//      punto blanco = percentil del papel; gamma que asienta la tinta y
-//      un "roll-off" suave que funde el papel a blanco puro. Sin ramas
-//      por pixel: cero artefactos de posterizacion.
-//   4. Croma uniforme: el color (sellos, tintas verdes/cafe, logos) se
-//      preserva y refuerza parejo — nunca se blanquea.
-
-interface ScanPreset {
-  /** >1 asienta la tinta (oscurece medios-bajos). */
-  gamma: number;
-  /** Desde que punto (0..1) el papel rueda a blanco puro. */
-  knee: number;
-  /** Percentil del punto negro (0..1). */
-  blackP: number;
-  /** Tope del punto negro (no machacar imagenes sin tinta oscura). */
-  blackCap: number;
-  /** Refuerzo de croma (1 = sin cambio). */
-  chroma: number;
-  /** Salida en escala de grises. */
-  gray: boolean;
-  /** Enfoque de luminancia al final (0 = off). */
-  sharpen: number;
-}
-
-function scannerCore(data: ImageData, o: ScanPreset): ImageData {
-  const { width: w, height: h } = data;
-  const px = data.data;
-  const luma = lumaOf(data);
-
-  // 1-2. Aplanado contra el mapa de iluminacion.
-  const flat = new Float32Array(w * h);
-  if (w >= 32 && h >= 32) {
-    const shade = estimateShading(luma, w, h);
-    for (let y = 0, j = 0; y < h; y++) {
-      for (let x = 0; x < w; x++, j++) {
-        const s = Math.max(40, shade.sample(x, y));
-        const gain = Math.min(5, Math.max(0.5, 245 / s));
-        flat[j] = Math.min(255, luma[j]! * gain);
-      }
-    }
-  } else {
-    flat.set(luma);
-  }
-
-  // 3. Puntos negro/blanco + LUT de curva tonal.
-  const bp = Math.min(percentileF32(flat, o.blackP), o.blackCap);
-  let wp = percentileF32(flat, 0.93);
-  if (wp - bp < 60) wp = bp + 60;
-  wp = Math.min(252, wp);
-
-  // Imagen sin rango real (uniforme): identidad — nada que escanear.
-  const uniform = percentileF32(flat, 0.95) - percentileF32(flat, 0.05) < 10;
-
-  const lut = new Float32Array(256);
-  for (let v = 0; v < 256; v++) {
-    if (uniform) {
-      lut[v] = v;
-      continue;
-    }
-    let n = (v - bp) / (wp - bp);
-    n = n < 0 ? 0 : n > 1 ? 1 : n;
-    const base = Math.pow(n, o.gamma);
-    let k = (n - o.knee) / (1 - o.knee);
-    k = k < 0 ? 0 : k > 1 ? 1 : k;
-    const roll = k * k * (3 - 2 * k);
-    lut[v] = 255 * (base + (1 - base) * roll);
-  }
-
-  // 4. Aplicar: ratio de luma a RGB + croma uniforme (o gris).
-  for (let j = 0, i = 0; j < flat.length; j++, i += 4) {
-    const target = lut[Math.min(255, Math.round(flat[j]!))]!;
-    if (o.gray) {
-      px[i] = target;
-      px[i + 1] = target;
-      px[i + 2] = target;
-      continue;
-    }
-    const ratio = target / Math.max(1, luma[j]!);
-    const r = px[i]! * ratio;
-    const g = px[i + 1]! * ratio;
-    const b = px[i + 2]! * ratio;
-    px[i] = clamp255(target + (r - target) * o.chroma);
-    px[i + 1] = clamp255(target + (g - target) * o.chroma);
-    px[i + 2] = clamp255(target + (b - target) * o.chroma);
-  }
-
-  if (o.sharpen > 0) unsharpLuma(data, o.sharpen, 3);
-  return data;
-}
-
-interface ShadingMap {
-  sample: (x: number, y: number) => number;
-}
-
-/**
- * Mapa de iluminacion por percentil por bloques (el estimador robusto):
- * p85 de luma por bloque = papel local; max 3x3 en la grilla para que
- * los bloques dominados por tinta/fotos hereden el papel vecino;
- * suavizado y muestreo bilineal.
- */
-function estimateShading(luma: Float32Array, w: number, h: number): ShadingMap {
-  const bs = Math.max(16, Math.round(Math.min(w, h) / 10));
-  const gx = Math.max(2, Math.ceil(w / bs));
-  const gy = Math.max(2, Math.ceil(h / bs));
-
-  const grid = new Float32Array(gx * gy);
-  const hist = new Uint32Array(256);
-  for (let by = 0; by < gy; by++) {
-    for (let bx = 0; bx < gx; bx++) {
-      hist.fill(0);
-      const x0 = bx * bs;
-      const y0 = by * bs;
-      const x1 = Math.min(w, x0 + bs);
-      const y1 = Math.min(h, y0 + bs);
-      let count = 0;
-      for (let y = y0; y < y1; y++) {
-        for (let x = x0; x < x1; x++) {
-          hist[Math.min(255, Math.round(luma[y * w + x]!))]!++;
-          count++;
-        }
-      }
-      let v85 = 255;
-      let cum = 0;
-      const targetCount = count * 0.85;
-      for (let v = 0; v < 256; v++) {
-        cum += hist[v]!;
-        if (cum >= targetCount) {
-          v85 = v;
-          break;
-        }
-      }
-      grid[by * gx + bx] = v85;
-    }
-  }
-
-  // NOTA: NO se hace "herencia" del papel vecino (max 3x3) — confunde
-  // sombra con tinta: un bloque de papel EN SOMBRA heredaria el papel
-  // iluminado del vecino, el gain se anularia y la curva tonal mandaria
-  // la sombra a negro. El percentil 85 por bloque ya es robusto a texto
-  // y tinta normal por si solo.
-
-  // Sin suavizado explicito de la grilla: mezclaria bloques de sombra
-  // con vecinos iluminados (sobre-estimando el papel en sombra). La
-  // interpolacion BILINEAL entre centros de bloque ya da transiciones
-  // continuas.
-  let sm = grid;
-  for (let pass = 0; pass < 0; pass++) {
-    const next = new Float32Array(gx * gy);
-    for (let by = 0; by < gy; by++) {
-      for (let bx = 0; bx < gx; bx++) {
-        let sum = 0;
-        let n = 0;
-        for (let dy = -1; dy <= 1; dy++) {
-          for (let dx = -1; dx <= 1; dx++) {
-            const yy = by + dy;
-            const xx = bx + dx;
-            if (yy < 0 || yy >= gy || xx < 0 || xx >= gx) continue;
-            sum += sm[yy * gx + xx]!;
-            n++;
-          }
-        }
-        next[by * gx + bx] = sum / n;
-      }
-    }
-    sm = next;
-  }
-
-  const gridFinal = sm;
-  return {
-    sample(x: number, y: number): number {
-      // Coordenada en el espacio de CENTROS de bloque.
-      let fx = (x - bs / 2) / bs;
-      let fy = (y - bs / 2) / bs;
-      fx = Math.min(gx - 1.001, Math.max(0, fx));
-      fy = Math.min(gy - 1.001, Math.max(0, fy));
-      const x0 = Math.floor(fx);
-      const y0 = Math.floor(fy);
-      const tx = fx - x0;
-      const ty = fy - y0;
-      const i00 = gridFinal[y0 * gx + x0]!;
-      const i10 = gridFinal[y0 * gx + x0 + 1]!;
-      const i01 = gridFinal[(y0 + 1) * gx + x0]!;
-      const i11 = gridFinal[(y0 + 1) * gx + x0 + 1]!;
-      return (
-        i00 * (1 - tx) * (1 - ty) +
-        i10 * tx * (1 - ty) +
-        i01 * (1 - tx) * ty +
-        i11 * tx * ty
-      );
-    },
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Estimacion de fondo (papel) para los filtros de papeleria
-// ---------------------------------------------------------------------------
-
-interface Background {
-  /** Muestra bilineal del fondo estimado en coordenadas de la imagen. */
-  sample: (x: number, y: number) => number;
-}
-
-/**
- * Estima la iluminacion del papel: baja la luma a <=768px, elimina la
- * tinta con 2 pasadas de dilatacion (max local 3x3) y suaviza con box
- * blur grande. El fondo es baja frecuencia por definicion, asi que
- * calcularlo a escala reducida da el mismo resultado 16x mas barato.
- */
-function estimateBackground(luma: Float32Array, w: number, h: number): Background {
-  const scale = Math.min(1, 768 / Math.max(w, h));
-  const dw = Math.max(8, Math.round(w * scale));
-  const dh = Math.max(8, Math.round(h * scale));
-
-  // Downsample por muestreo directo (el blur posterior promedia igual).
-  // Anotacion explicita: dilate3x3 devuelve Float32Array<ArrayBufferLike>
-  // y la inferencia del constructor (ArrayBuffer estricto) no lo acepta.
-  let small: Float32Array = new Float32Array(dw * dh);
-  for (let y = 0; y < dh; y++) {
-    const sy = Math.min(h - 1, Math.round((y * h) / dh));
-    for (let x = 0; x < dw; x++) {
-      const sx = Math.min(w - 1, Math.round((x * w) / dw));
-      small[y * dw + x] = luma[sy * w + sx]!;
-    }
-  }
-
-  // Dilatacion 3x3 x2: la tinta (fina y oscura) desaparece del estimado.
-  small = dilate3x3(small, dw, dh);
-  small = dilate3x3(small, dw, dh);
-
-  const radius = Math.max(6, Math.round(Math.min(dw, dh) * 0.05));
-  const bg = boxBlurF32(small, dw, dh, radius);
-
-  const fx = dw / w;
-  const fy = dh / h;
-  return {
-    sample(x: number, y: number): number {
-      const gx = Math.min(dw - 1.001, Math.max(0, x * fx));
-      const gy = Math.min(dh - 1.001, Math.max(0, y * fy));
-      const x0 = Math.floor(gx);
-      const y0 = Math.floor(gy);
-      const tx = gx - x0;
-      const ty = gy - y0;
-      const i00 = bg[y0 * dw + x0]!;
-      const i10 = bg[y0 * dw + x0 + 1]!;
-      const i01 = bg[(y0 + 1) * dw + x0]!;
-      const i11 = bg[(y0 + 1) * dw + x0 + 1]!;
-      return (
-        i00 * (1 - tx) * (1 - ty) +
-        i10 * tx * (1 - ty) +
-        i01 * (1 - tx) * ty +
-        i11 * tx * ty
-      );
-    },
-  };
-}
-
-function dilate3x3(src: Float32Array, w: number, h: number): Float32Array {
-  const out = new Float32Array(w * h);
-  for (let y = 0; y < h; y++) {
-    const y0 = Math.max(0, y - 1);
-    const y2 = Math.min(h - 1, y + 1);
-    for (let x = 0; x < w; x++) {
-      const x0 = Math.max(0, x - 1);
-      const x2 = Math.min(w - 1, x + 1);
-      let m = 0;
-      for (let yy = y0; yy <= y2; yy++) {
-        for (let xx = x0; xx <= x2; xx++) {
-          const v = src[yy * w + xx]!;
-          if (v > m) m = v;
-        }
-      }
-      out[y * w + x] = m;
-    }
-  }
-  return out;
-}
-
-// ---------------------------------------------------------------------------
-// Primitivas de mejora (CLAHE, unsharp de luminancia, vibrance)
-// ---------------------------------------------------------------------------
-
-/**
- * CLAHE (Contrast-Limited Adaptive Histogram Equalization) sobre la
- * luminancia, aplicado como ratio a RGB para preservar el color.
- *
- * Pipeline clasico: la imagen se divide en tiles (~8x8), cada tile
- * construye su histograma de luma, se recorta al limite de clip
- * (clipFactor x promedio de bin, el exceso se redistribuye — esto evita
- * amplificar ruido en zonas planas) y su CDF se convierte en una LUT.
- * Cada pixel interpola BILINEALMENTE entre las LUTs de los 4 tiles
- * vecinos: transicion continua, sin bordes de bloque.
- *
- * `strength` mezcla el resultado con el original (1 = efecto completo).
- */
-function claheLuma(data: ImageData, clipFactor: number, strength: number): void {
-  const { width: w, height: h } = data;
-  if (w < 8 || h < 8) return;
-  const px = data.data;
-  const luma = lumaOf(data);
-
-  // Grilla de tiles adaptativa: ~64px por tile, entre 2x2 y 8x8.
-  const tilesX = Math.max(2, Math.min(8, Math.round(w / 64)));
-  const tilesY = Math.max(2, Math.min(8, Math.round(h / 64)));
-  const tileW = Math.ceil(w / tilesX);
-  const tileH = Math.ceil(h / tilesY);
-
-  // LUT por tile.
-  const luts = new Float32Array(tilesX * tilesY * 256);
-  const hist = new Uint32Array(256);
-  for (let ty = 0; ty < tilesY; ty++) {
-    for (let tx = 0; tx < tilesX; tx++) {
-      hist.fill(0);
-      const x0 = tx * tileW;
-      const y0 = ty * tileH;
-      const x1 = Math.min(w, x0 + tileW);
-      const y1 = Math.min(h, y0 + tileH);
-      const count = (x1 - x0) * (y1 - y0);
-      for (let y = y0; y < y1; y++) {
-        for (let x = x0; x < x1; x++) {
-          hist[Math.min(255, Math.round(luma[y * w + x]!))]!++;
-        }
-      }
-
-      const base = (ty * tilesX + tx) * 256;
-
-      // Proteccion de tiles planos: si el rango util (p2..p98) del tile
-      // es minusculo, ahi no hay detalle — solo ruido de sensor o papel
-      // liso. Ecualizarlo amplificaria el ruido x10; LUT identidad.
-      const p2 = histPercentile(hist, count, 0.02);
-      const p98 = histPercentile(hist, count, 0.98);
-      if (p98 - p2 < 12) {
-        for (let v = 0; v < 256; v++) luts[base + v] = v;
-        continue;
-      }
-
-      // Clip + redistribucion del exceso.
-      const clipLimit = Math.max(1, Math.round((clipFactor * count) / 256));
-      let excess = 0;
-      for (let v = 0; v < 256; v++) {
-        const over = hist[v]! - clipLimit;
-        if (over > 0) {
-          hist[v] = clipLimit;
-          excess += over;
-        }
-      }
-      const perBin = excess / 256;
-      // CDF -> LUT.
-      let cum = 0;
-      for (let v = 0; v < 256; v++) {
-        cum += hist[v]! + perBin;
-        luts[base + v] = (cum / count) * 255;
-      }
-    }
-  }
-
-  // Interpolacion bilineal entre LUTs de tiles vecinos, por pixel.
-  for (let y = 0, j = 0, i = 0; y < h; y++) {
-    // Coordenada del pixel en el espacio de centros de tile.
-    const gy = clampRange(y / tileH - 0.5, 0, tilesY - 1.001);
-    const ty0 = Math.floor(gy);
-    const fy = gy - ty0;
-    for (let x = 0; x < w; x++, j++, i += 4) {
-      const gx = clampRange(x / tileW - 0.5, 0, tilesX - 1.001);
-      const tx0 = Math.floor(gx);
-      const fx = gx - tx0;
-
-      const l = Math.min(255, Math.round(luma[j]!));
-      const l00 = luts[(ty0 * tilesX + tx0) * 256 + l]!;
-      const l10 = luts[(ty0 * tilesX + tx0 + 1) * 256 + l]!;
-      const l01 = luts[((ty0 + 1) * tilesX + tx0) * 256 + l]!;
-      const l11 = luts[((ty0 + 1) * tilesX + tx0 + 1) * 256 + l]!;
-      const mapped =
-        l00 * (1 - fx) * (1 - fy) +
-        l10 * fx * (1 - fy) +
-        l01 * (1 - fx) * fy +
-        l11 * fx * fy;
-
-      const target = luma[j]! + strength * (mapped - luma[j]!);
-      const ratio = target / Math.max(1, luma[j]!);
-      px[i] = clamp255(px[i]! * ratio);
-      px[i + 1] = clamp255(px[i + 1]! * ratio);
-      px[i + 2] = clamp255(px[i + 2]! * ratio);
-    }
-  }
-}
 
 /**
  * Unsharp mask sobre LUMINANCIA aplicado como ratio a RGB: enfoca sin
@@ -946,9 +885,7 @@ function boxBlurSeparable(
 export const __test = {
   boxBlurSeparable,
   boxBlurF32,
-  estimateBackground,
-  dilate3x3,
-  claheLuma,
   unsharpLuma,
   vibrancePixel,
+  removeSpecks,
 };

@@ -536,13 +536,26 @@ function detectQuadForImage(image: HTMLImageElement, rotation: number): Quad | n
     c = renderRotatedPreview(image, rotation, DETECT_MAX_SIDE);
     const ctx = c.getContext('2d');
     if (!ctx) return null;
-    return detectDocumentQuad(ctx.getImageData(0, 0, c.width, c.height));
+    const q = detectDocumentQuad(ctx.getImageData(0, 0, c.width, c.height));
+    return q ? insetQuad(q, 0.006) : null;
   } catch {
     // getImageData puede lanzar con imagenes cross-origin "tainted".
     return null;
   } finally {
     if (c) releaseCanvas(c);
   }
+}
+
+/**
+ * Encoge el quad hacia su centro una fraccion minima. La deteccion corre
+ * a 256 px: +-1 px de error ahi es una tira de mesa de 10-15 px en la
+ * pagina final, que despues del filtro se ve como un filo negro. Las apps
+ * comerciales recortan apenas hacia adentro por la misma razon.
+ */
+function insetQuad(q: Quad, frac: number): Quad {
+  const cx = (q[0].x + q[1].x + q[2].x + q[3].x) / 4;
+  const cy = (q[0].y + q[1].y + q[2].y + q[3].y) / 4;
+  return q.map((p) => ({ x: p.x + (cx - p.x) * frac * 2, y: p.y + (cy - p.y) * frac * 2 })) as Quad;
 }
 
 /**

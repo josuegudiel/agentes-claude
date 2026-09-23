@@ -1,6 +1,8 @@
 import { applyFilter, type FilterId } from './filters';
 import {
+  estimateAspectRatio,
   isAxisAlignedRect,
+  WARP_MAX_SIDE,
   warpPerspective,
   type Quad,
 } from './perspective';
@@ -120,7 +122,10 @@ function extractQuad(
   }
 
   const full = ictx.getImageData(0, 0, rotW, rotH);
-  const warped = warpPerspective(full, quadPx);
+  // Proporcion real del documento (el centro de la foto es el centro
+  // optico: la rotacion en multiplos de 90 grados lo conserva).
+  const aspect = estimateAspectRatio(quadPx, { x: rotW / 2, y: rotH / 2 }, Math.max(rotW, rotH));
+  const warped = warpPerspective(full, quadPx, WARP_MAX_SIDE, aspect);
   if (!warped) return cropBoundingBox(ictx, rotW, rotH, quadPx);
 
   // Copiamos al buffer del ImageData en vez de pasarlo al constructor:
@@ -148,8 +153,12 @@ function cropBoundingBox(
   return ictx.getImageData(x0, y0, w, h);
 }
 
-/** Lado maximo tras el downscale para el pipeline (filtros/warp O(n)). */
-const MAX_SIDE = 4096;
+/**
+ * Lado maximo tras el downscale para el pipeline (filtros/warp O(n)).
+ * Un poco mas que el A4 a 300 dpi de salida (3508): margen para el recorte
+ * y la perspectiva sin procesar pixeles que no aportan.
+ */
+const MAX_SIDE = 4032;
 /**
  * Tope duro de megapixeles ANTES de aceptar la imagen. Un PNG de pocos KB
  * puede declarar 30000x30000 (bomba de descompresion): el browser intenta

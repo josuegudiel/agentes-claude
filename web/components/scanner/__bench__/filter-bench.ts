@@ -20,7 +20,48 @@
  *
  * Uso: npx tsx web/components/scanner/__bench__/filter-bench.ts [filtro...]
  */
+import { writeFileSync } from 'node:fs';
+import { deflateSync } from 'node:zlib';
 import { applyFilter, FILTERS, type FilterId } from '../filters';
+
+/** PNG RGBA minimo (para inspeccionar la salida con BENCH_DUMP=dir). */
+function encodePng(img: ImageData): Buffer {
+  const { width: w, height: h, data } = img;
+  const raw = Buffer.alloc((w * 4 + 1) * h);
+  for (let y = 0; y < h; y++) {
+    raw[y * (w * 4 + 1)] = 0;
+    Buffer.from(data.buffer, data.byteOffset + y * w * 4, w * 4).copy(raw, y * (w * 4 + 1) + 1);
+  }
+  const crcTable = Array.from({ length: 256 }, (_, n) => {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    return c >>> 0;
+  });
+  const crc = (buf: Buffer): number => {
+    let c = 0xffffffff;
+    for (const b of buf) c = crcTable[(c ^ b) & 0xff]! ^ (c >>> 8);
+    return (c ^ 0xffffffff) >>> 0;
+  };
+  const chunk = (type: string, body: Buffer): Buffer => {
+    const len = Buffer.alloc(4);
+    len.writeUInt32BE(body.length);
+    const tb = Buffer.concat([Buffer.from(type, 'ascii'), body]);
+    const c = Buffer.alloc(4);
+    c.writeUInt32BE(crc(tb));
+    return Buffer.concat([len, tb, c]);
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(w, 0);
+  ihdr.writeUInt32BE(h, 4);
+  ihdr[8] = 8;
+  ihdr[9] = 6;
+  return Buffer.concat([
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    chunk('IHDR', ihdr),
+    chunk('IDAT', deflateSync(raw)),
+    chunk('IEND', Buffer.alloc(0)),
+  ]);
+}
 
 type Label = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7; // papel, negro, verde, cafe, azul claro, resaltador, sello, foto
 const PAPER = 0, BLACK = 1, GREEN = 2, BROWN = 3, LBLUE = 4, HILITE = 5, STAMP = 6, PHOTO = 7;
@@ -132,7 +173,9 @@ function makeScene(w: number, h: number, variant: number): Scene {
       let L = 0.95 - 0.35 * nx * ny - 0.12 * ((nx - 0.5) ** 2 + (ny - 0.5) ** 2) * 4;
       // Sombra de mano/telefono: elipse suave
       const d = Math.hypot((xx - sx) / (w * 0.28), (yy - sy) / (h * 0.2));
-      const shadow = d < 1 ? 0.42 : d < 1.35 ? 0.42 + 0.58 * ((d - 1) / 0.35) : 1;
+      // Penumbra suave (luz de area real), no un corte lineal con quiebres.
+      const u = d < 0.8 ? 0 : d > 1.5 ? 1 : (d - 0.8) / 0.7;
+      const shadow = 0.42 + 0.58 * u * u * (3 - 2 * u);
       L *= shadow;
       for (let ch = 0; ch < 3; ch++) {
         const noise = (r() + r() + r() - 1.5) * 9;
@@ -325,11 +368,15 @@ console.log(`escena ${W}x${H} (x${scenes.length} variantes: tungsteno / sombra a
 console.log('filtro      paperL  pStd  pChrom  textL  contr  hueErr inkC  inkVis hilite  ms/MP');
 for (const id of ids) {
   const acc: Metrics[] = [];
-  for (const sc of scenes) {
+  for (const [si, sc] of scenes.entries()) {
     const copy = cloneImage(sc.img);
     const t0 = performance.now();
     const out = applyFilter(copy, id);
     acc.push(measure(sc, out, performance.now() - t0));
+    if (process.env.BENCH_DUMP) {
+      writeFileSync(`${process.env.BENCH_DUMP}/${id}-${si}.png`, encodePng(out));
+      if (id === ids[0]) writeFileSync(`${process.env.BENCH_DUMP}/input-${si}.png`, encodePng(sc.img));
+    }
   }
   const avg = (k: keyof Metrics): number => acc.reduce((a, m) => a + m[k], 0) / acc.length;
   console.log(

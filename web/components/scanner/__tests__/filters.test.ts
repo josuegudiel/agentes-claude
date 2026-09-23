@@ -244,10 +244,10 @@ describe('applyFilter', () => {
     expect(diff).toBeLessThan(before / 2);
   });
 
-  it('magic: revela detalle en zonas oscuras y claras a la vez (aplanado + curva)', () => {
-    // Mitad izquierda oscura con detalle tenue (40/55), mitad derecha
-    // clara con detalle tenue (200/215). Un clip global de histograma
-    // apenas los separa; CLAHE ecualiza POR REGION y amplifica ambos.
+  it('magic: revela el detalle de la mitad en sombra y limpia el gris casi blanco', () => {
+    // Mitad izquierda en sombra (papel 55) con franjas de tinta (40); mitad
+    // derecha iluminada (papel 215) con franjas apenas visibles (200, 93%
+    // del papel: grano/suciedad, no tinta).
     const w = 64;
     const h = 64;
     const img = makeImageData(w, h, (x, y) => {
@@ -258,11 +258,13 @@ describe('applyFilter', () => {
     });
     const out = applyFilter(img, 'magic');
     const at = (x: number, y: number): number => out.data[(y * w + x) * 4]!;
-    // Diferencia local franja vs franja (era 15 en el original).
-    const darkDiff = Math.abs(at(16, 2) - at(16, 6));
-    const brightDiff = Math.abs(at(48, 2) - at(48, 6));
-    expect(darkDiff).toBeGreaterThan(30);
-    expect(brightDiff).toBeGreaterThan(30);
+    // En sombra: la tinta se separa del papel mucho mas que en el original (15).
+    expect(Math.abs(at(16, 2) - at(16, 6))).toBeGreaterThan(30);
+    // El papel en sombra se levanta a blanco.
+    expect(at(16, 6)).toBeGreaterThanOrEqual(230);
+    // Lo casi blanco del lado iluminado queda blanco limpio.
+    expect(at(48, 2)).toBeGreaterThanOrEqual(240);
+    expect(at(48, 6)).toBeGreaterThanOrEqual(240);
   });
 
   it('vibrance: realza mas los colores apagados que los ya saturados', () => {
@@ -406,25 +408,96 @@ describe('applyFilter', () => {
     }
   });
 
-  it('magic: expande el rango tonal de una imagen lavada', () => {
-    // Imagen con valores entre 50 y 200 — el magic clip deberia expandir
-    // el rango usable cerca de [0..255].
-    const img = makeImageData(32, 32, (x) => {
-      const v = 50 + Math.floor((x / 32) * 150);
+  it('magic: recupera texto de bajo contraste (papel 200, texto 150)', () => {
+    const w = 64;
+    const h = 64;
+    const img = makeImageData(w, h, (x, y) => {
+      const inText = y >= 20 && y < 44 && x >= 10 && x < 54 && y % 6 < 2;
+      const v = inText ? 150 : 200;
       return [v, v, v, 255];
     });
     const out = applyFilter(img, 'magic');
+    const paper = out.data[(4 * w + 4) * 4]!;
+    const text = out.data[(24 * w + 30) * 4]!; // fila de texto (24 % 6 < 2)
+    expect(paper).toBeGreaterThanOrEqual(245);
+    expect(paper - text).toBeGreaterThan(100); // era 50
+  });
 
-    // Verificamos que el rango de salida es mas amplio que el de entrada
-    // (output minimo cerca de 0, output maximo cerca de 255).
-    let min = 255;
-    let max = 0;
-    for (let i = 0; i < out.data.length; i += 4) {
-      min = Math.min(min, out.data[i]!);
-      max = Math.max(max, out.data[i]!);
-    }
-    expect(min).toBeLessThan(40);
-    expect(max).toBeGreaterThan(215);
+  it('magic: una foto en el interior NO se lava a blanco', () => {
+    // Papel 235 con una "foto" gris media (120) en el centro: es
+    // contenido, no sombra — debe conservar su tono (no subir a blanco).
+    const w = 96;
+    const h = 96;
+    const img = makeImageData(w, h, (x, y) => {
+      const inPhoto = x >= 30 && x < 66 && y >= 30 && y < 66;
+      const v = inPhoto ? 120 : 235;
+      return [v, v, v, 255];
+    });
+    const out = applyFilter(img, 'magic');
+    const center = out.data[(48 * w + 48) * 4]!;
+    expect(center).toBeLessThan(170);
+    expect(center).toBeGreaterThanOrEqual(110); // y no se aplasta a negro
+  });
+
+  it('magic: el resaltador amarillo se conserva (no se blanquea)', () => {
+    const w = 96;
+    const h = 64;
+    const img = makeImageData(w, h, (x, y) => {
+      const inHl = y >= 24 && y < 40 && x >= 16 && x < 80;
+      return inHl ? [240, 228, 100, 255] : [236, 234, 228, 255];
+    });
+    const out = applyFilter(img, 'magic');
+    const i = (32 * w + 48) * 4;
+    // Sigue siendo amarillo: R,G altos y B claramente mas bajo.
+    expect(out.data[i]! - out.data[i + 2]!).toBeGreaterThan(80);
+    // Y el papel queda blanco neutro.
+    const p = (6 * w + 6) * 4;
+    expect(out.data[p]!).toBeGreaterThanOrEqual(245);
+    expect(Math.abs(out.data[p]! - out.data[p + 2]!)).toBeLessThanOrEqual(4);
+  });
+
+  it('magic: quita la dominante de color de la luz (papel neutro)', () => {
+    // Foto bajo luz de tungsteno: papel (240, 215, 165) con texto oscuro.
+    const w = 96;
+    const h = 64;
+    const img = makeImageData(w, h, (x, y) => {
+      const inText = x >= 30 && x < 66 && y >= 26 && y < 38;
+      return inText ? [40, 36, 28, 255] : [240, 215, 165, 255];
+    });
+    const out = applyFilter(img, 'magic');
+    const p = (6 * w + 6) * 4;
+    expect(out.data[p]!).toBeGreaterThanOrEqual(245);
+    expect(out.data[p + 2]!).toBeGreaterThanOrEqual(245); // el azul ya no falta
+  });
+
+  it('bw: un bloque negro ancho queda negro (no se vacia por dentro)', () => {
+    const w = 128;
+    const h = 96;
+    const img = makeImageData(w, h, (x, y) => {
+      const inBar = y >= 30 && y < 66 && x >= 16 && x < 112;
+      const v = inBar ? 20 : 235;
+      return [v, v, v, 255];
+    });
+    const out = applyFilter(img, 'bw');
+    expect(out.data[(48 * w + 64) * 4]!).toBeLessThan(40);
+    expect(out.data[(8 * w + 8) * 4]!).toBe(255);
+  });
+
+  it('bw: la limpieza borra motas sueltas y conserva los trazos', () => {
+    const { removeSpecks } = __test;
+    const w = 40;
+    const h = 20;
+    const ink = new Uint8Array(w * h);
+    const out = new Uint8ClampedArray(w * h);
+    // Mota de 2 pixeles y trazo de 30 pixeles.
+    ink[5 * w + 5] = 1;
+    ink[5 * w + 6] = 1;
+    for (let x = 5; x < 35; x++) ink[12 * w + x] = 1;
+    for (let j = 0; j < ink.length; j++) out[j] = ink[j] ? 0 : 255;
+    removeSpecks(ink, out, w, h, 6);
+    expect(out[5 * w + 5]).toBe(255);
+    expect(out[5 * w + 6]).toBe(255);
+    expect(out[12 * w + 20]).toBe(0);
   });
 
   it('original: no muta los pixeles', () => {

@@ -75,8 +75,11 @@ export function CaptureView({ onCapture, onCancel, busy = false }: Props): React
       const stream = await navigator.mediaDevices.getUserMedia({
         video: {
           facingMode: { ideal: 'environment' },
-          width: { ideal: 1920 },
-          height: { ideal: 1440 },
+          // Lo mas alto que de el dispositivo (4:3, como la camara de
+          // fotos). El navegador elige el modo soportado mas cercano: en
+          // iPhone, donde no hay takePhoto(), este cuadro ES la captura.
+          width: { ideal: 3840 },
+          height: { ideal: 2880 },
         },
         audio: false,
       });
@@ -148,33 +151,54 @@ export function CaptureView({ onCapture, onCancel, busy = false }: Props): React
   const [shots, setShots] = useState<File[]>([]);
   const [flash, setFlash] = useState(0);
 
+  // Una captura a la vez (takePhoto puede tardar ~1 s).
+  const shootingRef = useRef(false);
+  const [shooting, setShooting] = useState(false);
+
   const handleShutter = useCallback(() => {
-    if (busy) return;
+    if (busy || shootingRef.current) return;
     const v = videoRef.current;
     if (!v || v.readyState < 2 || !v.videoWidth) return;
-    const c = document.createElement('canvas');
-    c.width = v.videoWidth;
-    c.height = v.videoHeight;
-    const ctx = c.getContext('2d');
-    if (!ctx) return;
-    ctx.drawImage(v, 0, 0, c.width, c.height);
+    shootingRef.current = true;
+    setShooting(true);
     // Feedback inmediato de que la foto se tomo (en ambos modos).
     setFlash((f) => f + 1);
-    c.toBlob(
-      (blob) => {
-        c.width = 0;
-        c.height = 0;
-        if (!blob) return;
-        const file = new File([blob], `captura-${Date.now()}.jpg`, { type: 'image/jpeg' });
-        if (batchMode) {
-          setShots((prev) => [...prev, file]);
-        } else {
-          onCapture([file]);
-        }
-      },
-      'image/jpeg',
-      0.92,
-    );
+
+    const deliver = (blob: Blob | null): void => {
+      shootingRef.current = false;
+      setShooting(false);
+      if (!blob) return;
+      const file = new File([blob], `captura-${Date.now()}.jpg`, { type: 'image/jpeg' });
+      if (batchMode) setShots((prev) => [...prev, file]);
+      else onCapture([file]);
+    };
+
+    // Cuadro del video como respaldo (y unica via en Safari). Se toma YA,
+    // antes de esperar a takePhoto: es el instante que el usuario eligio.
+    const frameBlob = (): Promise<Blob | null> =>
+      new Promise((resolve) => {
+        const c = document.createElement('canvas');
+        c.width = v.videoWidth;
+        c.height = v.videoHeight;
+        const ctx = c.getContext('2d');
+        if (!ctx) return resolve(null);
+        ctx.drawImage(v, 0, 0, c.width, c.height);
+        c.toBlob(
+          (b) => {
+            c.width = 0;
+            c.height = 0;
+            resolve(b);
+          },
+          'image/jpeg',
+          0.95,
+        );
+      });
+
+    void (async () => {
+      const frame = frameBlob();
+      const still = await takeStill(streamRef.current);
+      deliver(still ?? (await frame));
+    })();
   }, [onCapture, batchMode, busy]);
 
   const handleBatchDone = useCallback(() => {
@@ -469,7 +493,7 @@ export function CaptureView({ onCapture, onCancel, busy = false }: Props): React
             <button
               type="button"
               onClick={handleShutter}
-              disabled={busy}
+              disabled={busy || shooting}
               className="shutter shrink-0 disabled:opacity-60"
               aria-label={batchMode ? `Capturar pagina ${shots.length + 1}` : 'Capturar'}
             >
@@ -546,6 +570,30 @@ function TogglePill({
       {label}
     </button>
   );
+}
+
+/**
+ * Foto fija a resolucion COMPLETA del sensor via ImageCapture.takePhoto()
+ * (Chrome/Android y Edge): la procesa la camara del telefono (enfoque,
+ * HDR, reduccion de ruido) y tiene varias veces los pixeles del video.
+ * Es la diferencia de nitidez mas grande entre un escaner web y uno
+ * nativo. Safari no la implementa: devuelve null y se usa el cuadro del
+ * video. Tope de 4 s por si el driver de la camara se cuelga.
+ */
+async function takeStill(stream: MediaStream | null): Promise<Blob | null> {
+  const track = stream?.getVideoTracks()[0];
+  const IC = (globalThis as { ImageCapture?: new (t: MediaStreamTrack) => { takePhoto: () => Promise<Blob> } })
+    .ImageCapture;
+  if (!track || track.readyState !== 'live' || typeof IC !== 'function') return null;
+  try {
+    const photo = await Promise.race([
+      new IC(track).takePhoto(),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 4000)),
+    ]);
+    return photo instanceof Blob && photo.size > 0 ? photo : null;
+  } catch {
+    return null;
+  }
 }
 
 /** Traduce los errores de getUserMedia a algo que el usuario pueda resolver. */
