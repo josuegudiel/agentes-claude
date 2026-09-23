@@ -1,214 +1,394 @@
 'use client';
 
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
-  exportPages,
-  saveBlob,
+  downloadAll,
+  exportFiles,
+  sanitizeFilename,
+  saveFiles,
+  shareFiles,
   type ExportFormat,
 } from './export';
 import {
   IconChevronLeft,
   IconChevronRight,
-  IconDownload,
   IconPlus,
   IconRefresh,
+  IconShare,
+  IconTrash,
   IconX,
 } from './icons';
-
-interface Page {
-  canvas: HTMLCanvasElement;
-  thumb: string;
-}
+import type { ScanPage } from './pages';
 
 interface Props {
-  pages: Page[];
+  pages: ScanPage[];
   onAddPage: () => void;
-  onRemovePage: (index: number) => void;
-  onMovePage: (index: number, delta: -1 | 1) => void;
+  onRemovePage: (id: number) => void;
+  onMovePage: (id: number, delta: -1 | 1) => void;
   onRestart: () => void;
 }
 
 const FORMATS: { id: ExportFormat; label: string; hint: string }[] = [
-  { id: 'pdf', label: 'PDF', hint: 'Una o varias paginas en un solo archivo' },
-  { id: 'jpg', label: 'JPG', hint: 'Imagen comprimida, ideal para compartir' },
-  { id: 'png', label: 'PNG', hint: 'Imagen sin perdida' },
+  { id: 'pdf', label: 'PDF', hint: 'Todas las paginas en un archivo' },
+  { id: 'jpg', label: 'JPG', hint: 'Una imagen por pagina · va a Fotos' },
+  { id: 'png', label: 'PNG', hint: 'Una imagen por pagina · sin compresion' },
 ];
 
-export function ExportView({ pages, onAddPage, onRemovePage, onMovePage, onRestart }: Props): React.ReactElement {
+type Status =
+  | { kind: 'idle' }
+  | { kind: 'working' }
+  | { kind: 'ready'; files: File[] } // hace falta un toque nuevo para compartir
+  | { kind: 'done'; msg: string }
+  | { kind: 'error'; msg: string };
+
+export function ExportView({
+  pages,
+  onAddPage,
+  onRemovePage,
+  onMovePage,
+  onRestart,
+}: Props): React.ReactElement {
   const [format, setFormat] = useState<ExportFormat>('pdf');
   const [filename, setFilename] = useState<string>('escaneo');
-  const [exporting, setExporting] = useState(false);
+  const [status, setStatus] = useState<Status>({ kind: 'idle' });
+  const [viewing, setViewing] = useState<number | null>(null); // id de pagina
 
-  const handleExport = useCallback(async () => {
-    if (pages.length === 0) return;
-    setExporting(true);
+  // Cambiar paginas/formato/nombre invalida archivos ya preparados.
+  useEffect(() => {
+    setStatus((s) => (s.kind === 'working' ? s : { kind: 'idle' }));
+  }, [pages, format, filename]);
+
+  // Mensaje de exito efimero.
+  useEffect(() => {
+    if (status.kind !== 'done') return;
+    const t = setTimeout(() => setStatus({ kind: 'idle' }), 4000);
+    return () => clearTimeout(t);
+  }, [status]);
+
+  const busyRef = useRef(false);
+  const handleSave = useCallback(async () => {
+    if (pages.length === 0 || busyRef.current) return;
+    busyRef.current = true;
+    setStatus({ kind: 'working' });
     try {
-      const sanitized = filename.replace(/[^a-zA-Z0-9_-]/g, '_') || 'escaneo';
-      const { blob, filename: outName } = await exportPages(
-        pages.map((p) => ({ canvas: p.canvas, filename: sanitized })),
-        format,
-      );
-      // En movil abre el share sheet nativo (en iPhone: "Guardar imagen"
-      // -> fototeca); en desktop descarga.
-      await saveBlob(blob, outName);
+      const files = await exportFiles(pages, format, filename);
+      const r = await saveFiles(files);
+      if (r === 'needs-gesture') setStatus({ kind: 'ready', files });
+      else if (r === 'shared') setStatus({ kind: 'done', msg: 'Listo.' });
+      else if (r === 'downloaded')
+        setStatus({ kind: 'done', msg: files.length > 1 ? `${files.length} archivos descargados.` : 'Archivo descargado.' });
+      else setStatus({ kind: 'idle' });
+    } catch (err) {
+      setStatus({
+        kind: 'error',
+        msg: `No se pudo generar el archivo. ${err instanceof Error ? err.message : ''}`.trim(),
+      });
     } finally {
-      setExporting(false);
+      busyRef.current = false;
     }
-  }, [pages, filename, format]);
+  }, [pages, format, filename]);
+
+  // Segundo toque (Safari): los archivos ya estan listos, share() se llama
+  // de inmediato dentro del gesto.
+  const handleShareReady = useCallback(async (files: File[]) => {
+    const r = await shareFiles(files);
+    if (r === 'shared') setStatus({ kind: 'done', msg: 'Listo.' });
+    else if (r === 'cancelled') setStatus({ kind: 'ready', files });
+    else {
+      await downloadAll(files);
+      setStatus({ kind: 'done', msg: 'Archivo descargado.' });
+    }
+  }, []);
+
+  const n = pages.length;
+  const what =
+    format === 'pdf'
+      ? `PDF${n > 1 ? ` · ${n} pags` : ''}`
+      : n > 1
+        ? `${n} imagenes ${format.toUpperCase()}`
+        : format.toUpperCase();
+
+  const viewIndex = viewing === null ? -1 : pages.findIndex((p) => p.id === viewing);
+  const viewPage = viewIndex >= 0 ? pages[viewIndex]! : null;
 
   return (
-    <div className="stage-in flex flex-col gap-4">
-      {/* Paginas */}
-      <div>
-        <h2 className="mb-2 px-1 font-display text-xs font-semibold uppercase tracking-[0.18em] text-cocoa-500">
-          Paginas ({pages.length})
-        </h2>
-        <div className="grid grid-cols-3 gap-2.5 sm:grid-cols-4">
+    <div className="stage-in flex min-h-0 flex-1 flex-col">
+      {/* Contenido desplazable */}
+      <div className="-mx-1 min-h-0 flex-1 overflow-y-auto px-1 pb-3">
+        <div className="mb-2 flex items-center justify-between gap-2 px-1">
+          <h2 className="font-display text-xs font-semibold uppercase tracking-[0.18em] text-cocoa-500">
+            Paginas ({n})
+          </h2>
+          <button
+            type="button"
+            onClick={onRestart}
+            className="flex min-h-[40px] items-center gap-1.5 rounded-md px-2 text-sm font-semibold text-cocoa-500 underline-offset-4 active:underline"
+          >
+            <IconRefresh className="h-4 w-4" />
+            Empezar de nuevo
+          </button>
+        </div>
+
+        <p className="mb-2 px-1 text-xs text-cocoa-500">Toca una pagina para verla, moverla o quitarla.</p>
+
+        <div className="grid grid-cols-3 gap-3 pt-1 sm:grid-cols-4">
           {pages.map((p, i) => (
-            <div
-              key={i}
-              className="group relative aspect-[3/4] overflow-hidden rounded-md border-2 border-cocoa-900 bg-paper shadow-paper transition-transform"
-              style={{ transform: `rotate(${i % 2 === 0 ? -1.2 : 1.1}deg)` }}
+            <button
+              key={p.id}
+              type="button"
+              onClick={() => setViewing(p.id)}
+              aria-label={`Pagina ${i + 1} de ${n}. Ver`}
+              className="relative aspect-[3/4] overflow-hidden rounded-md border-2 border-cocoa-900 bg-paper shadow-paper transition-transform active:scale-[0.97]"
+              style={{ transform: `rotate(${i % 2 === 0 ? -1 : 0.9}deg)` }}
             >
               {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
-                src={p.thumb}
-                alt={`Pagina ${i + 1}`}
-                className="h-full w-full object-cover"
-              />
-              <div className="absolute left-1.5 top-1.5 flex h-6 w-6 items-center justify-center rounded-full border-2 border-paper bg-cocoa-900 font-display text-[11px] font-bold text-paper">
+              <img src={p.thumb} alt="" className="h-full w-full object-cover" />
+              <span className="absolute left-1.5 top-1.5 flex h-6 min-w-6 items-center justify-center rounded-full border-2 border-paper bg-cocoa-900 px-1 font-display text-xs font-bold text-paper">
                 {i + 1}
-              </div>
-              {pages.length > 1 && (
-                <button
-                  type="button"
-                  aria-label={`Eliminar pagina ${i + 1}`}
-                  onClick={() => onRemovePage(i)}
-                  className="absolute right-1.5 top-1.5 flex h-7 w-7 items-center justify-center rounded-full border-2 border-paper bg-cocoa-900 text-paper transition-colors active:bg-stamp-600"
-                >
-                  <IconX className="h-3.5 w-3.5" />
-                </button>
-              )}
-              {pages.length > 1 && (
-                <div className="absolute inset-x-0 bottom-0 flex justify-between bg-cocoa-900/70 px-1 py-0.5">
-                  <button
-                    type="button"
-                    aria-label={`Mover pagina ${i + 1} a la izquierda`}
-                    onClick={() => onMovePage(i, -1)}
-                    disabled={i === 0}
-                    className="flex h-8 w-8 items-center justify-center rounded-full text-white disabled:opacity-25"
-                  >
-                    <IconChevronLeft className="h-4 w-4" />
-                  </button>
-                  <button
-                    type="button"
-                    aria-label={`Mover pagina ${i + 1} a la derecha`}
-                    onClick={() => onMovePage(i, 1)}
-                    disabled={i === pages.length - 1}
-                    className="flex h-8 w-8 items-center justify-center rounded-full text-white disabled:opacity-25"
-                  >
-                    <IconChevronRight className="h-4 w-4" />
-                  </button>
-                </div>
-              )}
-            </div>
+              </span>
+            </button>
           ))}
 
-          {/* Tile para agregar otra pagina */}
           <button
             type="button"
             onClick={onAddPage}
-            aria-label="Agregar pagina"
-            className="flex aspect-[3/4] flex-col items-center justify-center gap-1.5 rounded-md border-2 border-dashed border-cocoa-900/50 text-cocoa-500 transition-colors active:border-stamp-600 active:text-stamp-600"
+            className="flex aspect-[3/4] flex-col items-center justify-center gap-1.5 rounded-md border-2 border-dashed border-cocoa-900/50 bg-paper/40 text-cocoa-700 transition-colors active:border-stamp-600 active:text-stamp-600"
           >
-            <IconPlus className="h-6 w-6" />
-            <span className="text-[11px] font-semibold">Agregar</span>
+            <IconPlus className="h-7 w-7" />
+            <span className="text-sm font-semibold">Agregar</span>
           </button>
+        </div>
+
+        <div className="mt-5">
+          <label
+            htmlFor="scan-filename"
+            className="mb-1.5 block px-1 font-display text-xs font-semibold uppercase tracking-[0.18em] text-cocoa-500"
+          >
+            Nombre del archivo
+          </label>
+          {/* text-base (16px): con menos, iOS hace zoom al enfocar el campo. */}
+          <input
+            id="scan-filename"
+            type="text"
+            value={filename}
+            onChange={(e) => setFilename(e.target.value)}
+            onFocus={(e) => e.currentTarget.select()}
+            autoComplete="off"
+            autoCapitalize="none"
+            autoCorrect="off"
+            spellCheck={false}
+            enterKeyHint="done"
+            maxLength={120}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') e.currentTarget.blur();
+            }}
+            className="w-full rounded-lg border-2 border-cocoa-900/30 bg-paper px-4 py-3 text-base text-cocoa-900 shadow-paper-sm outline-none transition-colors focus:border-cocoa-900"
+          />
+          <p className="mt-1.5 px-1 text-xs text-cocoa-400">
+            Se guardara como <span className="font-semibold text-cocoa-700">{sanitizeFilename(filename)}</span>
+          </p>
         </div>
       </div>
 
-      {/* Formato */}
-      <div>
-        <h2 className="mb-2 px-1 font-display text-xs font-semibold uppercase tracking-[0.18em] text-cocoa-500">
-          Formato
-        </h2>
-        <div className="grid grid-cols-3 gap-2">
+      {/* Barra de accion fija al pie */}
+      <div className="safe-bottom shrink-0 border-t-2 border-cocoa-900 pt-3">
+        <div className="grid grid-cols-3 gap-1 rounded-lg border-2 border-cocoa-900 bg-kraft-300 p-1" role="radiogroup" aria-label="Formato">
           {FORMATS.map((f) => {
             const selected = format === f.id;
             return (
               <button
                 key={f.id}
                 type="button"
+                role="radio"
+                aria-checked={selected}
                 onClick={() => setFormat(f.id)}
-                title={f.hint}
-                aria-pressed={selected}
-                className={`chip-stamp flex min-h-[56px] flex-col items-center justify-center gap-0.5 rounded-lg border-2 border-cocoa-900/25 bg-paper px-2 py-2.5 shadow-paper-sm transition-transform active:translate-x-[2px] active:translate-y-[2px] active:shadow-none ${
-                  selected ? 'chip-selected' : ''
+                className={`min-h-[40px] rounded-md font-display text-base font-bold transition-colors ${
+                  selected ? 'bg-paper text-stamp-700 shadow-paper-ink-sm' : 'text-cocoa-700'
                 }`}
               >
-                <span
-                  className={`font-display text-base font-bold ${
-                    selected ? 'text-stamp-700' : 'text-cocoa-700'
-                  }`}
-                >
-                  {f.label}
-                </span>
-                <span className="text-[9.5px] leading-tight text-cocoa-500">
-                  {f.id === 'pdf' ? 'multi-pagina' : f.id === 'jpg' ? 'comprimido' : 'sin perdida'}
-                </span>
+                {f.label}
               </button>
             );
           })}
         </div>
-        {format !== 'pdf' && pages.length > 1 && (
-          <p className="mt-2 rounded-md border-2 border-note-300 bg-note-100 px-3 py-2 text-[11px] leading-relaxed text-note-700 shadow-paper-sm">
-            {format.toUpperCase()} solo exporta una imagen. Usa PDF para
-            guardar todas las paginas juntas.
+        <p className="mt-1.5 text-center text-xs text-cocoa-500">
+          {FORMATS.find((f) => f.id === format)!.hint}
+        </p>
+
+        {status.kind === 'error' && (
+          <p role="alert" className="mt-2 rounded-md border-2 border-stamp-600 bg-stamp-50 px-3 py-2 text-xs text-stamp-700">
+            {status.msg}
           </p>
         )}
-      </div>
 
-      {/* Nombre */}
-      <div>
-        <label
-          htmlFor="scan-filename"
-          className="mb-2 block px-1 font-display text-xs font-semibold uppercase tracking-[0.18em] text-cocoa-500"
-        >
-          Nombre del archivo
-        </label>
-        <input
-          id="scan-filename"
-          type="text"
-          value={filename}
-          onChange={(e) => setFilename(e.target.value)}
-          autoComplete="off"
-          className="w-full rounded-lg border-2 border-cocoa-900/30 bg-paper px-4 py-3 text-sm text-cocoa-900 shadow-paper-sm outline-none transition-colors focus:border-cocoa-900"
-        />
-        <p className="mt-1.5 px-1 text-[10px] text-cocoa-400">
-          Solo a-z, A-Z, 0-9, _ y -. Lo demas se sustituye por _.
+        {status.kind === 'ready' ? (
+          <button
+            type="button"
+            onClick={() => void handleShareReady(status.files)}
+            className="btn-scan mt-2 flex min-h-[54px] w-full items-center justify-center gap-2 rounded-lg px-5 font-display text-lg font-semibold"
+          >
+            <IconShare className="h-5 w-5" />
+            Archivo listo · toca para guardar
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={() => void handleSave()}
+            disabled={status.kind === 'working' || n === 0}
+            className="btn-scan mt-2 flex min-h-[54px] w-full items-center justify-center gap-2 rounded-lg px-5 font-display text-lg font-semibold"
+          >
+            {status.kind === 'working' ? (
+              <>
+                <span className="spinner spinner-sm" aria-hidden />
+                Preparando...
+              </>
+            ) : (
+              <>
+                <IconShare className="h-5 w-5" />
+                Guardar {what}
+              </>
+            )}
+          </button>
+        )}
+        <p className="mt-1 min-h-[1rem] text-center text-xs font-semibold text-cocoa-700" role="status">
+          {status.kind === 'done' ? status.msg : ''}
         </p>
       </div>
 
-      {/* CTA */}
-      <div className="safe-bottom flex items-center gap-2 pt-1">
+      {viewPage && (
+        <PageViewer
+          page={viewPage}
+          index={viewIndex}
+          total={n}
+          onClose={() => setViewing(null)}
+          onMove={(d) => onMovePage(viewPage.id, d)}
+          onRemove={() => {
+            setViewing(null);
+            onRemovePage(viewPage.id);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+/** Visor a pantalla completa de una pagina con sus acciones. */
+function PageViewer({
+  page,
+  index,
+  total,
+  onClose,
+  onMove,
+  onRemove,
+}: {
+  page: ScanPage;
+  index: number;
+  total: number;
+  onClose: () => void;
+  onMove: (delta: -1 | 1) => void;
+  onRemove: () => void;
+}): React.ReactElement {
+  const [url, setUrl] = useState<string | null>(null);
+  useEffect(() => {
+    const u = URL.createObjectURL(page.blob);
+    setUrl(u);
+    return () => URL.revokeObjectURL(u);
+  }, [page.blob]);
+
+  const closeRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    closeRef.current?.focus();
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  // Portal a <body>: la vista padre tiene una animacion con transform, que
+  // convierte a los hijos `fixed` en relativos a ella (el visor quedaba
+  // recortado debajo de las pestanas en vez de cubrir la pantalla).
+  return createPortal(
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label={`Pagina ${index + 1} de ${total}`}
+      className="fixed inset-0 z-50 flex flex-col bg-cocoa-900/95"
+      style={{
+        paddingTop: 'max(0.75rem, env(safe-area-inset-top))',
+        paddingBottom: 'max(0.75rem, env(safe-area-inset-bottom))',
+      }}
+    >
+      <div className="flex shrink-0 items-center justify-between px-4 pb-2 text-paper">
+        <span className="font-display text-lg font-semibold">
+          Pagina {index + 1} de {total}
+        </span>
         <button
+          ref={closeRef}
           type="button"
-          onClick={onRestart}
-          className="btn-ghost flex min-h-[52px] items-center justify-center gap-1.5 rounded-lg px-4 font-display text-base font-semibold text-cocoa-900"
+          onClick={onClose}
+          aria-label="Cerrar"
+          className="flex h-11 w-11 items-center justify-center rounded-full border-2 border-paper/60"
         >
-          <IconRefresh className="h-4 w-4" />
-          Empezar de nuevo
-        </button>
-        <button
-          type="button"
-          onClick={() => void handleExport()}
-          disabled={exporting || pages.length === 0}
-          className="btn-scan flex min-h-[52px] flex-1 items-center justify-center gap-2 rounded-lg px-5 font-display text-base font-semibold"
-        >
-          <IconDownload className="h-4 w-4" />
-          {exporting ? 'Exportando...' : `Descargar ${format.toUpperCase()}`}
+          <IconX className="h-5 w-5" />
         </button>
       </div>
-    </div>
+
+      <div className="flex min-h-0 flex-1 items-center justify-center px-4" onClick={onClose}>
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src={url ?? page.thumb}
+          alt={`Pagina ${index + 1}`}
+          onClick={(e) => e.stopPropagation()}
+          className="max-h-full max-w-full rounded-sm border-2 border-paper object-contain shadow-paper-ink"
+        />
+      </div>
+
+      <div className="grid shrink-0 grid-cols-3 gap-2 px-4 pt-3 text-paper">
+        <ViewerAction
+          onClick={() => onMove(-1)}
+          disabled={index === 0}
+          icon={<IconChevronLeft className="h-5 w-5" />}
+          label="Antes"
+        />
+        <ViewerAction onClick={onRemove} icon={<IconTrash className="h-5 w-5" />} label="Quitar" danger />
+        <ViewerAction
+          onClick={() => onMove(1)}
+          disabled={index === total - 1}
+          icon={<IconChevronRight className="h-5 w-5" />}
+          label="Despues"
+        />
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+function ViewerAction({
+  onClick,
+  disabled,
+  icon,
+  label,
+  danger,
+}: {
+  onClick: () => void;
+  disabled?: boolean;
+  icon: React.ReactNode;
+  label: string;
+  danger?: boolean;
+}): React.ReactElement {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className={`flex min-h-[56px] flex-col items-center justify-center gap-0.5 rounded-lg border-2 text-sm font-semibold disabled:opacity-30 ${
+        danger ? 'border-stamp-600 bg-stamp-600 text-paper' : 'border-paper/50 text-paper'
+      }`}
+    >
+      {icon}
+      {label}
+    </button>
   );
 }

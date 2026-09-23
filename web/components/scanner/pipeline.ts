@@ -76,6 +76,10 @@ export function renderEdited(
   ictx.restore();
 
   const processed = extractQuad(ictx, rotW, rotH, state.quad);
+  // Liberar YA el intermedio: iOS Safari tiene un tope de memoria TOTAL de
+  // canvas (~384 MB) y no lo devuelve hasta el GC; un canvas de 4096px son
+  // ~50 MB. Poner el tamano en 0 libera el backing store inmediatamente.
+  releaseCanvas(inter);
   const filtered = applyFilter(processed, state.filter);
 
   const out = document.createElement('canvas');
@@ -185,10 +189,49 @@ export async function loadImageFromFile(file: File): Promise<HTMLImageElement> {
     const ctx = c.getContext('2d');
     if (!ctx) return img;
     ctx.drawImage(img, 0, 0, c.width, c.height);
-    return await loadImage(c.toDataURL('image/jpeg', 0.92));
+    const dataUrl = c.toDataURL('image/jpeg', 0.92);
+    releaseCanvas(c);
+    return await loadImage(dataUrl);
   } finally {
     URL.revokeObjectURL(url);
   }
+}
+
+/**
+ * Dibuja la imagen ROTADA directamente a tamano reducido (lado mayor <=
+ * maxSide), sin pasar por un canvas intermedio a resolucion completa.
+ * Es la base del preview del editor: rotar/filtrar a 4096px en cada
+ * cambio de esquina congelaba el telefono.
+ */
+export function renderRotatedPreview(
+  image: HTMLImageElement,
+  rotation: number,
+  maxSide: number,
+): HTMLCanvasElement {
+  const srcW = image.naturalWidth;
+  const srcH = image.naturalHeight;
+  const rot = ((rotation % 360) + 360) % 360;
+  const swapped = rot === 90 || rot === 270;
+  const rotW = swapped ? srcH : srcW;
+  const rotH = swapped ? srcW : srcH;
+  const scale = Math.min(1, maxSide / Math.max(rotW, rotH, 1));
+  const w = Math.max(1, Math.round(rotW * scale));
+  const h = Math.max(1, Math.round(rotH * scale));
+  const c = document.createElement('canvas');
+  c.width = w;
+  c.height = h;
+  const ctx = c.getContext('2d');
+  if (!ctx) throw new Error('canvas 2d no disponible');
+  ctx.translate(w / 2, h / 2);
+  ctx.rotate((rot * Math.PI) / 180);
+  ctx.drawImage(image, (-srcW * scale) / 2, (-srcH * scale) / 2, srcW * scale, srcH * scale);
+  return c;
+}
+
+/** Libera el backing store de un canvas que ya no se usa (ver renderEdited). */
+export function releaseCanvas(c: HTMLCanvasElement): void {
+  c.width = 0;
+  c.height = 0;
 }
 
 function loadImage(src: string): Promise<HTMLImageElement> {

@@ -1,90 +1,134 @@
 /**
- * Helpers de exportacion. Mantenemos las dependencias fuera del bundle
- * principal: jsPDF se carga con dynamic import solo cuando el usuario
- * pide PDF. Asi `/scanner` no paga ~150 KB extra si nadie exporta a PDF.
+ * Helpers de exportacion. jsPDF se carga con dynamic import solo cuando el
+ * usuario pide PDF, asi el bundle principal no paga ~150 KB extra.
+ *
+ * Las paginas llegan como JPEG ya codificados (ver pages.ts): el PDF y el
+ * JPG los usan tal cual, sin recomprimir.
  */
 
 export type ExportFormat = 'png' | 'jpg' | 'pdf';
 
 export interface ExportPageInput {
-  canvas: HTMLCanvasElement;
-  filename: string;
+  blob: Blob;
+  width: number;
+  height: number;
 }
 
-export async function exportSinglePage(
-  page: ExportPageInput,
-  format: ExportFormat,
-): Promise<Blob> {
-  switch (format) {
-    case 'png':
-      return canvasToBlob(page.canvas, 'image/png');
-    case 'jpg':
-      return canvasToBlob(page.canvas, 'image/jpeg', 0.92);
-    case 'pdf':
-      return canvasesToPdfBlob([page.canvas]);
-  }
+const DEFAULT_NAME = 'escaneo';
+const MAX_NAME_LENGTH = 80;
+
+/**
+ * Nombre de archivo seguro SIN destrozar el espanol: se conservan letras
+ * y numeros Unicode (a, n, u con tilde...), "_" y "-". Espacios y el resto
+ * -> "_" (sin repetidos). Antes "Contraseña" salia "Contrase_a".
+ */
+export function sanitizeFilename(raw: string): string {
+  const cleaned = raw
+    .normalize('NFC')
+    .replace(/[^\p{L}\p{N}_-]+/gu, '_')
+    .replace(/_+/g, '_')
+    .replace(/^[_-]+|[_-]+$/g, '')
+    .slice(0, MAX_NAME_LENGTH);
+  return cleaned || DEFAULT_NAME;
 }
 
-export async function exportPages(
+/** A4 en puntos PDF (1 pt = 1/72 in). */
+const A4_SHORT_PT = 595.28;
+const A4_LONG_PT = 841.89;
+
+/**
+ * Tamano fisico de la pagina PDF: el aspecto de la imagen, escalado para
+ * caber en un A4 (en su orientacion). Antes se usaba 1 px = 1 pt: una
+ * pagina de 4096px media 1.4 m y al imprimir salia ampliada/cortada.
+ * La resolucion no se pierde: el JPEG se incrusta completo (~350 dpi).
+ */
+export function pdfPageSize(w: number, h: number): { width: number; height: number } {
+  const portrait = h >= w;
+  const boxW = portrait ? A4_SHORT_PT : A4_LONG_PT;
+  const boxH = portrait ? A4_LONG_PT : A4_SHORT_PT;
+  const s = Math.min(boxW / w, boxH / h);
+  return { width: w * s, height: h * s };
+}
+
+/** Nombres de salida: "base.ext" para 1 archivo, "base_1.ext".. para varios. */
+export function outputNames(base: string, count: number, ext: string): string[] {
+  if (count === 1) return [`${base}.${ext}`];
+  return Array.from({ length: count }, (_, i) => `${base}_${i + 1}.${ext}`);
+}
+
+/**
+ * Genera los archivos a entregar:
+ *   - PDF: un solo archivo con todas las paginas.
+ *   - JPG/PNG: UN ARCHIVO POR PAGINA (antes se exportaba solo la primera y
+ *     el resto se perdia sin aviso claro).
+ */
+export async function exportFiles(
   pages: ExportPageInput[],
   format: ExportFormat,
-): Promise<{ blob: Blob; filename: string }> {
+  baseName: string,
+): Promise<File[]> {
   if (pages.length === 0) throw new Error('No hay paginas para exportar');
+  const base = sanitizeFilename(baseName);
 
-  // Multi-pagina solo tiene sentido en PDF. En PNG/JPG exportamos la
-  // primera pagina y avisamos al caller con el filename del set.
   if (format === 'pdf') {
-    const blob = await canvasesToPdfBlob(pages.map((p) => p.canvas));
-    const base = pages[0]!.filename;
-    const filename = pages.length > 1 ? `${base}_${pages.length}p.pdf` : `${base}.pdf`;
-    return { blob, filename };
+    const blob = await pagesToPdfBlob(pages);
+    const name = pages.length > 1 ? `${base}_${pages.length}p.pdf` : `${base}.pdf`;
+    return [new File([blob], name, { type: 'application/pdf' })];
   }
 
-  const blob = await exportSinglePage(pages[0]!, format);
-  const ext = format === 'png' ? 'png' : 'jpg';
-  return { blob, filename: `${pages[0]!.filename}.${ext}` };
+  const names = outputNames(base, pages.length, format);
+  if (format === 'jpg') {
+    return pages.map((p, i) => new File([p.blob], names[i]!, { type: 'image/jpeg' }));
+  }
+
+  // PNG: decodificar pagina por pagina (una sola en memoria a la vez).
+  const files: File[] = [];
+  for (let i = 0; i < pages.length; i++) {
+    const png = await jpegToPng(pages[i]!.blob);
+    files.push(new File([png], names[i]!, { type: 'image/png' }));
+  }
+  return files;
 }
 
-function canvasToBlob(
-  canvas: HTMLCanvasElement,
-  mime: string,
-  quality?: number,
-): Promise<Blob> {
-  return new Promise((resolve, reject) => {
-    canvas.toBlob(
-      (blob) => (blob ? resolve(blob) : reject(new Error('toBlob fallo'))),
-      mime,
-      quality,
+async function jpegToPng(blob: Blob): Promise<Blob> {
+  const bmp = await createImageBitmap(blob);
+  try {
+    const c = document.createElement('canvas');
+    c.width = bmp.width;
+    c.height = bmp.height;
+    const ctx = c.getContext('2d');
+    if (!ctx) throw new Error('canvas 2d no disponible');
+    ctx.drawImage(bmp, 0, 0);
+    const out = await new Promise<Blob>((resolve, reject) =>
+      c.toBlob((b) => (b ? resolve(b) : reject(new Error('No se pudo generar el PNG'))), 'image/png'),
     );
-  });
+    c.width = 0;
+    c.height = 0;
+    return out;
+  } finally {
+    bmp.close();
+  }
 }
 
-async function canvasesToPdfBlob(canvases: HTMLCanvasElement[]): Promise<Blob> {
+async function pagesToPdfBlob(pages: ExportPageInput[]): Promise<Blob> {
   const { jsPDF } = await import('jspdf');
-  // Tamanio en puntos PDF (1 pt = 1/72 in). Para no perder calidad,
-  // usamos el tamanio real del canvas como tamanio de pagina, asi el ratio
-  // se preserva y no escalamos (lo que pixelaria al imprimir).
-  const first = canvases[0]!;
-  const orientation = first.width >= first.height ? 'landscape' : 'portrait';
+  const first = pdfPageSize(pages[0]!.width, pages[0]!.height);
   const pdf = new jsPDF({
-    unit: 'px',
+    unit: 'pt',
     format: [first.width, first.height],
-    orientation,
-    hotfixes: ['px_scaling'],
+    orientation: first.width > first.height ? 'landscape' : 'portrait',
+    compress: true,
   });
 
-  for (let i = 0; i < canvases.length; i++) {
-    const c = canvases[i]!;
+  for (let i = 0; i < pages.length; i++) {
+    const p = pages[i]!;
+    const size = pdfPageSize(p.width, p.height);
     if (i > 0) {
-      pdf.addPage(
-        [c.width, c.height],
-        c.width >= c.height ? 'landscape' : 'portrait',
-      );
+      pdf.addPage([size.width, size.height], size.width > size.height ? 'landscape' : 'portrait');
     }
-    // JPEG en lugar de PNG: ~5x mas pequeno para fotos / scans en color.
-    // Para B&N puro la diferencia es menor pero igual gana JPEG en tamano.
-    const dataUrl = c.toDataURL('image/jpeg', 0.9);
-    pdf.addImage(dataUrl, 'JPEG', 0, 0, c.width, c.height, undefined, 'FAST');
+    // El JPEG se incrusta tal cual (DCTDecode): sin recomprimir.
+    const bytes = new Uint8Array(await p.blob.arrayBuffer());
+    pdf.addImage(bytes, 'JPEG', 0, 0, size.width, size.height, undefined, 'NONE');
   }
 
   return pdf.output('blob');
@@ -103,54 +147,60 @@ export function downloadBlob(blob: Blob, filename: string): void {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-/** MIME por extension del archivo exportado. */
-function mimeOf(filename: string): string {
-  if (filename.endsWith('.png')) return 'image/png';
-  if (filename.endsWith('.jpg') || filename.endsWith('.jpeg')) return 'image/jpeg';
-  if (filename.endsWith('.pdf')) return 'application/pdf';
-  return 'application/octet-stream';
-}
+export type SaveResult = 'shared' | 'downloaded' | 'cancelled' | 'needs-gesture';
 
-/**
- * Guarda el archivo con la mejor via disponible en el dispositivo:
- *
- *   - En movil (iOS/Android) con Web Share API de archivos: abre el
- *     share sheet nativo — en iPhone eso incluye "Guardar imagen", que
- *     lleva JPG/PNG directo a la FOTOTECA (una descarga normal en iOS
- *     termina en la app Archivos, que no es lo que la gente espera).
- *   - En desktop o sin soporte: descarga clasica.
- *
- * Si el usuario cancela el share sheet (AbortError) no hacemos fallback:
- * cancelar es una decision, no un fallo.
- */
-export async function saveBlob(
-  blob: Blob,
-  filename: string,
-): Promise<'shared' | 'downloaded' | 'cancelled'> {
-  const mime = mimeOf(filename);
-  const file = new File([blob], filename, { type: mime });
-
+function canShareFiles(files: File[]): boolean {
   const isTouchDevice =
     typeof navigator !== 'undefined' &&
     (navigator.maxTouchPoints > 0 || 'ontouchstart' in window);
-
-  if (
+  return (
     isTouchDevice &&
     typeof navigator.canShare === 'function' &&
     typeof navigator.share === 'function' &&
-    navigator.canShare({ files: [file] })
-  ) {
-    try {
-      await navigator.share({ files: [file] });
-      return 'shared';
-    } catch (err) {
-      if (err instanceof Error && err.name === 'AbortError') {
-        return 'cancelled';
-      }
-      // NotAllowedError / DataError / etc: cae a descarga clasica.
-    }
-  }
+    navigator.canShare({ files })
+  );
+}
 
-  downloadBlob(blob, filename);
+/**
+ * Entrega los archivos por la mejor via del dispositivo:
+ *
+ *   - Movil con Web Share de archivos: share sheet nativo (en iPhone
+ *     incluye "Guardar imagen/N imagenes" -> FOTOTECA; una descarga normal
+ *     termina en Archivos, que no es lo que la gente espera).
+ *   - Desktop o sin soporte: descarga clasica (una por archivo).
+ *
+ * 'needs-gesture': Safari exige que share() ocurra DENTRO de un toque del
+ * usuario. Si generar el PDF tardo, esa "activacion" ya caduco y share()
+ * lanza NotAllowedError. Antes se caia a descarga (el JPG terminaba en
+ * Archivos). Ahora el caller muestra un boton "Guardar" que llama a
+ * shareFiles() en un toque nuevo, con los archivos ya listos.
+ */
+export async function saveFiles(files: File[]): Promise<SaveResult> {
+  if (canShareFiles(files)) {
+    const r = await shareFiles(files);
+    if (r !== 'failed') return r;
+  }
+  await downloadAll(files);
   return 'downloaded';
+}
+
+/** Llama a navigator.share. Debe invocarse directo desde un toque. */
+export async function shareFiles(
+  files: File[],
+): Promise<'shared' | 'cancelled' | 'needs-gesture' | 'failed'> {
+  try {
+    await navigator.share({ files });
+    return 'shared';
+  } catch (err) {
+    if (err instanceof Error && err.name === 'AbortError') return 'cancelled';
+    if (err instanceof Error && err.name === 'NotAllowedError') return 'needs-gesture';
+    return 'failed';
+  }
+}
+
+export async function downloadAll(files: File[]): Promise<void> {
+  for (let i = 0; i < files.length; i++) {
+    if (i > 0) await new Promise((r) => setTimeout(r, 350));
+    downloadBlob(files[i]!, files[i]!.name);
+  }
 }

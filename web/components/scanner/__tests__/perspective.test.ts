@@ -274,6 +274,25 @@ describe('warpPerspective', () => {
     expect(out!.data[ci]).toBeGreaterThan(200);
   });
 
+  it('acota la salida al lado maximo conservando el aspecto', () => {
+    // Quad muy inclinado: su borde superior mide la diagonal (~566px)
+    // sobre una fuente de 400px. Con tope 300 la salida no pasa de 300.
+    const src = makeImageData(400, 400, () => [128, 128, 128]);
+    const quadPx: Quad = [
+      { x: 0, y: 0 },
+      { x: 400, y: 400 },
+      { x: 300, y: 400 },
+      { x: 0, y: 120 },
+    ];
+    const free = warpPerspective(src, quadPx, 10_000);
+    const capped = warpPerspective(src, quadPx, 300);
+    expect(free).not.toBeNull();
+    expect(capped).not.toBeNull();
+    expect(free!.width).toBeGreaterThan(400);
+    expect(Math.max(capped!.width, capped!.height)).toBe(300);
+    expect(capped!.width / capped!.height).toBeCloseTo(free!.width / free!.height, 1);
+  });
+
   it('devuelve null para quad degenerado', () => {
     const src = makeImageData(4, 4, () => [100, 100, 100]);
     const degenerate: Quad = [

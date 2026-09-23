@@ -166,6 +166,9 @@ export function applyHomography(h: number[], p: Point): Point {
   };
 }
 
+/** Lado maximo de la salida del warp (mismo tope que la carga de imagen). */
+export const WARP_MAX_SIDE = 4096;
+
 export interface WarpResult {
   data: Uint8ClampedArray;
   width: number;
@@ -187,12 +190,23 @@ export interface WarpResult {
  * devuelve null y el caller decide el fallback (tipicamente bounding-box
  * crop).
  */
-export function warpPerspective(src: ImageData, quadPx: Quad): WarpResult | null {
+export function warpPerspective(
+  src: ImageData,
+  quadPx: Quad,
+  maxSide: number = WARP_MAX_SIDE,
+): WarpResult | null {
   if (!isConvexQuad(quadPx)) return null;
   const [tl, tr, br, bl] = quadPx;
 
-  const outW = Math.max(1, Math.round(Math.max(dist(tl, tr), dist(bl, br))));
-  const outH = Math.max(1, Math.round(Math.max(dist(tl, bl), dist(tr, br))));
+  // El lado "largo" de un quad muy inclinado puede superar la diagonal de
+  // la foto (hasta ~1.4x): sin tope, una foto de 4096px producia salidas
+  // de ~5800px (>16.7 MP), por encima del limite de canvas de iOS Safari
+  // -> canvas en blanco. Se escala proporcionalmente al tope.
+  const rawW = Math.max(dist(tl, tr), dist(bl, br));
+  const rawH = Math.max(dist(tl, bl), dist(tr, br));
+  const k = Math.min(1, maxSide / Math.max(rawW, rawH, 1));
+  const outW = Math.max(1, Math.round(rawW * k));
+  const outH = Math.max(1, Math.round(rawH * k));
 
   const dstRect: Quad = [
     { x: 0, y: 0 },
