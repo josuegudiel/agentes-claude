@@ -155,3 +155,32 @@ export function IconDocScan(props: IconProps): React.ReactElement {
     </svg>
   );
 }
+
+export function IconImages(props: IconProps): React.ReactElement {
+  return (
+    <svg {...base(props)}>
+      <rect x="3.5" y="5.5" width="14" height="13" rx="1.5" />
+      <path d="M7 3.5h12.5a1 1 0 0 1 1 1V16" />
+      <path d="m3.5 15.5 4-4 3.5 3.5 2.5-2.5 4 4" />
+      <circle cx="13.5" cy="9.5" r="1.3" />
+    </svg>
+  );
+}
+
+export function IconTrash(props: IconProps): React.ReactElement {
+  return (
+    <svg {...base(props)}>
+      <path d="M4.5 7h15M9.5 7V4.5h5V7M6.5 7l1 12.5h9l1-12.5" />
+      <path d="M10.5 11v5M13.5 11v5" />
+    </svg>
+  );
+}
+
+export function IconShare(props: IconProps): React.ReactElement {
+  return (
+    <svg {...base(props)}>
+      <path d="M12 3.5v11M8 7.5l4-4 4 4" />
+      <path d="M7.5 11h-2v9.5h13V11h-2" />
+    </svg>
+  );
+}

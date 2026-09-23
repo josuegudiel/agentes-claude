@@ -1,6 +1,8 @@
 import { applyFilter, type FilterId } from './filters';
 import {
+  estimateAspectRatio,
   isAxisAlignedRect,
+  WARP_MAX_SIDE,
   warpPerspective,
   type Quad,
 } from './perspective';
@@ -76,6 +78,10 @@ export function renderEdited(
   ictx.restore();
 
   const processed = extractQuad(ictx, rotW, rotH, state.quad);
+  // Liberar YA el intermedio: iOS Safari tiene un tope de memoria TOTAL de
+  // canvas (~384 MB) y no lo devuelve hasta el GC; un canvas de 4096px son
+  // ~50 MB. Poner el tamano en 0 libera el backing store inmediatamente.
+  releaseCanvas(inter);
   const filtered = applyFilter(processed, state.filter);
 
   const out = document.createElement('canvas');
@@ -116,7 +122,10 @@ function extractQuad(
   }
 
   const full = ictx.getImageData(0, 0, rotW, rotH);
-  const warped = warpPerspective(full, quadPx);
+  // Proporcion real del documento (el centro de la foto es el centro
+  // optico: la rotacion en multiplos de 90 grados lo conserva).
+  const aspect = estimateAspectRatio(quadPx, { x: rotW / 2, y: rotH / 2 }, Math.max(rotW, rotH));
+  const warped = warpPerspective(full, quadPx, WARP_MAX_SIDE, aspect);
   if (!warped) return cropBoundingBox(ictx, rotW, rotH, quadPx);
 
   // Copiamos al buffer del ImageData en vez de pasarlo al constructor:
@@ -144,8 +153,12 @@ function cropBoundingBox(
   return ictx.getImageData(x0, y0, w, h);
 }
 
-/** Lado maximo tras el downscale para el pipeline (filtros/warp O(n)). */
-const MAX_SIDE = 4096;
+/**
+ * Lado maximo tras el downscale para el pipeline (filtros/warp O(n)).
+ * Un poco mas que el A4 a 300 dpi de salida (3508): margen para el recorte
+ * y la perspectiva sin procesar pixeles que no aportan.
+ */
+const MAX_SIDE = 4032;
 /**
  * Tope duro de megapixeles ANTES de aceptar la imagen. Un PNG de pocos KB
  * puede declarar 30000x30000 (bomba de descompresion): el browser intenta
@@ -185,10 +198,49 @@ export async function loadImageFromFile(file: File): Promise<HTMLImageElement> {
     const ctx = c.getContext('2d');
     if (!ctx) return img;
     ctx.drawImage(img, 0, 0, c.width, c.height);
-    return await loadImage(c.toDataURL('image/jpeg', 0.92));
+    const dataUrl = c.toDataURL('image/jpeg', 0.92);
+    releaseCanvas(c);
+    return await loadImage(dataUrl);
   } finally {
     URL.revokeObjectURL(url);
   }
+}
+
+/**
+ * Dibuja la imagen ROTADA directamente a tamano reducido (lado mayor <=
+ * maxSide), sin pasar por un canvas intermedio a resolucion completa.
+ * Es la base del preview del editor: rotar/filtrar a 4096px en cada
+ * cambio de esquina congelaba el telefono.
+ */
+export function renderRotatedPreview(
+  image: HTMLImageElement,
+  rotation: number,
+  maxSide: number,
+): HTMLCanvasElement {
+  const srcW = image.naturalWidth;
+  const srcH = image.naturalHeight;
+  const rot = ((rotation % 360) + 360) % 360;
+  const swapped = rot === 90 || rot === 270;
+  const rotW = swapped ? srcH : srcW;
+  const rotH = swapped ? srcW : srcH;
+  const scale = Math.min(1, maxSide / Math.max(rotW, rotH, 1));
+  const w = Math.max(1, Math.round(rotW * scale));
+  const h = Math.max(1, Math.round(rotH * scale));
+  const c = document.createElement('canvas');
+  c.width = w;
+  c.height = h;
+  const ctx = c.getContext('2d');
+  if (!ctx) throw new Error('canvas 2d no disponible');
+  ctx.translate(w / 2, h / 2);
+  ctx.rotate((rot * Math.PI) / 180);
+  ctx.drawImage(image, (-srcW * scale) / 2, (-srcH * scale) / 2, srcW * scale, srcH * scale);
+  return c;
+}
+
+/** Libera el backing store de un canvas que ya no se usa (ver renderEdited). */
+export function releaseCanvas(c: HTMLCanvasElement): void {
+  c.width = 0;
+  c.height = 0;
 }
 
 function loadImage(src: string): Promise<HTMLImageElement> {

@@ -166,6 +166,80 @@ export function applyHomography(h: number[], p: Point): Point {
   };
 }
 
+/**
+ * Lado maximo de la salida del warp: 3508 px = A4 a 300 dpi, el estandar
+ * de escaneo (mas resolucion engorda el archivo sin mejorar la lectura).
+ */
+export const WARP_MAX_SIDE = 3508;
+
+/**
+ * Proporcion REAL (ancho/alto) del rectangulo fotografiado en perspectiva,
+ * a partir de sus 4 esquinas — metodo de Zhang & He (Microsoft Research,
+ * "Whiteboard scanning and image enhancement", 2007).
+ *
+ * Usar el largo de los bordes en la foto da una proporcion falsa cuando
+ * el telefono esta inclinado (el lado lejano se ve mas corto): el
+ * documento sale estirado o achatado. Zhang & He recuperan la distancia
+ * focal desde las 4 esquinas (asumiendo pixel cuadrado y centro optico en
+ * el centro de la foto) y con ella la proporcion verdadera.
+ *
+ * `center` es el centro optico en pixeles. Devuelve null si la geometria
+ * es degenerada; si los lados opuestos son casi paralelos (foto casi
+ * frontal) la focal no es observable y se usa el cociente de bordes, que
+ * en ese caso ya es correcto.
+ */
+export function estimateAspectRatio(q: Quad, center: Point, maxDim: number): number | null {
+  const [tl, tr, br, bl] = q;
+  // Notacion del paper: m1 = sup-izq, m2 = sup-der, m3 = inf-izq, m4 = inf-der.
+  const u0 = center.x, v0 = center.y;
+  const m1 = [tl.x, tl.y, 1], m2 = [tr.x, tr.y, 1], m3 = [bl.x, bl.y, 1], m4 = [br.x, br.y, 1];
+  const cross = (a: number[], b: number[]): number[] => [
+    a[1]! * b[2]! - a[2]! * b[1]!,
+    a[2]! * b[0]! - a[0]! * b[2]!,
+    a[0]! * b[1]! - a[1]! * b[0]!,
+  ];
+  const dot = (a: number[], b: number[]): number => a[0]! * b[0]! + a[1]! * b[1]! + a[2]! * b[2]!;
+  const c14 = cross(m1, m4);
+  const den2 = dot(cross(m2, m4), m3);
+  const den3 = dot(cross(m3, m4), m2);
+  if (Math.abs(den2) < 1e-9 || Math.abs(den3) < 1e-9) return null;
+  const k2 = dot(c14, m3) / den2;
+  const k3 = dot(c14, m2) / den3;
+  const n2 = [k2 * m2[0]! - m1[0]!, k2 * m2[1]! - m1[1]!, k2 * m2[2]! - m1[2]!];
+  const n3 = [k3 * m3[0]! - m1[0]!, k3 * m3[1]! - m1[1]!, k3 * m3[2]! - m1[2]!];
+  const edgeRatio = Math.sqrt((n2[0]! ** 2 + n2[1]! ** 2) / (n3[0]! ** 2 + n3[1]! ** 2));
+
+  const nz = n2[2]! * n3[2]!;
+  // Lados opuestos paralelos (foto frontal): la focal no es observable y
+  // el cociente de bordes ya es la proporcion real.
+  if (nz === 0) return Number.isFinite(edgeRatio) && edgeRatio > 0 ? edgeRatio : null;
+  const f2 =
+    -(
+      n2[0]! * n3[0]! -
+      (n2[0]! * n3[2]! + n2[2]! * n3[0]!) * u0 +
+      nz * u0 * u0 +
+      (n2[1]! * n3[1]! - (n2[1]! * n3[2]! + n2[2]! * n3[1]!) * v0 + nz * v0 * v0)
+    ) / nz;
+  // Focal implausible (ruido en las esquinas, foto recortada, centro
+  // optico desplazado, o casi frontal: f -> infinito): mejor el cociente
+  // de bordes, que en esos casos es correcto o lo mas seguro.
+  if (!(f2 > 0) || !Number.isFinite(f2)) return edgeRatio;
+  const f = Math.sqrt(f2);
+  if (f < 0.3 * maxDim || f > 6 * maxDim) return edgeRatio;
+  // ratio^2 = (n2' A^-T A^-1 n2) / (n3' A^-T A^-1 n3), A = K de la camara.
+  const q2 = (n: number[]): number => {
+    const x = (n[0]! - u0 * n[2]!) / f;
+    const y = (n[1]! - v0 * n[2]!) / f;
+    return x * x + y * y + n[2]! * n[2]!;
+  };
+  const r = Math.sqrt(q2(n2) / q2(n3));
+  if (!Number.isFinite(r) || r <= 0) return edgeRatio;
+  // Proteccion: si discrepa de forma absurda del cociente de bordes, la
+  // estimacion no es confiable.
+  if (r > edgeRatio * 2 || r < edgeRatio / 2) return edgeRatio;
+  return r;
+}
+
 export interface WarpResult {
   data: Uint8ClampedArray;
   width: number;
@@ -187,12 +261,31 @@ export interface WarpResult {
  * devuelve null y el caller decide el fallback (tipicamente bounding-box
  * crop).
  */
-export function warpPerspective(src: ImageData, quadPx: Quad): WarpResult | null {
+export function warpPerspective(
+  src: ImageData,
+  quadPx: Quad,
+  maxSide: number = WARP_MAX_SIDE,
+  /** Proporcion real ancho/alto (estimateAspectRatio); null = por bordes. */
+  aspect: number | null = null,
+): WarpResult | null {
   if (!isConvexQuad(quadPx)) return null;
   const [tl, tr, br, bl] = quadPx;
 
-  const outW = Math.max(1, Math.round(Math.max(dist(tl, tr), dist(bl, br))));
-  const outH = Math.max(1, Math.round(Math.max(dist(tl, bl), dist(tr, br))));
+  // El lado "largo" de un quad muy inclinado puede superar la diagonal de
+  // la foto (hasta ~1.4x): sin tope, una foto de 4096px producia salidas
+  // de ~5800px (>16.7 MP), por encima del limite de canvas de iOS Safari
+  // -> canvas en blanco. Se escala proporcionalmente al tope.
+  let rawW = Math.max(dist(tl, tr), dist(bl, br));
+  let rawH = Math.max(dist(tl, bl), dist(tr, br));
+  if (aspect && aspect > 0) {
+    // Con la proporcion real: se conserva la resolucion del lado mejor
+    // muestreado y el otro se deriva de la proporcion.
+    if (rawW / rawH >= aspect) rawH = rawW / aspect;
+    else rawW = rawH * aspect;
+  }
+  const k = Math.min(1, maxSide / Math.max(rawW, rawH, 1));
+  const outW = Math.max(1, Math.round(rawW * k));
+  const outH = Math.max(1, Math.round(rawH * k));
 
   const dstRect: Quad = [
     { x: 0, y: 0 },
