@@ -30,9 +30,9 @@ interface Props {
 }
 
 const FORMATS: { id: ExportFormat; label: string; hint: string }[] = [
-  { id: 'pdf', label: 'PDF', hint: 'Todas las paginas en un archivo' },
-  { id: 'jpg', label: 'JPG', hint: 'Una imagen por pagina · va a Fotos' },
-  { id: 'png', label: 'PNG', hint: 'Una imagen por pagina · sin compresion' },
+  { id: 'pdf', label: 'PDF', hint: 'Todas las páginas en un solo archivo' },
+  { id: 'jpg', label: 'JPG', hint: 'Una imagen por página · se guarda en Fotos' },
+  { id: 'png', label: 'PNG', hint: 'Una imagen por página · sin compresión' },
 ];
 
 type Status =
@@ -104,48 +104,46 @@ export function ExportView({
   const n = pages.length;
   const what =
     format === 'pdf'
-      ? `PDF${n > 1 ? ` · ${n} pags` : ''}`
+      ? `PDF${n > 1 ? ` · ${n} pág` : ''}`
       : n > 1
-        ? `${n} imagenes ${format.toUpperCase()}`
+        ? `${n} ${format.toUpperCase()}`
         : format.toUpperCase();
+
+  // Datos tecnicos reales (fila "meta"): tamano de la 1a pagina, dpi del
+  // PDF y peso estimado (las paginas ya son JPEG: PDF y JPG pesan ~eso).
+  const first = pages[0];
+  const totalBytes = pages.reduce((a, p) => a + p.blob.size, 0);
+  const sizeLabel =
+    format === 'png' ? 'SIN PÉRDIDA' : `≈ ${totalBytes >= 1e6 ? (totalBytes / 1e6).toFixed(1) + ' MB' : Math.max(1, Math.round(totalBytes / 1e3)) + ' KB'}`;
 
   const viewIndex = viewing === null ? -1 : pages.findIndex((p) => p.id === viewing);
   const viewPage = viewIndex >= 0 ? pages[viewIndex]! : null;
 
   return (
-    <div className="stage-in flex min-h-0 flex-1 flex-col">
+    <div className="stage-in safe-top flex min-h-0 flex-1 flex-col">
+      {/* Cabecera */}
+      <div className="safe-x flex shrink-0 items-baseline justify-between pb-3">
+        <h2 className="font-display text-[28px] font-extrabold uppercase leading-none tracking-[0.02em]">Exportar</h2>
+        <span className="font-mono text-xs tracking-[0.06em] text-night-400">
+          03/03 · {n} PÁG
+        </span>
+      </div>
+
       {/* Contenido desplazable */}
-      <div className="-mx-1 min-h-0 flex-1 overflow-y-auto px-1 pb-3">
-        <div className="mb-2 flex items-center justify-between gap-2 px-1">
-          <h2 className="font-display text-xs font-semibold uppercase tracking-[0.18em] text-cocoa-500">
-            Paginas ({n})
-          </h2>
-          <button
-            type="button"
-            onClick={onRestart}
-            className="flex min-h-[40px] items-center gap-1.5 rounded-md px-2 text-sm font-semibold text-cocoa-500 underline-offset-4 active:underline"
-          >
-            <IconRefresh className="h-4 w-4" />
-            Empezar de nuevo
-          </button>
-        </div>
-
-        <p className="mb-2 px-1 text-xs text-cocoa-500">Toca una pagina para verla, moverla o quitarla.</p>
-
-        <div className="grid grid-cols-3 gap-3 pt-1 sm:grid-cols-4">
+      <div className="safe-x min-h-0 flex-1 overflow-y-auto pb-3">
+        <div className="grid grid-cols-3 gap-2.5 sm:grid-cols-4">
           {pages.map((p, i) => (
             <button
               key={p.id}
               type="button"
               onClick={() => setViewing(p.id)}
-              aria-label={`Pagina ${i + 1} de ${n}. Ver`}
-              className="relative aspect-[3/4] overflow-hidden rounded-md border-2 border-cocoa-900 bg-paper shadow-paper transition-transform active:scale-[0.97]"
-              style={{ transform: `rotate(${i % 2 === 0 ? -1 : 0.9}deg)` }}
+              aria-label={`Página ${i + 1} de ${n}. Ver`}
+              className="press relative aspect-[3/4] overflow-hidden rounded-xl border border-night-700 bg-night-800"
             >
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img src={p.thumb} alt="" className="h-full w-full object-cover" />
-              <span className="absolute left-1.5 top-1.5 flex h-6 min-w-6 items-center justify-center rounded-full border-2 border-paper bg-cocoa-900 px-1 font-display text-xs font-bold text-paper">
-                {i + 1}
+              <span className="absolute left-1.5 top-1.5 rounded-md bg-night-950 px-1.5 py-0.5 font-mono text-[11px] font-bold text-volt">
+                {String(i + 1).padStart(2, '0')}
               </span>
             </button>
           ))}
@@ -153,21 +151,32 @@ export function ExportView({
           <button
             type="button"
             onClick={onAddPage}
-            className="flex aspect-[3/4] flex-col items-center justify-center gap-1.5 rounded-md border-2 border-dashed border-cocoa-900/50 bg-paper/40 text-cocoa-700 transition-colors active:border-stamp-600 active:text-stamp-600"
+            aria-label="Agregar página"
+            className="press flex aspect-[3/4] flex-col items-center justify-center gap-1.5 rounded-xl border-[1.5px] border-dashed border-night-600 text-night-400 active:border-volt active:text-volt"
           >
-            <IconPlus className="h-7 w-7" />
-            <span className="text-sm font-semibold">Agregar</span>
+            <IconPlus className="h-6 w-6" />
+            <span className="font-display text-[13px] font-bold uppercase tracking-[0.12em]">Añadir</span>
           </button>
         </div>
 
-        <div className="mt-5">
-          <label
-            htmlFor="scan-filename"
-            className="mb-1.5 block px-1 font-display text-xs font-semibold uppercase tracking-[0.18em] text-cocoa-500"
+        <div className="mt-2.5 flex items-center justify-between">
+          <p className="font-mono text-[10px] tracking-[0.08em] text-night-500">TOCA UNA PÁGINA PARA VERLA</p>
+          <button
+            type="button"
+            onClick={onRestart}
+            className="flex min-h-[40px] items-center gap-1.5 font-mono text-[11px] font-bold tracking-[0.08em] text-night-400 active:text-danger"
           >
-            Nombre del archivo
-          </label>
-          {/* text-base (16px): con menos, iOS hace zoom al enfocar el campo. */}
+            <IconRefresh className="h-3.5 w-3.5" />
+            EMPEZAR DE NUEVO
+          </button>
+        </div>
+
+        <label
+          htmlFor="scan-filename"
+          className="mt-2 block rounded-2xl border border-night-700 bg-night-850 px-4 pb-2.5 pt-3 focus-within:border-volt"
+        >
+          <span className="font-mono text-[11px] tracking-[0.08em] text-night-400">NOMBRE DEL ARCHIVO</span>
+          {/* text-lg (18px): con menos de 16px, iOS hace zoom al enfocar. */}
           <input
             id="scan-filename"
             type="text"
@@ -183,17 +192,21 @@ export function ExportView({
             onKeyDown={(e) => {
               if (e.key === 'Enter') e.currentTarget.blur();
             }}
-            className="w-full rounded-lg border-2 border-cocoa-900/30 bg-paper px-4 py-3 text-base text-cocoa-900 shadow-paper-sm outline-none transition-colors focus:border-cocoa-900"
+            className="mt-0.5 block w-full bg-transparent text-lg font-semibold text-night-100 outline-none"
           />
-          <p className="mt-1.5 px-1 text-xs text-cocoa-400">
-            Se guardara como <span className="font-semibold text-cocoa-700">{sanitizeFilename(filename)}</span>
-          </p>
-        </div>
+          <span className="block truncate font-mono text-[10px] tracking-[0.04em] text-night-500">
+            → {sanitizeFilename(filename)}
+          </span>
+        </label>
       </div>
 
       {/* Barra de accion fija al pie */}
-      <div className="safe-bottom shrink-0 border-t-2 border-cocoa-900 pt-3">
-        <div className="grid grid-cols-3 gap-1 rounded-lg border-2 border-cocoa-900 bg-kraft-300 p-1" role="radiogroup" aria-label="Formato">
+      <div className="safe-x safe-bottom shrink-0 border-t border-night-800 pt-3">
+        <div
+          className="grid grid-cols-3 gap-1 rounded-2xl border border-night-700 bg-night-850 p-1"
+          role="radiogroup"
+          aria-label="Formato"
+        >
           {FORMATS.map((f) => {
             const selected = format === f.id;
             return (
@@ -203,8 +216,8 @@ export function ExportView({
                 role="radio"
                 aria-checked={selected}
                 onClick={() => setFormat(f.id)}
-                className={`min-h-[40px] rounded-md font-display text-base font-bold transition-colors ${
-                  selected ? 'bg-paper text-stamp-700 shadow-paper-ink-sm' : 'text-cocoa-700'
+                className={`min-h-[42px] rounded-xl font-display text-lg font-extrabold tracking-[0.12em] transition-colors ${
+                  selected ? 'bg-night-100 text-night-950' : 'text-night-400'
                 }`}
               >
                 {f.label}
@@ -212,12 +225,17 @@ export function ExportView({
             );
           })}
         </div>
-        <p className="mt-1.5 text-center text-xs text-cocoa-500">
-          {FORMATS.find((f) => f.id === format)!.hint}
+        <div className="mt-2 flex justify-between gap-2 px-1 font-mono text-[10.5px] tracking-[0.04em] text-night-400">
+          <span>{first ? `${first.width}×${first.height} PX` : '—'}</span>
+          <span>{format === 'pdf' ? 'A4 · 300 DPI' : format === 'jpg' ? 'JPEG · 92%' : 'PNG'}</span>
+          <span>{n > 0 ? sizeLabel : '—'}</span>
+        </div>
+        <p className="mt-1 text-center font-mono text-[10px] tracking-[0.04em] text-night-500">
+          {FORMATS.find((f) => f.id === format)!.hint.toUpperCase()}
         </p>
 
         {status.kind === 'error' && (
-          <p role="alert" className="mt-2 rounded-md border-2 border-stamp-600 bg-stamp-50 px-3 py-2 text-xs text-stamp-700">
+          <p role="alert" className="mt-2 rounded-xl border border-danger/60 bg-danger/10 px-3 py-2 text-xs text-danger">
             {status.msg}
           </p>
         )}
@@ -226,22 +244,22 @@ export function ExportView({
           <button
             type="button"
             onClick={() => void handleShareReady(status.files)}
-            className="btn-scan mt-2 flex min-h-[54px] w-full items-center justify-center gap-2 rounded-lg px-5 font-display text-lg font-semibold"
+            className="press mt-2.5 flex h-14 w-full items-center justify-center gap-2.5 rounded-2xl bg-volt px-5 font-display text-xl font-extrabold uppercase tracking-[0.08em] text-night-950"
           >
             <IconShare className="h-5 w-5" />
-            Archivo listo · toca para guardar
+            Listo · toca para guardar
           </button>
         ) : (
           <button
             type="button"
             onClick={() => void handleSave()}
             disabled={status.kind === 'working' || n === 0}
-            className="btn-scan mt-2 flex min-h-[54px] w-full items-center justify-center gap-2 rounded-lg px-5 font-display text-lg font-semibold"
+            className="press mt-2.5 flex h-14 w-full items-center justify-center gap-2.5 rounded-2xl bg-volt px-5 font-display text-xl font-extrabold uppercase tracking-[0.1em] text-night-950 disabled:opacity-50"
           >
             {status.kind === 'working' ? (
               <>
                 <span className="spinner spinner-sm" aria-hidden />
-                Preparando...
+                Preparando
               </>
             ) : (
               <>
@@ -251,8 +269,8 @@ export function ExportView({
             )}
           </button>
         )}
-        <p className="mt-1 min-h-[1rem] text-center text-xs font-semibold text-cocoa-700" role="status">
-          {status.kind === 'done' ? status.msg : ''}
+        <p className="mt-1 min-h-[1rem] text-center font-mono text-[11px] font-bold tracking-[0.06em] text-volt" role="status">
+          {status.kind === 'done' ? status.msg.toUpperCase() : ''}
         </p>
       </div>
 
@@ -306,30 +324,30 @@ function PageViewer({
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
 
-  // Portal a <body>: la vista padre tiene una animacion con transform, que
-  // convierte a los hijos `fixed` en relativos a ella (el visor quedaba
-  // recortado debajo de las pestanas en vez de cubrir la pantalla).
+  // Portal a <body>: el visor cubre toda la pantalla aunque algun ancestro
+  // tenga transform/animacion (que volveria relativos a los `fixed`).
   return createPortal(
     <div
       role="dialog"
       aria-modal="true"
-      aria-label={`Pagina ${index + 1} de ${total}`}
-      className="fixed inset-0 z-50 flex flex-col bg-cocoa-900/95"
+      aria-label={`Página ${index + 1} de ${total}`}
+      className="fixed inset-0 z-50 flex flex-col bg-night-950/[0.97]"
       style={{
         paddingTop: 'max(0.75rem, env(safe-area-inset-top))',
-        paddingBottom: 'max(0.75rem, env(safe-area-inset-bottom))',
+        paddingBottom: 'max(0.875rem, env(safe-area-inset-bottom))',
       }}
     >
-      <div className="flex shrink-0 items-center justify-between px-4 pb-2 text-paper">
-        <span className="font-display text-lg font-semibold">
-          Pagina {index + 1} de {total}
+      <div className="flex shrink-0 items-center justify-between px-4 pb-3">
+        <span className="font-display text-2xl font-extrabold uppercase tracking-[0.04em]">
+          Página <span className="font-mono text-lg text-volt">{String(index + 1).padStart(2, '0')}</span>
+          <span className="font-mono text-lg text-night-500">/{String(total).padStart(2, '0')}</span>
         </span>
         <button
           ref={closeRef}
           type="button"
           onClick={onClose}
           aria-label="Cerrar"
-          className="flex h-11 w-11 items-center justify-center rounded-full border-2 border-paper/60"
+          className="press flex h-11 w-11 items-center justify-center rounded-full border border-night-600"
         >
           <IconX className="h-5 w-5" />
         </button>
@@ -339,25 +357,27 @@ function PageViewer({
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
           src={url ?? page.thumb}
-          alt={`Pagina ${index + 1}`}
+          alt={`Página ${index + 1}`}
           onClick={(e) => e.stopPropagation()}
-          className="max-h-full max-w-full rounded-sm border-2 border-paper object-contain shadow-paper-ink"
+          className="max-h-full max-w-full rounded-md object-contain shadow-[0_20px_50px_rgba(0,0,0,0.6)]"
         />
       </div>
 
-      <div className="grid shrink-0 grid-cols-3 gap-2 px-4 pt-3 text-paper">
+      <div className="grid shrink-0 grid-cols-3 gap-2.5 px-4 pt-3.5">
         <ViewerAction
           onClick={() => onMove(-1)}
           disabled={index === 0}
           icon={<IconChevronLeft className="h-5 w-5" />}
-          label="Antes"
+          label="ANTES"
+          ariaLabel="Mover antes"
         />
-        <ViewerAction onClick={onRemove} icon={<IconTrash className="h-5 w-5" />} label="Quitar" danger />
+        <ViewerAction onClick={onRemove} icon={<IconTrash className="h-5 w-5" />} label="QUITAR" ariaLabel="Quitar" danger />
         <ViewerAction
           onClick={() => onMove(1)}
           disabled={index === total - 1}
           icon={<IconChevronRight className="h-5 w-5" />}
-          label="Despues"
+          label="DESPUÉS"
+          ariaLabel="Mover después"
         />
       </div>
     </div>,
@@ -370,12 +390,14 @@ function ViewerAction({
   disabled,
   icon,
   label,
+  ariaLabel,
   danger,
 }: {
   onClick: () => void;
   disabled?: boolean;
   icon: React.ReactNode;
   label: string;
+  ariaLabel: string;
   danger?: boolean;
 }): React.ReactElement {
   return (
@@ -383,8 +405,9 @@ function ViewerAction({
       type="button"
       onClick={onClick}
       disabled={disabled}
-      className={`flex min-h-[56px] flex-col items-center justify-center gap-0.5 rounded-lg border-2 text-sm font-semibold disabled:opacity-30 ${
-        danger ? 'border-stamp-600 bg-stamp-600 text-paper' : 'border-paper/50 text-paper'
+      aria-label={ariaLabel}
+      className={`press flex min-h-[58px] flex-col items-center justify-center gap-1 rounded-2xl border font-mono text-[11px] font-bold tracking-[0.08em] disabled:opacity-25 ${
+        danger ? 'border-danger/70 text-danger' : 'border-night-600 text-night-100'
       }`}
     >
       {icon}

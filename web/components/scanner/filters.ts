@@ -40,15 +40,15 @@ export interface FilterMeta {
 
 export const FILTERS: FilterMeta[] = [
   { id: 'original', label: 'Original', hint: 'Sin procesamiento' },
-  { id: 'magic', label: 'Magico', hint: 'Escaneo automatico: papel parejo, tinta firme, colores intactos' },
+  { id: 'magic', label: 'Mágico', hint: 'Escaneo automatico: papel parejo, tinta firme, colores intactos' },
   { id: 'doc', label: 'Documento', hint: 'Blanquea el papel y quita sombras; conserva sellos y firmas en color' },
   { id: 'shadow', label: 'Sin sombra', hint: 'Solo levanta sombras y empareja la luz — sin blanquear ni tocar colores' },
   { id: 'receipt', label: 'Factura', hint: 'Realza texto desvanecido de tickets, facturas y papel termico' },
   { id: 'bw', label: 'B&N', hint: 'Blanco y negro adaptativo (Sauvola) para maxima legibilidad' },
   { id: 'grayscale', label: 'Gris', hint: 'Escala de grises con contraste automatico' },
-  { id: 'sharpen', label: 'Nitido', hint: 'Enfoca capturas levemente borrosas' },
+  { id: 'sharpen', label: 'Nítido', hint: 'Enfoca capturas levemente borrosas' },
   { id: 'photo', label: 'Foto', hint: 'Balance de blancos y contraste natural para fotografias' },
-  { id: 'vivid', label: 'Vivido', hint: 'Colores intensos y contraste marcado' },
+  { id: 'vivid', label: 'Vívido', hint: 'Colores intensos y contraste marcado' },
 ];
 
 export function applyFilter(data: ImageData, filter: FilterId): ImageData {
