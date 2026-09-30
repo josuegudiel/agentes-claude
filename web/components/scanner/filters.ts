@@ -537,7 +537,8 @@ function sauvolaBw(data: ImageData): ImageData {
 
 /**
  * Limpieza de bordes: si el recorte quedo 1-2 px por fuera de la hoja, la
- * mesa aparece como un filo oscuro pegado al borde. Por cada fila/columna
+ * mesa aparece como un filo oscuro pegado al borde (y en hojas dobladas,
+ * como manchas en las esquinas). Por cada fila/columna
  * se recorre desde el borde hacia adentro: una corrida oscura que NACE en
  * el borde y termina antes del 1.2% del lado se pinta de blanco. El texto
  * nunca toca el borde (margenes), asi que no se ve afectado.
@@ -564,6 +565,64 @@ function cleanBorders(data: ImageData): void {
   sweep(h, maxX, (y, d) => (y * w + (w - 1 - d)) * 4); // derecha
   sweep(w, maxY, (x, d) => (d * w + x) * 4); // arriba
   sweep(w, maxY, (x, d) => ((h - 1 - d) * w + x) * 4); // abajo
+
+  // Segundo paso: manchas oscuras que no salen del MARGEN exterior (4% del
+  // lado): restos de mesa en una esquina, la sombra del borde de la hoja,
+  // un clip cortado. El barrido anterior solo ve lo que nace pegado al
+  // borde en linea recta. Reglas:
+  //   - si la mancha sigue hacia adentro de la pagina (texto, tabla): se queda;
+  //   - si TOCA el borde de la imagen: es mesa/sombra -> se borra;
+  //   - si no lo toca, solo se borra si esta entera en el 2% exterior
+  //     (un numero de pagina a 3% del borde se conserva).
+  const bx = Math.max(3, Math.round(w * 0.04));
+  const by = Math.max(3, Math.round(h * 0.04));
+  const nx2 = Math.max(2, Math.round(w * 0.02));
+  const ny2 = Math.max(2, Math.round(h * 0.02));
+  const inBand = (x: number, y: number): boolean => x < bx || x >= w - bx || y < by || y >= h - by;
+  const seen = new Uint8Array(w * h);
+  const stack: number[] = [];
+  const comp: number[] = [];
+  const visit = (x: number, y: number): void => {
+    const p = y * w + x;
+    if (seen[p] || !dark(p * 4)) return;
+    seen[p] = 1;
+    stack.push(p);
+    comp.length = 0;
+    let inward = false;
+    let touchesEdge = false;
+    let outer = true; // entera dentro del 2% exterior
+    while (stack.length) {
+      const q = stack.pop()!;
+      comp.push(q);
+      const qx = q % w, qy = (q - qx) / w;
+      if (qx === 0 || qy === 0 || qx === w - 1 || qy === h - 1) touchesEdge = true;
+      if (qx >= nx2 && qx < w - nx2 && qy >= ny2 && qy < h - ny2) outer = false;
+      for (let k = 0; k < 4; k++) {
+        const nx = k === 0 ? qx - 1 : k === 1 ? qx + 1 : qx;
+        const ny = k === 2 ? qy - 1 : k === 3 ? qy + 1 : qy;
+        if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+        const np = ny * w + nx;
+        if (!dark(np * 4)) continue;
+        if (!inBand(nx, ny)) {
+          inward = true;
+          continue;
+        }
+        if (!seen[np]) {
+          seen[np] = 1;
+          stack.push(np);
+        }
+      }
+    }
+    if (!inward && (touchesEdge || outer)) for (const q of comp) paint(q * 4);
+  };
+  for (let y = 0; y < h; y++) {
+    if (y < by || y >= h - by) {
+      for (let x = 0; x < w; x++) visit(x, y);
+    } else {
+      for (let x = 0; x < bx; x++) visit(x, y);
+      for (let x = w - bx; x < w; x++) visit(x, y);
+    }
+  }
 }
 
 /**

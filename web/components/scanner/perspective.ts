@@ -267,6 +267,13 @@ export function warpPerspective(
   maxSide: number = WARP_MAX_SIDE,
   /** Proporcion real ancho/alto (estimateAspectRatio); null = por bordes. */
   aspect: number | null = null,
+  /**
+   * Mapeo previo opcional (enderezado de renglones): dado el tamano de
+   * salida, devuelve una funcion que para cada fila indica de que punto
+   * del rectangulo SIN enderezar tomar cada pixel. Asi perspectiva y
+   * enderezado son UN solo remuestreo (sin doble suavizado).
+   */
+  rowMapFactory?: (outW: number, outH: number) => (y: number, mx: Float32Array, my: Float32Array) => void,
 ): WarpResult | null {
   if (!isConvexQuad(quadPx)) return null;
   const [tl, tr, br, bl] = quadPx;
@@ -307,12 +314,17 @@ export function warpPerspective(
   const h3 = h[3]!, h4 = h[4]!, h5 = h[5]!;
   const h6 = h[6]!, h7 = h[7]!, h8 = h[8]!;
 
+  const rowMap = rowMapFactory ? rowMapFactory(outW, outH) : null;
+  const mxs = new Float32Array(outW), mys = new Float32Array(outW);
   let o = 0;
   for (let y = 0; y < outH; y++) {
+    if (rowMap) rowMap(y, mxs, mys);
     for (let x = 0; x < outW; x++, o += 4) {
-      const w = h6 * x + h7 * y + h8;
-      const sx = (h0 * x + h1 * y + h2) / w;
-      const sy = (h3 * x + h4 * y + h5) / w;
+      const ux = rowMap ? mxs[x]! : x;
+      const uy = rowMap ? mys[x]! : y;
+      const w = h6 * ux + h7 * uy + h8;
+      const sx = (h0 * ux + h1 * uy + h2) / w;
+      const sy = (h3 * ux + h4 * uy + h5) / w;
 
       // Bilineal con clamp a los bordes de la fuente.
       const x0 = Math.floor(sx);

@@ -1,3 +1,4 @@
+import { estimateStraighten, straightenRowMapper } from './dewarp';
 import { applyFilter, type FilterId } from './filters';
 import {
   estimateAspectRatio,
@@ -29,6 +30,11 @@ export interface EditState {
    */
   quad: Quad | null;
   filter: FilterId;
+  /**
+   * Enderezar renglones (hoja doblada/arrugada): rotacion + comba
+   * estimadas del propio texto. Por defecto activo.
+   */
+  straighten?: boolean;
 }
 
 export const DEFAULT_EDIT: EditState = {
@@ -77,7 +83,10 @@ export function renderEdited(
   ictx.drawImage(source, -srcW / 2, -srcH / 2, srcW, srcH);
   ictx.restore();
 
-  const processed = extractQuad(ictx, rotW, rotH, state.quad);
+  // El enderezado de renglones solo en el render final (las miniaturas
+  // son demasiado chicas para ver renglones).
+  const straighten = state.straighten !== false && rotW * rotH >= 400_000;
+  const processed = extractQuad(ictx, rotW, rotH, state.quad, straighten);
   // Liberar YA el intermedio: iOS Safari tiene un tope de memoria TOTAL de
   // canvas (~384 MB) y no lo devuelve hasta el GC; un canvas de 4096px son
   // ~50 MB. Poner el tamano en 0 libera el backing store inmediatamente.
@@ -107,17 +116,24 @@ function extractQuad(
   rotW: number,
   rotH: number,
   quad: Quad | null,
+  straighten: boolean,
 ): ImageData {
-  if (!quad) return ictx.getImageData(0, 0, rotW, rotH);
-
-  const quadPx: Quad = [
-    { x: quad[0].x * rotW, y: quad[0].y * rotH },
-    { x: quad[1].x * rotW, y: quad[1].y * rotH },
-    { x: quad[2].x * rotW, y: quad[2].y * rotH },
-    { x: quad[3].x * rotW, y: quad[3].y * rotH },
+  if (!quad && !straighten) return ictx.getImageData(0, 0, rotW, rotH);
+  const q: Quad = quad ?? [
+    { x: 0, y: 0 },
+    { x: 1, y: 0 },
+    { x: 1, y: 1 },
+    { x: 0, y: 1 },
   ];
 
-  if (isAxisAlignedRect(quad)) {
+  const quadPx: Quad = [
+    { x: q[0].x * rotW, y: q[0].y * rotH },
+    { x: q[1].x * rotW, y: q[1].y * rotH },
+    { x: q[2].x * rotW, y: q[2].y * rotH },
+    { x: q[3].x * rotW, y: q[3].y * rotH },
+  ];
+
+  if (!straighten && isAxisAlignedRect(q)) {
     return cropBoundingBox(ictx, rotW, rotH, quadPx);
   }
 
@@ -125,7 +141,25 @@ function extractQuad(
   // Proporcion real del documento (el centro de la foto es el centro
   // optico: la rotacion en multiplos de 90 grados lo conserva).
   const aspect = estimateAspectRatio(quadPx, { x: rotW / 2, y: rotH / 2 }, Math.max(rotW, rotH));
-  const warped = warpPerspective(full, quadPx, WARP_MAX_SIDE, aspect);
+
+  // Hoja doblada/arrugada: la perspectiva supone un plano y los renglones
+  // quedan torcidos. Se estima el enderezado sobre una version reducida
+  // de la pagina ya rectificada y se aplica EN EL MISMO warp final (un
+  // solo remuestreo: sin doble suavizado ni pasada extra).
+  let rowMapFactory:
+    | ((outW: number, outH: number) => (y: number, mx: Float32Array, my: Float32Array) => void)
+    | undefined;
+  if (straighten) {
+    const small = warpPerspective(full, quadPx, 1200, aspect);
+    if (small) {
+      const img = new ImageData(small.width, small.height);
+      img.data.set(small.data);
+      const model = estimateStraighten(img);
+      if (model) rowMapFactory = (w, h) => straightenRowMapper(model, w, h);
+    }
+  }
+
+  const warped = warpPerspective(full, quadPx, WARP_MAX_SIDE, aspect, rowMapFactory);
   if (!warped) return cropBoundingBox(ictx, rotW, rotH, quadPx);
 
   // Copiamos al buffer del ImageData en vez de pasarlo al constructor:

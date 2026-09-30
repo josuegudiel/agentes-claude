@@ -46,17 +46,206 @@ export interface PaperMap {
 /** Lado mayor de la grilla de estimacion. */
 const GRID_TARGET = 512;
 
+/**
+ * Mapa de papel en DOS escalas.
+ *
+ * La gruesa (~512 px, cierre del alto de una linea) es robusta: separa
+ * papel de contenido, rellena fotos y ve sombras grandes. Pero no sigue
+ * las ARRUGAS y pliegues de una hoja real: esas sombras miden 1-5% de la
+ * pagina y quedaban como manchas grises.
+ *
+ * La fina (~1024 px, cierre de ~0.5% del lado) sigue esas variaciones.
+ * Se usa solo donde la diferencia con la gruesa es SUAVE (luminancia fina
+ * >= ~62-80% de la gruesa) y fuera del contenido: una arruga oscurece el
+ * papel un 10-30%, mientras que texto, QR y logos que sobrevivan al cierre
+ * son mucho mas oscuros y se quedan con la gruesa (no se "blanquean").
+ */
 export function estimatePaper(data: ImageData, target: number = GRID_TARGET): PaperMap {
   const { width: w, height: h } = data;
-  const px = data.data;
-  const f = Math.max(1, Math.ceil(Math.max(w, h) / target));
-  const sw = Math.ceil(w / f);
-  const sh = Math.ceil(h / f);
-  const n = sw * sh;
+  // Escala fina: el doble de resolucion que la gruesa (f2 = f / 2).
+  const f2 = Math.max(1, Math.ceil(Math.max(w, h) / (target * 2)));
+  const sw2 = Math.ceil(w / f2);
+  const sh2 = Math.ceil(h / f2);
+  const fine = areaAverage(data, f2, sw2, sh2);
+  if (f2 < 2 && Math.max(w, h) <= target) {
+    // Imagen chica (miniaturas, preview): la gruesa ya es de resolucion
+    // completa; no hay escala mas fina que agregar.
+    return estimateCoarse(fine.r, fine.g, fine.b, sw2, sh2, f2);
+  }
+  // Gruesa = promedio 2x2 de la fina (sin otra pasada por la foto).
+  const sw = Math.ceil(sw2 / 2), sh = Math.ceil(sh2 / 2);
+  const r = new Float32Array(sw * sh), g = new Float32Array(sw * sh), b = new Float32Array(sw * sh);
+  for (let cy = 0; cy < sh; cy++) {
+    for (let cx = 0; cx < sw; cx++) {
+      let sr = 0, sg = 0, sb = 0, k = 0;
+      for (let dy = 0; dy < 2; dy++) {
+        const yy = cy * 2 + dy;
+        if (yy >= sh2) continue;
+        for (let dx = 0; dx < 2; dx++) {
+          const xx = cx * 2 + dx;
+          if (xx >= sw2) continue;
+          const c = yy * sw2 + xx;
+          sr += fine.r[c]!;
+          sg += fine.g[c]!;
+          sb += fine.b[c]!;
+          k++;
+        }
+      }
+      const c = cy * sw + cx;
+      r[c] = sr / k;
+      g[c] = sg / k;
+      b[c] = sb / k;
+    }
+  }
+  const coarse = estimateCoarse(r, g, b, sw, sh, f2 * 2);
 
-  // 1. Reduccion por promedio de area. Con celdas grandes (f >= 4) basta
-  // promediar 1 de cada 2x2 pixeles: sigue siendo un promedio de >= 4
-  // muestras por celda (sin aliasing del texto) a un cuarto del costo.
+  // Escala fina SOLO en luminancia: una sombra o arruga cambia la
+  // intensidad del papel, no su tono. El resultado es un factor que
+  // multiplica al mapa grueso.
+  const n2 = sw2 * sh2;
+  const lf = new Float32Array(n2);
+  for (let c = 0; c < n2; c++) lf[c] = 0.299 * fine.r[c]! + 0.587 * fine.g[c]! + 0.114 * fine.b[c]!;
+  const rf = Math.max(2, Math.round(Math.max(sw2, sh2) / 200));
+  closing(lf, sw2, sh2, rf);
+
+  // Bordes NITIDOS en la escala fina (salto > 8% en 2 celdas):
+  // un relleno gris de tabla o un recuadro tiene borde recto y marcado; la
+  // sombra de una arruga cambia de a poco (el cierre ya borro los pliegues
+  // finos). Cerca de un borde nitido la escala fina no corrige: asi un
+  // encabezado gris claro no se blanquea como si fuera sombra.
+  const pLumCoarse = 0.299 * coarse.paper[0] + 0.587 * coarse.paper[1] + 0.114 * coarse.paper[2];
+  const sharp = new Float32Array(n2);
+  for (let cy = 0; cy < sh2; cy++) {
+    for (let cx = 0; cx < sw2; cx++) {
+      const c = cy * sw2 + cx;
+      const v = lf[c]!;
+      const ref = v > 1 ? v : 1;
+      // Salto medido a 2 celdas: un borde recto que cae entre dos celdas
+      // se reparte en dos escalones y a 1 celda pasaria desapercibido.
+      if (
+        (cx + 2 < sw2 && Math.abs(lf[c + 2]! - v) > ref * 0.08) ||
+        (cy + 2 < sh2 && Math.abs(lf[c + 2 * sw2]! - v) > ref * 0.08)
+      ) {
+        sharp[c] = 1;
+        if (cx + 1 < sw2) sharp[c + 1] = 1;
+        if (cy + 1 < sh2) sharp[c + sw2] = 1;
+      }
+    }
+  }
+  // Regiones de la escala fina separadas por esos bordes: las interiores
+  // (no tocan el borde de la hoja) y mas oscuras que el papel grueso son
+  // RELLENOS -> sin correccion fina en toda la region, sea del tamano que
+  // sea. Mas una franja chica alrededor de cada borde nitido.
+  const fillMask = new Float32Array(n2);
+  {
+    const label = new Int32Array(n2).fill(-1);
+    const stack: number[] = [];
+    const regions: { cells: number[]; border: boolean }[] = [];
+    for (let s0 = 0; s0 < n2; s0++) {
+      if (sharp[s0] || label[s0]! >= 0) continue;
+      const id = regions.length;
+      const cells: number[] = [];
+      let border = false;
+      label[s0] = id;
+      stack.push(s0);
+      while (stack.length) {
+        const c = stack.pop()!;
+        cells.push(c);
+        const x = c % sw2;
+        if (x === 0 || x === sw2 - 1 || c < sw2 || c >= n2 - sw2) border = true;
+        for (let k = 0; k < 4; k++) {
+          const q2 = k === 0 ? (x > 0 ? c - 1 : -1) : k === 1 ? (x + 1 < sw2 ? c + 1 : -1) : k === 2 ? c - sw2 : c + sw2;
+          if (q2 < 0 || q2 >= n2 || sharp[q2] || label[q2]! >= 0) continue;
+          label[q2] = id;
+          stack.push(q2);
+        }
+      }
+      regions.push({ cells, border });
+    }
+    let main = 0;
+    for (let i = 1; i < regions.length; i++) if (regions[i]!.cells.length > regions[main]!.cells.length) main = i;
+    for (let i = 0; i < regions.length; i++) {
+      const rg = regions[i]!;
+      if (i === main || rg.border) continue;
+      // Mediana de luminancia fina de la region vs el papel global.
+      const vals = rg.cells.map((c) => lf[c]!).sort((a, b) => a - b);
+      const med = vals[vals.length >> 1]!;
+      if (med < pLumCoarse * 0.97) for (const c of rg.cells) fillMask[c] = 1;
+    }
+  }
+  for (let c = 0; c < n2; c++) if (fillMask[c]) sharp[c] = 1;
+  dilateMask(sharp, sw2, sh2, 2);
+
+  const S = new Float32Array(n2);
+  const CT = new Float32Array(n2);
+  const Cr = coarse.r, Cg = coarse.g, Cb = coarse.b, Cc = coarse.content;
+  const cf = coarse.f;
+  const gx0 = new Int32Array(sw2), gx1 = new Int32Array(sw2), gtx = new Float32Array(sw2);
+  for (let cx = 0; cx < sw2; cx++) {
+    let gx = ((cx + 0.5) * f2) / cf - 0.5;
+    gx = gx < 0 ? 0 : gx > sw - 1 ? sw - 1 : gx;
+    gx0[cx] = Math.floor(gx);
+    gx1[cx] = Math.min(sw - 1, gx0[cx]! + 1);
+    gtx[cx] = gx - gx0[cx]!;
+  }
+  const R = new Float32Array(n2), G = new Float32Array(n2), B = new Float32Array(n2);
+  for (let cy = 0; cy < sh2; cy++) {
+    let gy = ((cy + 0.5) * f2) / cf - 0.5;
+    gy = gy < 0 ? 0 : gy > sh - 1 ? sh - 1 : gy;
+    const y0 = Math.floor(gy), y1 = Math.min(sh - 1, y0 + 1), ty = gy - y0;
+    const o0 = y0 * sw, o1 = y1 * sw;
+    for (let cx = 0, c = cy * sw2; cx < sw2; cx++, c++) {
+      const a = gx0[cx]!, bb = gx1[cx]!, tx = gtx[cx]!;
+      const w00 = (1 - tx) * (1 - ty), w10 = tx * (1 - ty), w01 = (1 - tx) * ty, w11 = tx * ty;
+      const cr = Cr[o0 + a]! * w00 + Cr[o0 + bb]! * w10 + Cr[o1 + a]! * w01 + Cr[o1 + bb]! * w11;
+      const cg = Cg[o0 + a]! * w00 + Cg[o0 + bb]! * w10 + Cg[o1 + a]! * w01 + Cg[o1 + bb]! * w11;
+      const cb = Cb[o0 + a]! * w00 + Cb[o0 + bb]! * w10 + Cb[o1 + a]! * w01 + Cb[o1 + bb]! * w11;
+      const ct = Cc[o0 + a]! * w00 + Cc[o0 + bb]! * w10 + Cc[o1 + a]! * w01 + Cc[o1 + bb]! * w11;
+      R[c] = cr;
+      G[c] = cg;
+      B[c] = cb;
+      CT[c] = ct;
+      let wgt = 0;
+      const lc = 0.299 * cr + 0.587 * cg + 0.114 * cb;
+      const q = lc > 1 ? lf[c]! / lc : 1;
+      if (ct < 0.5) {
+        wgt = (q - 0.62) / 0.18;
+        wgt = wgt < 0 ? 0 : wgt > 1 ? 1 : wgt;
+        // Resaltador o mancha de color: cambian el TONO del papel -> no es
+        // sombra, se respeta (cromaticidad del promedio fino vs gruesa).
+        const fr = fine.r[c]!, fg = fine.g[c]!, fb = fine.b[c]!;
+        const sc = cr + cg + cb, sf = fr + fg + fb;
+        if (wgt > 0 && sc > 1 && sf > 1) {
+          const d = Math.abs(fr / sf - cr / sc) + Math.abs(fg / sf - cg / sc) + Math.abs(fb / sf - cb / sc);
+          let wd = (0.05 - d) / 0.025;
+          wd = wd < 0 ? 0 : wd > 1 ? 1 : wd;
+          wgt *= wd;
+        }
+        wgt = wgt * wgt * (3 - 2 * wgt) * (1 - 2 * ct) * (1 - sharp[c]!);
+      }
+      S[c] = 1 + (q - 1) * wgt;
+    }
+  }
+  smooth(S, sw2, sh2, 1);
+  for (let c = 0; c < n2; c++) {
+    const k = S[c]!;
+    R[c] = R[c]! * k;
+    G[c] = G[c]! * k;
+    B[c] = B[c]! * k;
+  }
+  return { sw: sw2, sh: sh2, f: f2, r: R, g: G, b: B, paper: coarse.paper, content: CT };
+}
+
+/** Promedio de area por celdas de f x f (submuestreo 2x2 si f >= 4). */
+function areaAverage(
+  data: ImageData,
+  f: number,
+  sw: number,
+  sh: number,
+): { r: Float32Array; g: Float32Array; b: Float32Array } {
+  const { width: w, height: h } = data;
+  const px = data.data;
+  const n = sw * sh;
   const r = new Float32Array(n);
   const g = new Float32Array(n);
   const b = new Float32Array(n);
@@ -87,6 +276,18 @@ export function estimatePaper(data: ImageData, target: number = GRID_TARGET): Pa
     g[c] = g[c]! * k;
     b[c] = b[c]! * k;
   }
+  return { r, g, b };
+}
+
+function estimateCoarse(
+  r: Float32Array,
+  g: Float32Array,
+  b: Float32Array,
+  sw: number,
+  sh: number,
+  f: number,
+): PaperMap {
+  const n = sw * sh;
 
   // 2. Cierre morfologico por canal. Radio ~ alto de una linea de texto
   // (1/48 del lado): mayor que las letras, mucho menor que una sombra.
@@ -201,8 +402,7 @@ export function paperRows(width: number, map: PaperMap, maxGain: number): PaperR
   }
   // Tramos en X entre centros de celda: cada pixel es el anterior + paso.
   // Centro de la celda cx en coordenadas de pixel: (cx + 0.5) * f - 0.5.
-  const cr = new Float32Array(sw), cg = new Float32Array(sw), cb = new Float32Array(sw), cl = new Float32Array(sw);
-  const cc = new Float32Array(sw);
+  const cr = new Float32Array(sw);
   const fillRow = (src: Float32Array, dst: Float32Array): void => {
     const c0 = 0.5 * f - 0.5;
     const first = Math.min(w, Math.max(0, Math.ceil(c0)));
@@ -219,6 +419,21 @@ export function paperRows(width: number, map: PaperMap, maxGain: number): PaperR
     const lastC = (sw - 0.5) * f - 0.5;
     for (let x = Math.max(0, Math.ceil(lastC)); x < w; x++) dst[x] = src[sw - 1]!;
   };
+  // Dos filas de celdas ya expandidas a lo ancho (arriba/abajo del pixel):
+  // se recalculan SOLO al cambiar de fila de celdas; cada fila de pixeles
+  // es una mezcla lineal de ambas.
+  const A = [new Float32Array(w), new Float32Array(w), new Float32Array(w), new Float32Array(w), new Float32Array(w)];
+  const Bv = [new Float32Array(w), new Float32Array(w), new Float32Array(w), new Float32Array(w), new Float32Array(w)];
+  const grids = [gr, gg, gb, gl, content];
+  const expand = (row: number, dst: Float32Array[]): void => {
+    const o = row * sw;
+    for (let k = 0; k < 5; k++) {
+      const g0 = grids[k]!;
+      for (let x = 0; x < sw; x++) cr[x] = g0[o + x]!;
+      fillRow(cr, dst[k]!);
+    }
+  };
+  let rowA = -1, rowB = -1;
   const out: PaperRows = {
     ir: new Float32Array(w),
     ig: new Float32Array(w),
@@ -231,19 +446,30 @@ export function paperRows(width: number, map: PaperMap, maxGain: number): PaperR
       const y0 = Math.floor(gy);
       const y1 = Math.min(sh - 1, y0 + 1);
       const ty = gy - y0;
-      const o0 = y0 * sw, o1 = y1 * sw;
-      for (let x = 0; x < sw; x++) {
-        cr[x] = gr[o0 + x]! + (gr[o1 + x]! - gr[o0 + x]!) * ty;
-        cg[x] = gg[o0 + x]! + (gg[o1 + x]! - gg[o0 + x]!) * ty;
-        cb[x] = gb[o0 + x]! + (gb[o1 + x]! - gb[o0 + x]!) * ty;
-        cl[x] = gl[o0 + x]! + (gl[o1 + x]! - gl[o0 + x]!) * ty;
-        cc[x] = content[o0 + x]! + (content[o1 + x]! - content[o0 + x]!) * ty;
+      if (y0 !== rowA) {
+        if (y0 === rowB) {
+          // Avance normal: la fila de abajo pasa a ser la de arriba.
+          for (let k = 0; k < 5; k++) {
+            const t = A[k]!;
+            A[k] = Bv[k]!;
+            Bv[k] = t;
+          }
+          rowA = y0;
+          rowB = -1;
+        } else {
+          expand(y0, A);
+          rowA = y0;
+        }
       }
-      fillRow(cr, out.ir);
-      fillRow(cg, out.ig);
-      fillRow(cb, out.ib);
-      fillRow(cl, out.il);
-      fillRow(cc, out.ct);
+      if (y1 !== rowB) {
+        expand(y1, Bv);
+        rowB = y1;
+      }
+      const outs = [out.ir, out.ig, out.ib, out.il, out.ct];
+      for (let k = 0; k < 5; k++) {
+        const a0 = A[k]!, b0 = Bv[k]!, d = outs[k]!;
+        for (let x = 0; x < w; x++) d[x] = a0[x]! + (b0[x]! - a0[x]!) * ty;
+      }
     },
   };
   return out;
@@ -339,7 +565,9 @@ function markEnclosedContent(
     // Una zona oscura neutra que TOCA el borde de la hoja es sombra (la de
     // la mano o el telefono entra desde afuera, aunque sea de borde duro:
     // sol directo, flash). Encerrada en el interior es contenido.
-    if (med < pLum * 0.8 && !touches[id]) content[id] = 1;
+    // Umbral alto (95%): un relleno gris claro de tabla, encerrado por
+    // bordes rectos, es contenido aunque sea casi tan claro como el papel.
+    if (med < pLum * 0.95 && !touches[id]) content[id] = 1;
   }
   for (let c = 0; c < n; c++) {
     const id = label[c]!;
@@ -351,7 +579,7 @@ function markEnclosedContent(
 // ---------------------------------------------------------------------------
 
 /** Cierre (dilatacion max + erosion min) separable, in-place. */
-function closing(a: Float32Array, w: number, h: number, r: number): void {
+export function closing(a: Float32Array, w: number, h: number, r: number): void {
   const tmp = new Float32Array(a.length);
   runFilter(a, tmp, w, h, r, true, true);
   runFilter(tmp, a, w, h, r, true, false);
@@ -389,9 +617,10 @@ function runFilter(
       line[p] = src[base + q * step]!;
     }
     if (isMax) {
-      for (let p = 0; p < padLen; p++) {
+      for (let p = 0, m = 0; p < padLen; p++, m++) {
         const v = line[p]!;
-        if (p % k === 0) pre[p] = v;
+        if (m === k) m = 0;
+        if (m === 0) pre[p] = v;
         else {
           const a = pre[p - 1]!;
           pre[p] = a > v ? a : v;
@@ -410,9 +639,10 @@ function runFilter(
         dst[base + q * step] = a > c ? a : c;
       }
     } else {
-      for (let p = 0; p < padLen; p++) {
+      for (let p = 0, m = 0; p < padLen; p++, m++) {
         const v = line[p]!;
-        if (p % k === 0) pre[p] = v;
+        if (m === k) m = 0;
+        if (m === 0) pre[p] = v;
         else {
           const a = pre[p - 1]!;
           pre[p] = a < v ? a : v;
@@ -432,6 +662,12 @@ function runFilter(
       }
     }
   }
+}
+
+function dilateMask(m: Float32Array, w: number, h: number, r: number): void {
+  const tmp = new Float32Array(m.length);
+  runFilter(m, tmp, w, h, r, true, true);
+  runFilter(tmp, m, w, h, r, true, false);
 }
 
 function erodeMask(m: Float32Array, w: number, h: number, r: number): void {

@@ -470,6 +470,23 @@ describe('applyFilter', () => {
     expect(out.data[p + 2]!).toBeGreaterThanOrEqual(245); // el azul ya no falta
   });
 
+  it('magic: un encabezado de tabla gris claro NO se blanquea (no es sombra)', () => {
+    // Pagina grande (activa la escala fina del mapa de papel) con una
+    // franja gris claro de borde recto: relleno de tabla, no arruga.
+    const w = 800;
+    const h = 1000;
+    const img = makeImageData(w, h, (x, y) => {
+      const inFill = x >= 100 && x < 700 && y >= 400 && y < 460;
+      const inText = x >= 120 && x < 300 && y >= 420 && y < 432;
+      const v = inText ? 30 : inFill ? 205 : 236;
+      return [v, v, v, 255];
+    });
+    const out = applyFilter(img, 'magic');
+    const fill = out.data[(445 * w + 500) * 4]!;
+    expect(fill).toBeLessThan(242); // sigue siendo gris visible
+    expect(out.data[(100 * w + 100) * 4]!).toBeGreaterThanOrEqual(250); // papel blanco
+  });
+
   it('bw: un bloque negro ancho queda negro (no se vacia por dentro)', () => {
     const w = 128;
     const h = 96;
@@ -481,6 +498,26 @@ describe('applyFilter', () => {
     const out = applyFilter(img, 'bw');
     expect(out.data[(48 * w + 64) * 4]!).toBeLessThan(40);
     expect(out.data[(8 * w + 8) * 4]!).toBe(255);
+  });
+
+  it('bw: borra la mesa pegada al borde y conserva el texto del margen', () => {
+    const w = 400;
+    const h = 500;
+    const img = makeImageData(w, h, (x, y) => {
+      // Resto de mesa: cuna oscura pegada al borde izquierdo (hasta 3.5%).
+      const table = x < 14 && y < 60;
+      // "Numero de pagina" a ~3% del borde inferior, sin tocarlo.
+      const pageNum = x >= 190 && x < 210 && y >= 480 && y < 488;
+      // Texto normal en el cuerpo.
+      const text = x >= 60 && x < 340 && y >= 100 && y < 108;
+      const v = table || pageNum || text ? 20 : 235;
+      return [v, v, v, 255];
+    });
+    const out = applyFilter(img, 'bw');
+    const at = (x: number, y: number): number => out.data[(y * w + x) * 4]!;
+    expect(at(5, 30)).toBe(255); // mesa borrada
+    expect(at(200, 484)).toBeLessThan(60); // numero de pagina intacto
+    expect(at(200, 104)).toBeLessThan(60); // texto intacto
   });
 
   it('bw: la limpieza borra motas sueltas y conserva los trazos', () => {
