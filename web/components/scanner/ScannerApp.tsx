@@ -6,8 +6,10 @@ import { EditView } from './EditView';
 import { ExportView } from './ExportView';
 import { IconCheck, IconX } from './icons';
 import { filterForMode, isScanMode, type ScanModeId } from './modes';
-import { pageFromBlob, pageFromCanvas, type ScanPage } from './pages';
+import { pageFromBlob, pageFromCanvas, rotateClockwise, type ScanPage } from './pages';
+import { PdfImportError, importPdf } from './pdf-import';
 import { loadImageFromFile } from './pipeline';
+import { moveItem } from './reorder';
 import { isStorageAvailable, loadPages, savePages } from './storage';
 
 type Stage = 'capture' | 'edit' | 'export';
@@ -38,7 +40,8 @@ export function ScannerApp(): React.ReactElement {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [pages, setPages] = useState<ScanPage[]>([]);
-  const [restoredCount, setRestoredCount] = useState(0);
+  // Aviso breve de exito (sesion restaurada, PDF añadido).
+  const [notice, setNotice] = useState<string | null>(null);
   const nextIdRef = useRef(1);
 
   // Modo de escaneo del visor (define el filtro con el que abre el
@@ -62,12 +65,12 @@ export function ScannerApp(): React.ReactElement {
     }
   }, []);
 
-  // El aviso de "sesion restaurada" se va solo.
+  // El aviso se va solo.
   useEffect(() => {
-    if (restoredCount === 0) return;
-    const t = setTimeout(() => setRestoredCount(0), 4500);
+    if (!notice) return;
+    const t = setTimeout(() => setNotice(null), 4500);
     return () => clearTimeout(t);
-  }, [restoredCount]);
+  }, [notice]);
 
   // hydrated es ESTADO (no ref) a proposito: si el usuario confirma una
   // pagina antes de que termine la restauracion, el effect de persistencia
@@ -86,12 +89,12 @@ export function ScannerApp(): React.ReactElement {
     (async () => {
       try {
         if (!isStorageAvailable()) return;
-        const blobs = await loadPages();
-        if (cancelled || blobs.length === 0) return;
+        const saved = await loadPages();
+        if (cancelled || saved.length === 0) return;
         const restored: ScanPage[] = [];
-        for (const blob of blobs) {
+        for (const { blob, rotation } of saved) {
           try {
-            restored.push(await pageFromBlob(blob, nextIdRef.current++));
+            restored.push(await pageFromBlob(blob, nextIdRef.current++, rotation));
           } catch {
             // Una pagina corrupta no debe tirar la sesion entera.
           }
@@ -100,7 +103,9 @@ export function ScannerApp(): React.ReactElement {
         // Se ANTEPONEN a lo que el usuario haya hecho mientras cargaba:
         // ni se pierde la sesion guardada ni su captura nueva.
         setPages((prev) => [...restored, ...prev]);
-        setRestoredCount(restored.length);
+        setNotice(
+          `Sesión anterior restaurada · ${restored.length} ${restored.length === 1 ? 'página' : 'páginas'}`,
+        );
         if (!userActedRef.current) setStage('export');
       } catch {
         // Storage roto (modo privado, cuota) — la app funciona sin persistir.
@@ -118,7 +123,7 @@ export function ScannerApp(): React.ReactElement {
   useEffect(() => {
     if (!hydrated || !isStorageAvailable()) return;
     let cancelled = false;
-    savePages(pages.map((p) => p.blob))
+    savePages(pages.map((p) => ({ blob: p.blob, rotation: p.rotation })))
       .then(() => {
         if (!cancelled) setPersistError(false);
       })
@@ -196,6 +201,41 @@ export function ScannerApp(): React.ReactElement {
     setStage(pages.length > 0 ? 'export' : 'capture');
   }, [pendingImages.length, pages.length]);
 
+  // "Añadir PDF": sus hojas se agregan al final como paginas normales
+  // (ordenables, girables, exportables). Una sola importacion a la vez.
+  const [importing, setImporting] = useState<{ done: number; total: number } | null>(null);
+  const importingRef = useRef(false);
+  const handleImportPdf = useCallback(async (file: File) => {
+    if (importingRef.current || loadingRef.current) return;
+    importingRef.current = true;
+    userActedRef.current = true;
+    setLoadError(null);
+    setImporting({ done: 0, total: 0 });
+    try {
+      const { pages: added, total } = await importPdf(
+        file,
+        () => nextIdRef.current++,
+        (done, t) => setImporting({ done, total: t }),
+      );
+      if (added.length === 0) {
+        setLoadError('Ese PDF no tiene hojas.');
+        return;
+      }
+      setPages((prev) => [...prev, ...added]);
+      setStage('export');
+      setNotice(
+        total > added.length
+          ? `PDF añadido · primeras ${added.length} de ${total} hojas`
+          : `PDF añadido · ${added.length} ${added.length === 1 ? 'hoja' : 'hojas'}`,
+      );
+    } catch (err) {
+      setLoadError(err instanceof PdfImportError ? err.message : 'No se pudo abrir el PDF.');
+    } finally {
+      importingRef.current = false;
+      setImporting(null);
+    }
+  }, []);
+
   const handleAddPage = useCallback(() => {
     setLoadError(null);
     setStage('capture');
@@ -243,6 +283,18 @@ export function ScannerApp(): React.ReactElement {
     });
   }, []);
 
+  const handleReorderPage = useCallback((id: number, toIndex: number) => {
+    setPages((prev) => {
+      const from = prev.findIndex((p) => p.id === id);
+      return from < 0 ? prev : moveItem(prev, from, toIndex);
+    });
+  }, []);
+
+  // Girar es solo un dato de la pagina (el JPEG no se toca).
+  const handleRotatePage = useCallback((id: number) => {
+    setPages((prev) => prev.map((p) => (p.id === id ? { ...p, rotation: rotateClockwise(p.rotation) } : p)));
+  }, []);
+
   const handleRestart = useCallback(() => {
     if (
       pages.length > 0 &&
@@ -256,7 +308,7 @@ export function ScannerApp(): React.ReactElement {
     setPendingImages([]);
     setPendingTotal(0);
     setLoadError(null);
-    setRestoredCount(0);
+    setNotice(null);
     setLastRemoved(null);
     setPersistError(false);
     setStage('capture');
@@ -302,18 +354,18 @@ export function ScannerApp(): React.ReactElement {
           </div>
         )}
 
-        {restoredCount > 0 && stage === 'export' && (
+        {notice && stage === 'export' && (
           <div
             role="status"
             className="toast-in pointer-events-auto flex items-center justify-between gap-3 rounded-2xl border border-night-700 bg-night-900/95 px-3.5 py-2 text-sm text-night-100 backdrop-blur"
           >
             <span className="flex items-center gap-2">
               <IconCheck className="h-4 w-4 shrink-0 text-volt" />
-              Sesión anterior restaurada · {restoredCount} {restoredCount === 1 ? 'página' : 'páginas'}
+              {notice}
             </span>
             <button
               type="button"
-              onClick={() => setRestoredCount(0)}
+              onClick={() => setNotice(null)}
               aria-label="Cerrar aviso"
               className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-night-400"
             >
@@ -331,7 +383,8 @@ export function ScannerApp(): React.ReactElement {
           scanMode={scanMode}
           onScanModeChange={changeScanMode}
           pageCount={pages.length}
-          lastThumb={pages[pages.length - 1]?.thumb}
+          lastPage={pages[pages.length - 1]}
+          onImportPdf={handleImportPdf}
         />
       )}
 
@@ -352,10 +405,26 @@ export function ScannerApp(): React.ReactElement {
         <ExportView
           pages={pages}
           onAddPage={handleAddPage}
+          onImportPdf={handleImportPdf}
           onRemovePage={handleRemovePage}
           onMovePage={handleMovePage}
+          onReorderPage={handleReorderPage}
+          onRotatePage={handleRotatePage}
           onRestart={handleRestart}
         />
+      )}
+
+      {importing && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-4 bg-night-950/90 backdrop-blur-sm"
+        >
+          <span className="spinner" aria-hidden />
+          <span className="font-mono text-xs font-bold tracking-[0.12em] text-night-100">
+            LEYENDO PDF{importing.total > 0 ? ` · ${importing.done}/${importing.total}` : ''}
+          </span>
+        </div>
       )}
 
       {lastRemoved && stage === 'export' && (

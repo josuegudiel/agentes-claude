@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { outputNames, pdfPageSize, sanitizeFilename } from '../export';
+import { outputNames, pdfPageSize, pdfPlacement, sanitizeFilename } from '../export';
 
 describe('sanitizeFilename', () => {
   it('conserva letras con tilde y la ene', () => {
@@ -50,4 +50,61 @@ describe('outputNames', () => {
     expect(outputNames('doc', 1, 'jpg')).toEqual(['doc.jpg']);
     expect(outputNames('doc', 3, 'png')).toEqual(['doc_1.png', 'doc_2.png', 'doc_3.png']);
   });
+});
+
+/**
+ * Reproduce la matriz que escribe jsPDF.addImage con rotacion: traslada a
+ * (x, pageH - y - h) en coordenadas PDF (y hacia arriba), gira `angle`
+ * grados antihorario y escala a (w, h). (u, v) es un punto de la imagen
+ * en [0,1]^2 con v=1 en el borde SUPERIOR de la foto.
+ */
+function jspdfPoint(pl: ReturnType<typeof pdfPlacement>, u: number, v: number): [number, number] {
+  const t = (pl.angle * Math.PI) / 180;
+  const c = Number(Math.cos(t).toFixed(4));
+  const s = Number(Math.sin(t).toFixed(4));
+  const px = u * pl.drawW;
+  const py = v * pl.drawH;
+  return [pl.x + c * px - s * py, pl.pageH - pl.y - pl.drawH + s * px + c * py];
+}
+
+describe('pdfPlacement', () => {
+  const W = 3000;
+  const H = 4000;
+  // Donde debe terminar la esquina superior izquierda de la foto al girarla
+  // en sentido horario (en coordenadas PDF: origen abajo a la izquierda).
+  const cases = [
+    { r: 0, topLeft: 'arriba-izq' },
+    { r: 90, topLeft: 'arriba-der' },
+    { r: 180, topLeft: 'abajo-der' },
+    { r: 270, topLeft: 'abajo-izq' },
+  ] as const;
+
+  for (const { r, topLeft } of cases) {
+    it(`giro ${r}: la foto llena la hoja y su esquina sup. izq. queda ${topLeft}`, () => {
+      const pl = pdfPlacement(W, H, r);
+      // La hoja tiene la orientacion de la foto girada.
+      const landscape = r === 90 || r === 270;
+      expect(pl.pageW > pl.pageH).toBe(landscape);
+      expect(Math.max(pl.pageW, pl.pageH)).toBeLessThanOrEqual(841.89 + 1e-6);
+
+      const corners = [jspdfPoint(pl, 0, 0), jspdfPoint(pl, 1, 0), jspdfPoint(pl, 0, 1), jspdfPoint(pl, 1, 1)];
+      const xs = corners.map((p) => p[0]);
+      const ys = corners.map((p) => p[1]);
+      // Cubre exactamente la hoja (ni se sale ni deja franjas).
+      expect(Math.min(...xs)).toBeCloseTo(0, 1);
+      expect(Math.min(...ys)).toBeCloseTo(0, 1);
+      expect(Math.max(...xs)).toBeCloseTo(pl.pageW, 1);
+      expect(Math.max(...ys)).toBeCloseTo(pl.pageH, 1);
+
+      const expected: Record<string, [number, number]> = {
+        'arriba-izq': [0, pl.pageH],
+        'arriba-der': [pl.pageW, pl.pageH],
+        'abajo-der': [pl.pageW, 0],
+        'abajo-izq': [0, 0],
+      };
+      const tl = jspdfPoint(pl, 0, 1);
+      expect(tl[0]).toBeCloseTo(expected[topLeft]![0], 1);
+      expect(tl[1]).toBeCloseTo(expected[topLeft]![1], 1);
+    });
+  }
 });

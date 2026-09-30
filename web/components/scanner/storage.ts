@@ -11,6 +11,8 @@
  * sin el overhead ~33% de base64.
  */
 
+import { isRotation, type Rotation } from './pages';
+
 const DB_NAME = 'scanner-db';
 const DB_VERSION = 1;
 const STORE = 'pages';
@@ -18,6 +20,14 @@ const STORE = 'pages';
 interface StoredPage {
   id: number;
   blob: Blob;
+  /** Giro en grados (horario). Ausente en sesiones guardadas antes de que existiera. */
+  rotation?: number;
+}
+
+/** Lo que se persiste de cada pagina. */
+export interface PersistedPage {
+  blob: Blob;
+  rotation: Rotation;
 }
 
 export function isStorageAvailable(): boolean {
@@ -54,14 +64,14 @@ function runTx(
   });
 }
 
-export async function savePages(blobs: Blob[]): Promise<void> {
+export async function savePages(pages: PersistedPage[]): Promise<void> {
   if (!isStorageAvailable()) return;
   const db = await openDb();
   try {
     await runTx(db, 'readwrite', (store) => {
       store.clear();
-      blobs.forEach((blob, i) => {
-        const page: StoredPage = { id: i, blob };
+      pages.forEach(({ blob, rotation }, i) => {
+        const page: StoredPage = { id: i, blob, rotation };
         store.put(page);
       });
     });
@@ -70,7 +80,7 @@ export async function savePages(blobs: Blob[]): Promise<void> {
   }
 }
 
-export async function loadPages(): Promise<Blob[]> {
+export async function loadPages(): Promise<PersistedPage[]> {
   if (!isStorageAvailable()) return [];
   const db = await openDb();
   try {
@@ -80,7 +90,9 @@ export async function loadPages(): Promise<Blob[]> {
       req.onsuccess = () => resolve(req.result as StoredPage[]);
       req.onerror = () => reject(req.error ?? new Error('getAll fallo'));
     });
-    return rows.sort((a, b) => a.id - b.id).map((r) => r.blob);
+    return rows
+      .sort((a, b) => a.id - b.id)
+      .map((r) => ({ blob: r.blob, rotation: isRotation(r.rotation) ? r.rotation : 0 }));
   } finally {
     db.close();
   }

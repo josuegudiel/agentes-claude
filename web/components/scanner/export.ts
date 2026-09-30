@@ -6,12 +6,25 @@
  * JPG los usan tal cual, sin recomprimir.
  */
 
+import {
+  PAGE_JPEG_QUALITY,
+  canvasToBlob,
+  decodeBlob,
+  drawRotated,
+  rotatedSize,
+  type Rotation,
+} from './pages';
+import { releaseCanvas } from './pipeline';
+
 export type ExportFormat = 'png' | 'jpg' | 'pdf';
 
 export interface ExportPageInput {
   blob: Blob;
+  /** Dimensiones del JPEG (sin girar). */
   width: number;
   height: number;
+  /** Giro horario a aplicar al exportar (0 si se omite). */
+  rotation?: Rotation;
 }
 
 const DEFAULT_NAME = 'escaneo';
@@ -50,6 +63,40 @@ export function pdfPageSize(w: number, h: number): { width: number; height: numb
   return { width: w * s, height: h * s };
 }
 
+/**
+ * Como colocar el JPEG en la pagina PDF para que se vea girado `r` grados
+ * (horario) SIN recomprimirlo: el giro va en la matriz de dibujo.
+ *
+ * Parametros para jsPDF.addImage(x, y, w, h, ..., angle). jsPDF ancla la
+ * esquina inferior izquierda de la imagen en (x, y + h) (coordenadas desde
+ * arriba) y gira `angle` grados ANTIHORARIO alrededor de ese punto; los
+ * x/y de abajo compensan ese giro para que la imagen llene la pagina
+ * exacta. Verificado en export.test.ts reproduciendo la matriz de jsPDF.
+ */
+export function pdfPlacement(
+  w: number,
+  h: number,
+  r: Rotation,
+): { pageW: number; pageH: number; x: number; y: number; drawW: number; drawH: number; angle: number } {
+  const turned = rotatedSize(w, h, r);
+  const page = pdfPageSize(turned.width, turned.height);
+  // Tamano de la imagen SIN girar, en puntos.
+  const s = page.width / turned.width;
+  const drawW = w * s;
+  const drawH = h * s;
+  const base = { pageW: page.width, pageH: page.height, drawW, drawH };
+  switch (r) {
+    case 90:
+      return { ...base, x: 0, y: -drawH, angle: -90 };
+    case 180:
+      return { ...base, x: drawW, y: -drawH, angle: -180 };
+    case 270:
+      return { ...base, x: drawH, y: drawW - drawH, angle: -270 };
+    default:
+      return { ...base, x: 0, y: 0, angle: 0 };
+  }
+}
+
 /** Nombres de salida: "base.ext" para 1 archivo, "base_1.ext".. para varios. */
 export function outputNames(base: string, count: number, ext: string): string[] {
   if (count === 1) return [`${base}.${ext}`];
@@ -77,58 +124,54 @@ export async function exportFiles(
   }
 
   const names = outputNames(base, pages.length, format);
-  if (format === 'jpg') {
-    return pages.map((p, i) => new File([p.blob], names[i]!, { type: 'image/jpeg' }));
-  }
-
-  // PNG: decodificar pagina por pagina (una sola en memoria a la vez).
+  // Una pagina a la vez en memoria. Un JPG sin giro se entrega tal cual
+  // (sin recomprimir); girado o PNG se re-codifica una vez.
   const files: File[] = [];
   for (let i = 0; i < pages.length; i++) {
-    const png = await jpegToPng(pages[i]!.blob);
-    files.push(new File([png], names[i]!, { type: 'image/png' }));
+    const p = pages[i]!;
+    const r = p.rotation ?? 0;
+    if (format === 'jpg') {
+      const blob = r === 0 ? p.blob : await reencode(p.blob, r, 'image/jpeg', PAGE_JPEG_QUALITY);
+      files.push(new File([blob], names[i]!, { type: 'image/jpeg' }));
+    } else {
+      const png = await reencode(p.blob, r, 'image/png');
+      files.push(new File([png], names[i]!, { type: 'image/png' }));
+    }
   }
   return files;
 }
 
-async function jpegToPng(blob: Blob): Promise<Blob> {
-  const bmp = await createImageBitmap(blob);
+async function reencode(blob: Blob, r: Rotation, mime: string, quality?: number): Promise<Blob> {
+  const img = await decodeBlob(blob);
+  const c = drawRotated(img, img.naturalWidth, img.naturalHeight, r);
   try {
-    const c = document.createElement('canvas');
-    c.width = bmp.width;
-    c.height = bmp.height;
-    const ctx = c.getContext('2d');
-    if (!ctx) throw new Error('canvas 2d no disponible');
-    ctx.drawImage(bmp, 0, 0);
-    const out = await new Promise<Blob>((resolve, reject) =>
-      c.toBlob((b) => (b ? resolve(b) : reject(new Error('No se pudo generar el PNG'))), 'image/png'),
-    );
-    c.width = 0;
-    c.height = 0;
-    return out;
+    return await canvasToBlob(c, mime, quality);
   } finally {
-    bmp.close();
+    releaseCanvas(c);
   }
 }
 
 async function pagesToPdfBlob(pages: ExportPageInput[]): Promise<Blob> {
   const { jsPDF } = await import('jspdf');
-  const first = pdfPageSize(pages[0]!.width, pages[0]!.height);
+  const place = pages.map((p) => pdfPlacement(p.width, p.height, p.rotation ?? 0));
+  const first = place[0]!;
   const pdf = new jsPDF({
     unit: 'pt',
-    format: [first.width, first.height],
-    orientation: first.width > first.height ? 'landscape' : 'portrait',
+    format: [first.pageW, first.pageH],
+    orientation: first.pageW > first.pageH ? 'landscape' : 'portrait',
     compress: true,
   });
 
   for (let i = 0; i < pages.length; i++) {
     const p = pages[i]!;
-    const size = pdfPageSize(p.width, p.height);
+    const pl = place[i]!;
     if (i > 0) {
-      pdf.addPage([size.width, size.height], size.width > size.height ? 'landscape' : 'portrait');
+      pdf.addPage([pl.pageW, pl.pageH], pl.pageW > pl.pageH ? 'landscape' : 'portrait');
     }
-    // El JPEG se incrusta tal cual (DCTDecode): sin recomprimir.
+    // El JPEG se incrusta tal cual (DCTDecode): sin recomprimir, aunque
+    // este girado (el giro va en la matriz, ver pdfPlacement).
     const bytes = new Uint8Array(await p.blob.arrayBuffer());
-    pdf.addImage(bytes, 'JPEG', 0, 0, size.width, size.height, undefined, 'NONE');
+    pdf.addImage(bytes, 'JPEG', pl.x, pl.y, pl.drawW, pl.drawH, undefined, 'NONE', pl.angle);
   }
 
   return pdf.output('blob');
