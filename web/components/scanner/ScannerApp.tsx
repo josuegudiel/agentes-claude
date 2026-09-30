@@ -5,6 +5,7 @@ import { CaptureView } from './CaptureView';
 import { EditView } from './EditView';
 import { ExportView } from './ExportView';
 import { IconCheck, IconX } from './icons';
+import { filterForMode, isScanMode, type ScanModeId } from './modes';
 import { pageFromBlob, pageFromCanvas, type ScanPage } from './pages';
 import { loadImageFromFile } from './pipeline';
 import { isStorageAvailable, loadPages, savePages } from './storage';
@@ -39,6 +40,34 @@ export function ScannerApp(): React.ReactElement {
   const [pages, setPages] = useState<ScanPage[]>([]);
   const [restoredCount, setRestoredCount] = useState(0);
   const nextIdRef = useRef(1);
+
+  // Modo de escaneo del visor (define el filtro con el que abre el
+  // editor). Se recuerda entre visitas; si el almacenamiento no esta
+  // disponible (modo privado) simplemente no se recuerda.
+  const [scanMode, setScanMode] = useState<ScanModeId>('doc');
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem('scanner.mode');
+      if (isScanMode(saved)) setScanMode(saved);
+    } catch {
+      /* sin almacenamiento: modo por defecto */
+    }
+  }, []);
+  const changeScanMode = useCallback((m: ScanModeId) => {
+    setScanMode(m);
+    try {
+      localStorage.setItem('scanner.mode', m);
+    } catch {
+      /* ignorar */
+    }
+  }, []);
+
+  // El aviso de "sesion restaurada" se va solo.
+  useEffect(() => {
+    if (restoredCount === 0) return;
+    const t = setTimeout(() => setRestoredCount(0), 4500);
+    return () => clearTimeout(t);
+  }, [restoredCount]);
 
   // hydrated es ESTADO (no ref) a proposito: si el usuario confirma una
   // pagina antes de que termine la restauracion, el effect de persistencia
@@ -235,67 +264,74 @@ export function ScannerApp(): React.ReactElement {
 
   const queueLabel =
     pendingTotal > 1
-      ? `Foto ${pendingTotal - pendingImages.length + 1} de ${pendingTotal}`
+      ? `FOTO ${pendingTotal - pendingImages.length + 1}/${pendingTotal}`
       : undefined;
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-3">
-      <Steps stage={stage} pageCount={pages.length} />
-
-      {loadError && (
-        <div
-          role="alert"
-          className="stage-in flex shrink-0 items-start justify-between gap-2 rounded-lg border-2 border-stamp-600 bg-stamp-50 px-3 py-2 text-sm text-stamp-700 shadow-paper-sm"
-        >
-          <span>
-            <strong className="font-semibold">No se pudo abrir la imagen.</strong> {loadError}
-          </span>
-          <button
-            type="button"
-            onClick={() => setLoadError(null)}
-            aria-label="Cerrar aviso"
-            className="-m-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full"
+    <div className="relative flex min-h-0 flex-1 flex-col">
+      {/* Avisos flotantes (no empujan el visor ni el editor) */}
+      <div className="top-safe pointer-events-none absolute inset-x-3 z-30 flex flex-col gap-2">
+        {loadError && (
+          <div
+            role="alert"
+            className="toast-in pointer-events-auto flex items-start justify-between gap-2 rounded-2xl border border-danger/60 bg-night-900/95 px-3.5 py-2.5 text-sm text-night-100 shadow-[0_10px_30px_rgba(0,0,0,0.5)] backdrop-blur"
           >
-            <IconX className="h-4 w-4" />
-          </button>
-        </div>
-      )}
+            <span>
+              <strong className="font-mono text-[11px] font-bold tracking-[0.08em] text-danger">NO SE PUDO ABRIR · </strong>
+              {loadError}
+            </span>
+            <button
+              type="button"
+              onClick={() => setLoadError(null)}
+              aria-label="Cerrar aviso"
+              className="-m-1 flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-night-300"
+            >
+              <IconX className="h-4 w-4" />
+            </button>
+          </div>
+        )}
 
-      {persistError && pages.length > 0 && (
-        <div
-          role="status"
-          className="stage-in shrink-0 rounded-lg border-2 border-note-300 bg-note-100 px-3 py-2 text-sm text-note-700 shadow-paper-sm"
-        >
-          No se pudo guardar la sesion (almacenamiento lleno o modo privado). Guarda el archivo
-          ahora: si recargas, perderas las paginas.
-        </div>
-      )}
-
-      {restoredCount > 0 && stage === 'export' && (
-        <div
-          role="status"
-          className="stage-in flex shrink-0 items-center justify-between gap-3 rounded-lg border-2 border-dashed border-cocoa-900 bg-paper px-3 py-1.5 text-sm text-cocoa-700 shadow-paper-sm"
-        >
-          <span className="flex items-center gap-2">
-            <IconCheck className="h-4 w-4 shrink-0" />
-            Sesion anterior restaurada ({restoredCount} {restoredCount === 1 ? 'pagina' : 'paginas'}).
-          </span>
-          <button
-            type="button"
-            onClick={() => setRestoredCount(0)}
-            aria-label="Cerrar aviso"
-            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-cocoa-500"
+        {persistError && pages.length > 0 && (
+          <div
+            role="status"
+            className="toast-in pointer-events-auto rounded-2xl border border-warn/60 bg-night-900/95 px-3.5 py-2.5 text-sm text-night-100 backdrop-blur"
           >
-            <IconX className="h-4 w-4" />
-          </button>
-        </div>
-      )}
+            <strong className="font-mono text-[11px] font-bold tracking-[0.08em] text-warn">SIN RESPALDO · </strong>
+            No se pudo guardar la sesión (almacenamiento lleno o modo privado). Guarda el archivo ahora: si
+            recargas, perderás las páginas.
+          </div>
+        )}
+
+        {restoredCount > 0 && stage === 'export' && (
+          <div
+            role="status"
+            className="toast-in pointer-events-auto flex items-center justify-between gap-3 rounded-2xl border border-night-700 bg-night-900/95 px-3.5 py-2 text-sm text-night-100 backdrop-blur"
+          >
+            <span className="flex items-center gap-2">
+              <IconCheck className="h-4 w-4 shrink-0 text-volt" />
+              Sesión anterior restaurada · {restoredCount} {restoredCount === 1 ? 'página' : 'páginas'}
+            </span>
+            <button
+              type="button"
+              onClick={() => setRestoredCount(0)}
+              aria-label="Cerrar aviso"
+              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-night-400"
+            >
+              <IconX className="h-4 w-4" />
+            </button>
+          </div>
+        )}
+      </div>
 
       {stage === 'capture' && (
         <CaptureView
           onCapture={handleCapture}
           busy={loading}
           onCancel={pages.length > 0 ? () => setStage('export') : undefined}
+          scanMode={scanMode}
+          onScanModeChange={changeScanMode}
+          pageCount={pages.length}
+          lastThumb={pages[pages.length - 1]?.thumb}
         />
       )}
 
@@ -306,6 +342,7 @@ export function ScannerApp(): React.ReactElement {
           key={pendingImages[0]!.id}
           image={pendingImages[0]!.img}
           queueLabel={queueLabel}
+          initialFilter={filterForMode(scanMode)}
           onConfirm={handleConfirm}
           onBack={handleEditBack}
         />
@@ -324,77 +361,19 @@ export function ScannerApp(): React.ReactElement {
       {lastRemoved && stage === 'export' && (
         <div
           role="status"
-          className="toast-in fixed inset-x-3 z-40 mx-auto flex max-w-md items-center justify-between gap-3 rounded-lg border-2 border-cocoa-900 bg-cocoa-900 px-4 py-2 text-sm text-paper shadow-paper-ink"
-          style={{ bottom: 'calc(env(safe-area-inset-bottom) + 10.5rem)' }}
+          className="toast-in fixed inset-x-3 z-40 mx-auto flex max-w-md items-center justify-between gap-3 rounded-2xl border border-night-700 bg-night-900 px-4 py-2 text-sm text-night-100 shadow-[0_10px_30px_rgba(0,0,0,0.6)]"
+          style={{ bottom: 'calc(env(safe-area-inset-bottom) + 13rem)' }}
         >
-          <span>Pagina eliminada</span>
+          <span className="font-mono text-xs font-bold tracking-[0.08em]">PÁGINA ELIMINADA</span>
           <button
             type="button"
             onClick={handleUndoRemove}
-            className="min-h-[40px] rounded-md px-3 font-display text-base font-semibold text-note-300 underline underline-offset-4"
+            className="min-h-[40px] rounded-lg px-3 font-display text-lg font-extrabold uppercase tracking-[0.1em] text-volt"
           >
             Deshacer
           </button>
         </div>
       )}
     </div>
-  );
-}
-
-const STAGE_ORDER: Stage[] = ['capture', 'edit', 'export'];
-
-/**
- * Indicador de progreso como pestanas de carpeta de archivo: la activa
- * "sube" y se funde con la linea base de tinta; las otras quedan
- * hundidas detras.
- */
-function Steps({ stage, pageCount }: { stage: Stage; pageCount: number }): React.ReactElement {
-  const items: { id: Stage; label: string }[] = [
-    { id: 'capture', label: 'Capturar' },
-    { id: 'edit', label: 'Editar' },
-    { id: 'export', label: pageCount ? `Guardar (${pageCount})` : 'Guardar' },
-  ];
-  const activeIdx = STAGE_ORDER.indexOf(stage);
-
-  return (
-    <ol className="flex shrink-0 items-end gap-1.5 border-b-2 border-cocoa-900 px-1" aria-label="Progreso">
-      {items.map((it, i) => {
-        const state = i < activeIdx ? 'done' : i === activeIdx ? 'active' : 'todo';
-        return (
-          <li
-            key={it.id}
-            className={`min-w-0 ${state === 'active' ? 'flex-[2] min-[360px]:flex-1' : 'flex-1'}`}
-          >
-            <div
-              className={`folder-tab flex items-center justify-center gap-1.5 px-2 py-1.5 ${
-                state === 'active' ? 'tab-active' : 'tab-idle'
-              }`}
-              aria-current={state === 'active' ? 'step' : undefined}
-            >
-              <span
-                className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] font-bold ${
-                  state === 'active'
-                    ? 'bg-stamp-600 text-paper'
-                    : state === 'done'
-                      ? 'bg-cocoa-900 text-paper'
-                      : 'bg-cocoa-900/20 text-cocoa-700'
-                }`}
-              >
-                {state === 'done' ? <IconCheck className="h-3 w-3" /> : i + 1}
-              </span>
-              {/* En pantallas muy angostas (<360px) solo la pestana activa
-                  muestra el texto: las otras quedaban como "Capt..." */}
-              <span
-                className={`truncate font-display text-sm font-semibold ${
-                  state === 'active' ? 'text-cocoa-900' : 'hidden text-cocoa-500 min-[360px]:inline'
-                }`}
-              >
-                {it.label}
-              </span>
-            </div>
-          </li>
-        );
-      })}
-    </ol>
   );
 }

@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AUTO_COOLDOWN_MS,
   isStableSequence,
@@ -9,34 +9,44 @@ import {
   STABLE_TICKS_NEEDED,
 } from './auto-capture';
 import { detectDocumentQuad } from './edge-detect';
-import {
-  IconBolt,
-  IconCamera,
-  IconCheck,
-  IconChevronLeft,
-  IconFrame,
-  IconImages,
-  IconRefresh,
-} from './icons';
+import { IconCamera, IconImages, IconLayers, IconRefresh, IconScanFrame, IconTorch } from './icons';
+import { SCAN_MODES, type ScanModeId } from './modes';
 import type { Quad } from './perspective';
 
 interface Props {
   /** Recibe 1..N archivos: 1 en captura normal, N en modo rafaga o al
    * seleccionar varios archivos en el picker. */
   onCapture: (files: File[]) => void;
+  /** Ir a "Mis paginas" (solo si ya hay paginas). */
   onCancel?: (() => void) | undefined;
   /** true mientras el padre decodifica las fotos recibidas. */
   busy?: boolean;
+  scanMode: ScanModeId;
+  onScanModeChange: (m: ScanModeId) => void;
+  pageCount: number;
+  /** Miniatura de la ultima pagina guardada (para la pila de la izquierda). */
+  lastThumb?: string | undefined;
 }
 
 /**
- * Vista de captura, dispuesta como la app de camara del telefono: visor a
- * pantalla completa, y abajo — al alcance del pulgar — galeria | disparador
- * | listo. Intenta abrir la camara trasera via getUserMedia; si falla
- * (desktop sin webcam, permiso denegado, etc.) cae a un input file con
+ * Vista de captura "Obturador": el visor a sangre es el protagonista. Arriba
+ * los interruptores (AUTO, RAFAGA, LUZ), abajo del visor el HUD de estado y
+ * la resolucion real; debajo los modos de escaneo y los controles de camara
+ * al alcance del pulgar: pila de paginas | disparador | galeria/listo.
+ *
+ * Intenta abrir la camara trasera via getUserMedia; si falla (desktop sin
+ * webcam, permiso denegado, etc.) cae a un input file con
  * `capture="environment"` que en movil abre la camara nativa.
  */
-export function CaptureView({ onCapture, onCancel, busy = false }: Props): React.ReactElement {
+export function CaptureView({
+  onCapture,
+  onCancel,
+  busy = false,
+  scanMode,
+  onScanModeChange,
+  pageCount,
+  lastThumb,
+}: Props): React.ReactElement {
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   // Token de cancelacion compartido entre el effect (mount/unmount) y el
@@ -48,6 +58,10 @@ export function CaptureView({ onCapture, onCancel, busy = false }: Props): React
   const cancellationRef = useRef<{ cancelled: boolean }>({ cancelled: false });
   const [mode, setMode] = useState<'starting' | 'live' | 'fallback'>('starting');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  // Resolucion real del stream (dato del HUD) y soporte de linterna.
+  const [res, setRes] = useState<string | null>(null);
+  const [torchSupported, setTorchSupported] = useState(false);
+  const [torchOn, setTorchOn] = useState(false);
 
   const startCamera = useCallback(async (): Promise<void> => {
     cancellationRef.current.cancelled = true;
@@ -56,6 +70,8 @@ export function CaptureView({ onCapture, onCancel, busy = false }: Props): React
 
     setErrorMsg(null);
     setMode('starting');
+    setTorchSupported(false);
+    setTorchOn(false);
 
     // Detener el stream previo AHORA: si este intento falla, el anterior
     // no debe quedar vivo con la luz encendida mientras se muestra el
@@ -96,7 +112,13 @@ export function CaptureView({ onCapture, onCancel, busy = false }: Props): React
         v.srcObject = stream;
         await v.play().catch(() => {});
       }
-      if (!cancellation.cancelled) setMode('live');
+      if (cancellation.cancelled) return;
+      // Linterna: solo si el navegador/dispositivo la expone (Chrome
+      // Android). En iPhone no existe via web: el boton no aparece.
+      const track = stream.getVideoTracks()[0];
+      const caps = (track?.getCapabilities?.() ?? {}) as { torch?: boolean };
+      setTorchSupported(caps.torch === true);
+      setMode('live');
     } catch (err) {
       if (cancellation.cancelled) return;
       setErrorMsg(friendlyCameraError(err));
@@ -128,6 +150,22 @@ export function CaptureView({ onCapture, onCancel, busy = false }: Props): React
     }
   }, [mode]);
 
+  // Resolucion real del video para el HUD (llega con loadedmetadata).
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    const update = (): void => {
+      if (v.videoWidth) setRes(`${v.videoWidth}×${v.videoHeight}`);
+    };
+    update();
+    v.addEventListener('loadedmetadata', update);
+    v.addEventListener('resize', update);
+    return () => {
+      v.removeEventListener('loadedmetadata', update);
+      v.removeEventListener('resize', update);
+    };
+  }, [mode]);
+
   // Al volver de otra app / bloquear el telefono, iOS termina o congela el
   // track de la camara: el visor quedaba en negro o congelado. Al volver a
   // estar visible se reanuda y, si el track murio, se reabre la camara.
@@ -144,6 +182,18 @@ export function CaptureView({ onCapture, onCancel, busy = false }: Props): React
     document.addEventListener('visibilitychange', onVisible);
     return () => document.removeEventListener('visibilitychange', onVisible);
   }, [mode, startCamera]);
+
+  const toggleTorch = useCallback(async () => {
+    const track = streamRef.current?.getVideoTracks()[0];
+    if (!track) return;
+    const next = !torchOn;
+    try {
+      await track.applyConstraints({ advanced: [{ torch: next } as MediaTrackConstraintSet] });
+      setTorchOn(next);
+    } catch {
+      setTorchSupported(false);
+    }
+  }, [torchOn]);
 
   // Modo rafaga: las capturas se acumulan y se editan todas juntas al
   // final — el flujo multi-pagina de CamScanner.
@@ -231,6 +281,17 @@ export function CaptureView({ onCapture, onCancel, busy = false }: Props): React
     },
     [onCapture, shots],
   );
+
+  // Miniatura de la ultima foto de la rafaga (pila de la izquierda).
+  const lastShotUrl = useMemo(
+    () => (shots.length ? URL.createObjectURL(shots[shots.length - 1]!) : null),
+    [shots],
+  );
+  useEffect(() => {
+    return () => {
+      if (lastShotUrl) URL.revokeObjectURL(lastShotUrl);
+    };
+  }, [lastShotUrl]);
 
   // --- Auto-captura ---------------------------------------------------------
   // Como CamScanner: cada ~380ms corre la deteccion de bordes sobre un
@@ -323,23 +384,26 @@ export function CaptureView({ onCapture, onCancel, busy = false }: Props): React
     };
   }, [mode, autoMode, busy]);
 
-  const hint = busy
+  // Estado del HUD (abajo a la izquierda del visor).
+  const hud: { text: string; tone: 'volt' | 'warn' | 'idle' } | null = busy
     ? null
-    : autoMode && lowContrast
-      ? 'Poco contraste: usa mas luz o un fondo mas oscuro que el papel.'
-      : autoMode
-        ? locking
-          ? 'Manten firme...'
-          : 'Encuadra el documento: se captura solo'
-        : 'Encuadra el documento y toca el boton';
+    : !autoMode
+      ? { text: 'MANUAL · TOCA EL OBTURADOR', tone: 'idle' }
+      : lowContrast
+        ? { text: 'POCO CONTRASTE · MÁS LUZ', tone: 'warn' }
+        : locking
+          ? { text: 'BLOQUEADO · NO TE MUEVAS', tone: 'volt' }
+          : liveQuad
+            ? { text: 'DOCUMENTO DETECTADO', tone: 'volt' }
+            : { text: 'BUSCANDO BORDES', tone: 'idle' };
+
+  const stackThumb = lastShotUrl ?? (pageCount > 0 ? lastThumb : undefined);
+  const stackCount = shots.length > 0 ? shots.length : pageCount;
 
   return (
-    <div className="stage-in flex min-h-0 flex-1 flex-col gap-3">
-      {/* Visor: ocupa todo el alto disponible */}
-      <div
-        ref={viewfinderRef}
-        className="relative min-h-[220px] flex-1 overflow-hidden rounded-lg border-2 border-cocoa-900 bg-cocoa-900 shadow-paper"
-      >
+    <div className="stage-in relative flex min-h-0 flex-1 flex-col bg-night-950">
+      {/* Visor a sangre */}
+      <div ref={viewfinderRef} className="relative min-h-[260px] flex-1 overflow-hidden bg-black">
         {/* El <video> vive SIEMPRE en el DOM (solo cambia la visibilidad):
             asi videoRef.current existe cuando getUserMedia resuelve y el
             stream se ata de inmediato. Montarlo condicionado a live dejaba
@@ -353,22 +417,24 @@ export function CaptureView({ onCapture, onCancel, busy = false }: Props): React
         />
 
         {mode === 'starting' && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-cocoa-900 text-kraft-300">
-            <IconCamera className="h-8 w-8 animate-pulse text-kraft-200" />
-            <span className="text-sm">Abriendo la camara...</span>
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-night-950 text-night-400">
+            <IconCamera className="h-8 w-8 animate-pulse" />
+            <span className="font-mono text-xs tracking-[0.14em]">ABRIENDO CÁMARA</span>
           </div>
         )}
 
         {mode === 'fallback' && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 overflow-y-auto bg-kraft-100 p-6 text-center">
-            <div className="flex h-16 w-16 items-center justify-center rounded-lg border-2 border-cocoa-900 bg-paper shadow-paper-sm">
-              <IconCamera className="h-8 w-8 text-cocoa-500" />
+          <div className="safe-top absolute inset-0 flex flex-col items-center justify-center gap-5 overflow-y-auto bg-night-950 px-8 text-center">
+            <div className="flex h-16 w-16 items-center justify-center rounded-2xl border border-night-700 bg-night-850 text-night-300">
+              <IconCamera className="h-8 w-8" />
             </div>
-            <div className="max-w-xs text-sm leading-relaxed text-cocoa-700">
-              <p className="font-semibold">No pudimos abrir la camara aqui.</p>
-              {errorMsg && <p className="mt-1 text-xs text-cocoa-500">{errorMsg}</p>}
+            <div className="max-w-xs">
+              <p className="font-display text-2xl font-bold uppercase tracking-wide text-night-100">Sin cámara</p>
+              <p className="mt-1.5 text-sm leading-relaxed text-night-400">
+                {errorMsg ?? 'No pudimos abrir la cámara en este navegador.'}
+              </p>
             </div>
-            <label className="btn-scan flex min-h-[52px] cursor-pointer items-center gap-2 rounded-lg px-6 py-3 font-display text-base font-semibold">
+            <label className="press flex min-h-[52px] cursor-pointer items-center gap-2 rounded-2xl bg-volt px-7 font-display text-lg font-extrabold uppercase tracking-[0.1em] text-night-950">
               <IconCamera className="h-5 w-5" />
               Tomar foto
               <input
@@ -382,10 +448,10 @@ export function CaptureView({ onCapture, onCancel, busy = false }: Props): React
             <button
               type="button"
               onClick={() => void startCamera()}
-              className="flex min-h-[44px] items-center gap-1.5 px-3 text-sm text-cocoa-700 underline underline-offset-4"
+              className="flex min-h-[44px] items-center gap-2 px-3 font-mono text-xs tracking-[0.12em] text-night-300"
             >
               <IconRefresh className="h-4 w-4" />
-              Reintentar camara
+              REINTENTAR CÁMARA
             </button>
           </div>
         )}
@@ -394,11 +460,14 @@ export function CaptureView({ onCapture, onCancel, busy = false }: Props): React
         {mode === 'live' && (
           <>
             <div className="viewfinder-vignette" aria-hidden />
-            <span className="viewfinder-corner tl" aria-hidden />
-            <span className="viewfinder-corner tr" aria-hidden />
-            <span className="viewfinder-corner br" aria-hidden />
-            <span className="viewfinder-corner bl" aria-hidden />
-            {!liveQuad && <span className="scan-line" aria-hidden />}
+            {!liveQuad && (
+              <>
+                <span className="frame-mark tl" aria-hidden />
+                <span className="frame-mark tr" aria-hidden />
+                <span className="frame-mark bl" aria-hidden />
+                <span className="frame-mark br" aria-hidden />
+              </>
+            )}
 
             {liveQuad && (
               <svg
@@ -409,43 +478,71 @@ export function CaptureView({ onCapture, onCancel, busy = false }: Props): React
               >
                 <polygon
                   points={liveQuad.map((p) => `${p.x * 100},${p.y * 100}`).join(' ')}
-                  fill={locking ? 'rgba(199, 62, 29, 0.22)' : 'rgba(199, 62, 29, 0.12)'}
-                  stroke="#C73E1D"
+                  fill={locking ? 'rgba(212, 255, 58, 0.16)' : 'rgba(212, 255, 58, 0.08)'}
+                  stroke="#D4FF3A"
                   strokeWidth={locking ? 3 : 2}
                   vectorEffect="non-scaling-stroke"
                 />
               </svg>
             )}
+            {/* Esquinas cuadradas del documento detectado (en px reales,
+                no dentro del SVG estirado, para que no se deformen). */}
+            {liveQuad &&
+              liveQuad.map((p, i) => (
+                <span
+                  key={i}
+                  aria-hidden
+                  className="pointer-events-none absolute h-3.5 w-3.5 -translate-x-1/2 -translate-y-1/2 border-[3px] border-volt bg-night-950"
+                  style={{ left: `${p.x * 100}%`, top: `${p.y * 100}%` }}
+                />
+              ))}
 
-            {/* Interruptores arriba a la derecha, lejos del pulgar que dispara */}
-            <div className="absolute right-2.5 top-2.5 flex gap-1.5">
-              <TogglePill
+            {/* Interruptores */}
+            <div className="top-safe absolute inset-x-3.5 flex items-center gap-2">
+              <Chip
                 active={autoMode}
                 onClick={() => setAutoMode((a) => !a)}
-                icon={<IconFrame className="h-4 w-4" />}
-                label="Auto"
-                title="Captura automatica al detectar el documento"
+                label="AUTO"
+                title="Captura automática al detectar el documento"
               />
-              <TogglePill
+              <Chip
                 active={batchMode}
                 onClick={() => setBatchMode((b) => !b)}
-                icon={<IconBolt className="h-4 w-4" />}
-                label="Rafaga"
-                title="Varias paginas seguidas: se editan al final"
+                label={batchMode && shots.length > 0 ? `RÁFAGA ${shots.length}` : 'RÁFAGA'}
+                icon={<IconLayers className="h-3.5 w-3.5" />}
+                title="Varias páginas seguidas: se editan al final"
               />
+              {torchSupported && (
+                <span className="ml-auto">
+                  <Chip
+                    active={torchOn}
+                    onClick={() => void toggleTorch()}
+                    label={torchOn ? 'LUZ ON' : 'LUZ'}
+                    icon={<IconTorch className="h-3.5 w-3.5" />}
+                    title="Linterna"
+                  />
+                </span>
+              )}
             </div>
 
-            {hint && (
-              <p
-                aria-live="polite"
-                className={`pointer-events-none absolute inset-x-3 bottom-3 mx-auto w-fit max-w-full rounded-full px-3.5 py-1.5 text-center text-xs font-semibold leading-snug ${
-                  autoMode && lowContrast
-                    ? 'border-2 border-note-300 bg-note-100 text-note-700'
-                    : 'bg-black/55 text-white'
-                }`}
-              >
-                {hint}
-              </p>
+            {/* HUD */}
+            {hud && (
+              <div className="pointer-events-none absolute inset-x-3.5 bottom-3.5 flex items-end justify-between gap-2">
+                <span
+                  aria-live="polite"
+                  className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 font-mono text-[11px] font-bold tracking-[0.08em] ${
+                    hud.tone === 'volt'
+                      ? 'bg-volt text-night-950'
+                      : hud.tone === 'warn'
+                        ? 'bg-warn text-night-950'
+                        : 'bg-black/60 text-night-100'
+                  }`}
+                >
+                  <span className={`h-1.5 w-1.5 rounded-full bg-current ${hud.tone === 'idle' ? 'hud-blink' : ''}`} />
+                  {hud.text}
+                </span>
+                {res && <span className="font-mono text-[11px] tracking-[0.06em] text-night-100/85">{res}</span>}
+              </div>
             )}
           </>
         )}
@@ -455,37 +552,62 @@ export function CaptureView({ onCapture, onCancel, busy = false }: Props): React
         )}
 
         {busy && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-cocoa-900/70 text-paper">
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-night-950/75 text-volt">
             <span className="spinner" aria-hidden />
-            <span className="text-sm font-semibold" role="status">
-              Preparando foto...
+            <span className="font-mono text-xs font-bold tracking-[0.14em] text-night-100" role="status">
+              PREPARANDO FOTO
             </span>
           </div>
         )}
-
       </div>
 
-      {/* Barra inferior tipo camara: galeria | disparador | listo */}
-      <div className="safe-bottom grid shrink-0 grid-cols-3 items-center px-1">
+      {/* Modos de escaneo */}
+      <div
+        role="radiogroup"
+        aria-label="Modo de escaneo"
+        className="no-scrollbar flex shrink-0 justify-center gap-6 overflow-x-auto px-4 pb-1 pt-3.5"
+      >
+        {SCAN_MODES.map((m) => {
+          const on = m.id === scanMode;
+          return (
+            <button
+              key={m.id}
+              type="button"
+              role="radio"
+              aria-checked={on}
+              onClick={() => onScanModeChange(m.id)}
+              className={`min-h-[36px] shrink-0 font-display text-[15px] font-bold uppercase tracking-[0.14em] transition-colors ${
+                on ? 'text-volt' : 'text-night-400'
+              }`}
+            >
+              {m.label}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Controles de camara: pila | obturador | galeria/listo */}
+      <div className="safe-bottom grid shrink-0 grid-cols-3 items-center px-7 pt-2">
         <div className="flex justify-start">
-          <label
-            className={`flex min-h-[56px] min-w-[64px] cursor-pointer flex-col items-center justify-center gap-1 rounded-lg px-2 text-xs font-semibold text-cocoa-700 ${
-              busy ? 'pointer-events-none opacity-50' : ''
-            }`}
-          >
-            <span className="flex h-11 w-11 items-center justify-center rounded-lg border-2 border-cocoa-900 bg-paper shadow-paper-ink-sm">
-              <IconImages className="h-5 w-5" />
-            </span>
-            Galeria
-            <input
-              type="file"
-              accept="image/*"
-              multiple
-              className="sr-only"
-              onChange={handleFile}
+          {stackCount > 0 && (shots.length > 0 || onCancel) ? (
+            <button
+              type="button"
+              onClick={shots.length > 0 ? handleBatchDone : handleCancel}
               disabled={busy}
-            />
-          </label>
+              aria-label={shots.length > 0 ? `Editar ${shots.length} capturas` : `Mis páginas (${pageCount})`}
+              className="press relative h-14 w-14 rounded-xl border-2 border-night-100 bg-night-850"
+            >
+              {stackThumb && (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={stackThumb} alt="" className="h-full w-full rounded-[10px] object-cover" />
+              )}
+              <span className="absolute -right-2 -top-2 flex h-6 min-w-6 items-center justify-center rounded-lg bg-volt px-1.5 font-mono text-xs font-bold text-night-950">
+                {stackCount}
+              </span>
+            </button>
+          ) : (
+            <span className="h-14 w-14" aria-hidden />
+          )}
         </div>
 
         <div className="flex justify-center">
@@ -494,64 +616,62 @@ export function CaptureView({ onCapture, onCancel, busy = false }: Props): React
               type="button"
               onClick={handleShutter}
               disabled={busy || shooting}
-              className="shutter shrink-0 disabled:opacity-60"
-              aria-label={batchMode ? `Capturar pagina ${shots.length + 1}` : 'Capturar'}
+              className="shutter shrink-0"
+              aria-label={batchMode ? `Capturar página ${shots.length + 1}` : 'Capturar'}
             >
               <span className="shutter-inner block" />
             </button>
           ) : (
-            <span className="h-[76px]" aria-hidden />
+            <span className="h-20 w-20" aria-hidden />
           )}
         </div>
 
         <div className="flex justify-end">
-          {batchMode && shots.length > 0 ? (
+          {shots.length > 0 ? (
             <button
               type="button"
               onClick={handleBatchDone}
               disabled={busy}
-              className="btn-scan relative flex min-h-[52px] items-center gap-1.5 rounded-lg px-3.5 font-display text-base font-semibold"
+              className="press flex h-14 items-center rounded-xl bg-volt px-4 font-display text-lg font-extrabold uppercase tracking-[0.1em] text-night-950"
             >
-              <IconCheck className="h-4 w-4" />
               Listo
-              <span className="absolute -right-2 -top-2 flex h-6 min-w-6 items-center justify-center rounded-full border-2 border-paper bg-cocoa-900 px-1 text-xs font-bold text-paper">
-                {shots.length}
-              </span>
             </button>
-          ) : onCancel ? (
-            <button
-              type="button"
-              onClick={handleCancel}
-              disabled={busy}
-              className="flex min-h-[56px] min-w-[64px] flex-col items-center justify-center gap-1 rounded-lg px-2 text-xs font-semibold text-cocoa-700"
+          ) : (
+            <label
+              aria-label="Galería"
+              className={`press flex h-14 w-14 cursor-pointer flex-col items-center justify-center gap-0.5 rounded-full border border-night-600 text-night-100 ${
+                busy ? 'pointer-events-none opacity-50' : ''
+              }`}
             >
-              <span className="flex h-11 w-11 items-center justify-center rounded-lg border-2 border-cocoa-900 bg-paper shadow-paper-ink-sm">
-                <IconChevronLeft className="h-5 w-5" />
-              </span>
-              Mis paginas
-            </button>
-          ) : batchMode && mode === 'live' ? (
-            <span className="max-w-[88px] text-right text-[11px] leading-tight text-cocoa-500">
-              Toma todas las paginas y luego toca Listo
-            </span>
-          ) : null}
+              <IconImages className="h-5 w-5" />
+              <span className="font-mono text-[9px] font-bold tracking-[0.08em]">GALERÍA</span>
+              <input
+                type="file"
+                accept="image/*"
+                multiple
+                className="sr-only"
+                onChange={handleFile}
+                disabled={busy}
+              />
+            </label>
+          )}
         </div>
       </div>
     </div>
   );
 }
 
-function TogglePill({
+function Chip({
   active,
   onClick,
-  icon,
   label,
+  icon,
   title,
 }: {
   active: boolean;
   onClick: () => void;
-  icon: React.ReactNode;
   label: string;
+  icon?: React.ReactNode;
   title: string;
 }): React.ReactElement {
   return (
@@ -560,13 +680,13 @@ function TogglePill({
       onClick={onClick}
       aria-pressed={active}
       title={title}
-      className={`flex h-10 items-center gap-1.5 rounded-full border-2 px-3 text-sm font-semibold transition-colors ${
+      className={`press flex h-9 items-center gap-1.5 rounded-lg border px-3 font-mono text-xs font-bold tracking-[0.08em] ${
         active
-          ? 'border-paper bg-stamp-600 text-paper'
-          : 'border-white/40 bg-black/55 text-white/85'
+          ? 'border-volt bg-volt text-night-950'
+          : 'border-white/20 bg-black/55 text-night-100'
       }`}
     >
-      {icon}
+      {icon ?? <IconScanFrame className="h-3.5 w-3.5" />}
       {label}
     </button>
   );
@@ -602,13 +722,13 @@ function friendlyCameraError(err: unknown): string {
   switch (name) {
     case 'NotAllowedError':
     case 'SecurityError':
-      return 'El permiso de camara esta bloqueado. Activalo en los ajustes del navegador, o toma la foto con el boton de abajo.';
+      return 'El permiso de cámara está bloqueado. Actívalo en los ajustes del navegador, o toma la foto con el botón de abajo.';
     case 'NotFoundError':
     case 'OverconstrainedError':
-      return 'No encontramos una camara en este dispositivo.';
+      return 'No encontramos una cámara en este dispositivo.';
     case 'NotReadableError':
     case 'AbortError':
-      return 'Otra app esta usando la camara. Cierrala y reintenta.';
+      return 'Otra app está usando la cámara. Ciérrala y reintenta.';
     default:
       return err instanceof Error && err.message ? err.message : 'Error desconocido.';
   }

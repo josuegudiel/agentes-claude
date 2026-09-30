@@ -184,3 +184,32 @@ export function IconShare(props: IconProps): React.ReactElement {
     </svg>
   );
 }
+
+export function IconLayers(props: IconProps): React.ReactElement {
+  return (
+    <svg {...base(props)}>
+      <path d="m12 3.5 8.5 4.5-8.5 4.5L3.5 8z" />
+      <path d="m3.5 12 8.5 4.5 8.5-4.5" />
+      <path d="m3.5 16 8.5 4.5 8.5-4.5" />
+    </svg>
+  );
+}
+
+export function IconTorch(props: IconProps): React.ReactElement {
+  return (
+    <svg {...base(props)}>
+      <path d="M8 3.5h8l-1.5 5h-5z" />
+      <path d="M9.5 8.5v9a2.5 2.5 0 0 0 5 0v-9" />
+      <path d="M12 12v2.5" />
+    </svg>
+  );
+}
+
+export function IconScanFrame(props: IconProps): React.ReactElement {
+  return (
+    <svg {...base(props)}>
+      <path d="M4 8.5V5.5A1.5 1.5 0 0 1 5.5 4h3M15.5 4h3A1.5 1.5 0 0 1 20 5.5v3M20 15.5v3a1.5 1.5 0 0 1-1.5 1.5h-3M8.5 20h-3A1.5 1.5 0 0 1 4 18.5v-3" />
+      <path d="M4 12h16" />
+    </svg>
+  );
+}

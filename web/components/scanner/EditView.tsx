@@ -10,8 +10,10 @@ import { cloneQuad, FULL_QUAD, INSET_QUAD, type Point, type Quad } from './persp
 
 interface Props {
   image: HTMLImageElement;
-  /** "Foto 2 de 5" cuando se edita una cola (rafaga / varios archivos). */
+  /** "FOTO 2/5" cuando se edita una cola (rafaga / varios archivos). */
   queueLabel?: string | undefined;
+  /** Filtro con el que abre (segun el modo de escaneo elegido en el visor). */
+  initialFilter?: FilterId;
   onConfirm: (canvas: HTMLCanvasElement, state: EditState) => Promise<void> | void;
   onBack: () => void;
 }
@@ -31,9 +33,15 @@ const STAGE_PAD = 22;
  * al alto (antes una foto vertical empujaba filtros y "Aplicar" fuera de
  * la pantalla y habia que hacer scroll... tocando fuera del lienzo).
  */
-export function EditView({ image, queueLabel, onConfirm, onBack }: Props): React.ReactElement {
+export function EditView({
+  image,
+  queueLabel,
+  initialFilter = 'magic',
+  onConfirm,
+  onBack,
+}: Props): React.ReactElement {
   const [rotation, setRotation] = useState(0);
-  const [filter, setFilter] = useState<FilterId>('magic');
+  const [filter, setFilter] = useState<FilterId>(initialFilter);
   const [quad, setQuad] = useState<Quad>(() => cloneQuad(INSET_QUAD));
   const [confirming, setConfirming] = useState(false);
   const [confirmError, setConfirmError] = useState<string | null>(null);
@@ -273,7 +281,7 @@ export function EditView({ image, queueLabel, onConfirm, onBack }: Props): React
 
     loupe.width = LOUPE_SIZE;
     loupe.height = LOUPE_SIZE;
-    ctx.fillStyle = '#F5EEDF';
+    ctx.fillStyle = '#161618';
     ctx.fillRect(0, 0, LOUPE_SIZE, LOUPE_SIZE);
 
     // La lupa amplifica respecto del tamano MOSTRADO (el canvas puede
@@ -285,7 +293,7 @@ export function EditView({ image, queueLabel, onConfirm, onBack }: Props): React
       ctx.drawImage(preview, r.sx, r.sy, r.sw, r.sh, r.dx, r.dy, r.dw, r.dh);
     }
 
-    ctx.strokeStyle = 'rgba(199,62,29,0.9)';
+    ctx.strokeStyle = 'rgba(212,255,58,0.95)';
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.moveTo(LOUPE_SIZE / 2, 0);
@@ -337,15 +345,23 @@ export function EditView({ image, queueLabel, onConfirm, onBack }: Props): React
   }, [image, rotation, filter, quad, onConfirm]);
 
   const hint = autoDetected
-    ? 'Bordes detectados: ajusta las esquinas si hace falta'
-    : 'Arrastra las 4 esquinas a los bordes del documento';
+    ? 'BORDES LISTOS · AJUSTA SI HACE FALTA'
+    : 'ARRASTRA LAS 4 ESQUINAS';
 
   return (
-    <div className="stage-in flex min-h-0 flex-1 flex-col gap-2.5">
+    <div className="stage-in safe-top safe-x flex min-h-0 flex-1 flex-col gap-3">
+      {/* Cabecera */}
+      <div className="flex shrink-0 items-baseline justify-between">
+        <h2 className="font-display text-[28px] font-extrabold uppercase leading-none tracking-[0.02em]">Ajustar</h2>
+        <span className="font-mono text-xs tracking-[0.06em] text-night-400">
+          02/03{queueLabel ? ` · ${queueLabel}` : ''}
+        </span>
+      </div>
+
       {/* Lienzo con overlay del quad */}
       <div
         ref={stageRef}
-        className="relative flex min-h-[150px] flex-1 items-center justify-center overflow-hidden rounded-lg border-2 border-cocoa-900 bg-cocoa-900/90 shadow-paper"
+        className="relative flex min-h-[150px] flex-1 items-center justify-center overflow-hidden rounded-2xl border border-night-700 bg-night-850"
         style={{ touchAction: 'none' }}
       >
         {display && (
@@ -384,8 +400,8 @@ export function EditView({ image, queueLabel, onConfirm, onBack }: Props): React
             del lado contrario a la esquina para que el dedo no la tape. */}
         {dragCorner !== null && (
           <div
-            className={`pointer-events-none absolute top-2 overflow-hidden rounded-full border-[3px] border-paper shadow-paper-ink ${
-              loupePlacement(quad[dragCorner]!.x) === 'right' ? 'right-2' : 'left-2'
+            className={`pointer-events-none absolute top-2.5 overflow-hidden rounded-full border-[3px] border-volt shadow-[0_8px_24px_rgba(0,0,0,0.6)] ${
+              loupePlacement(quad[dragCorner]!.x) === 'right' ? 'right-2.5' : 'left-2.5'
             }`}
             style={{ width: LOUPE_SIZE, height: LOUPE_SIZE }}
             aria-hidden
@@ -393,38 +409,33 @@ export function EditView({ image, queueLabel, onConfirm, onBack }: Props): React
             <canvas ref={loupeRef} className="block" />
           </div>
         )}
-
-        {queueLabel && dragCorner === null && (
-          <span className="pointer-events-none absolute left-2 top-2 rounded-full bg-stamp-600 px-2.5 py-1 font-display text-xs font-bold text-paper">
-            {queueLabel}
-          </span>
-        )}
       </div>
 
-      <p className="flex shrink-0 items-center justify-center gap-1.5 text-center text-xs text-cocoa-500">
-        {autoDetected && <IconWand className="h-3.5 w-3.5 shrink-0 text-stamp-600" />}
+      <p className="flex shrink-0 items-center justify-center gap-1.5 font-mono text-[11px] tracking-[0.06em] text-night-400">
+        {autoDetected && <IconWand className="h-3.5 w-3.5 shrink-0 text-volt" />}
         <span className="truncate">{hint}</span>
       </p>
 
       {/* Herramientas */}
       <div className="grid shrink-0 grid-cols-4 gap-2">
-        <ToolButton icon={<IconRotate className="h-5 w-5" />} label="Rotar" onClick={handleRotate} />
-        <ToolButton icon={<IconWand className="h-5 w-5" />} label="Detectar" onClick={handleDetect} />
+        <ToolButton icon={<IconRotate className="h-5 w-5" />} label="ROTAR" onClick={handleRotate} />
+        <ToolButton icon={<IconWand className="h-5 w-5" />} label="AUTO" ariaLabel="Detectar bordes" onClick={handleDetect} />
         <ToolButton
           icon={<IconFrame className="h-5 w-5" />}
-          label="Margen"
+          label="MARGEN"
           onClick={() => setQuad(cloneQuad(INSET_QUAD))}
         />
         <ToolButton
           icon={<IconExpand className="h-5 w-5" />}
-          label="Todo"
+          label="TODO"
+          ariaLabel="Imagen completa"
           onClick={() => setQuad(cloneQuad(FULL_QUAD))}
         />
       </div>
 
-      {/* Filtros con preview real */}
+      {/* Filtros con preview real (tira de pelicula) */}
       <div className="shrink-0" role="group" aria-label="Filtro">
-        <div className="no-scrollbar -mx-1 flex snap-x gap-2 overflow-x-auto px-1 pb-1 pt-1.5">
+        <div className="no-scrollbar -mx-3.5 flex snap-x gap-2 overflow-x-auto px-3.5 pb-0.5">
           {FILTERS.map((f) => {
             const selected = filter === f.id;
             const thumb = filterThumbs[f.id];
@@ -434,20 +445,23 @@ export function EditView({ image, queueLabel, onConfirm, onBack }: Props): React
                 type="button"
                 onClick={() => setFilter(f.id)}
                 title={f.hint}
+                aria-label={f.label}
                 aria-pressed={selected}
-                className={`chip-stamp flex shrink-0 snap-start flex-col items-center gap-1 rounded-lg border-2 border-cocoa-900/25 bg-paper p-1 shadow-paper-sm ${
-                  selected ? 'chip-selected' : ''
-                }`}
+                className="press flex w-[74px] shrink-0 snap-start flex-col items-center gap-1.5"
               >
-                <span className="block h-14 w-12 overflow-hidden rounded bg-kraft-100">
+                <span
+                  className={`block h-[76px] w-[66px] overflow-hidden rounded-lg border-2 bg-night-800 ${
+                    selected ? 'border-volt' : 'border-night-700'
+                  }`}
+                >
                   {thumb && (
                     // eslint-disable-next-line @next/next/no-img-element
                     <img src={thumb} alt="" aria-hidden className="h-full w-full object-cover" />
                   )}
                 </span>
                 <span
-                  className={`text-[11px] font-semibold leading-none ${
-                    selected ? 'text-stamp-700' : 'text-cocoa-500'
+                  className={`w-full truncate text-center font-display text-[13px] font-bold uppercase leading-none tracking-[0.03em] ${
+                    selected ? 'text-volt' : 'text-night-400'
                   }`}
                 >
                   {f.label}
@@ -459,30 +473,30 @@ export function EditView({ image, queueLabel, onConfirm, onBack }: Props): React
       </div>
 
       {confirmError && (
-        <p role="alert" className="shrink-0 rounded-md border-2 border-stamp-600 bg-stamp-50 px-3 py-2 text-xs text-stamp-700">
+        <p role="alert" className="shrink-0 rounded-xl border border-danger/60 bg-danger/10 px-3 py-2 text-xs text-danger">
           {confirmError}
         </p>
       )}
 
       {/* CTA: siempre visible al pie, al alcance del pulgar */}
-      <div className="safe-bottom flex shrink-0 items-center gap-2">
+      <div className="safe-bottom flex shrink-0 items-center gap-2.5 pt-0.5">
         <button
           type="button"
           onClick={onBack}
           disabled={confirming}
-          className="btn-ghost flex min-h-[52px] items-center justify-center gap-1 rounded-lg px-4 font-display text-base font-semibold text-cocoa-900"
+          aria-label="Volver"
+          className="press flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl border border-night-600 text-night-100 disabled:opacity-40"
         >
-          <IconChevronLeft className="h-4 w-4" />
-          Volver
+          <IconChevronLeft className="h-5 w-5" />
         </button>
         <button
           type="button"
           onClick={handleConfirm}
           disabled={confirming}
-          className="btn-scan flex min-h-[52px] flex-1 items-center justify-center gap-2 rounded-lg px-5 font-display text-base font-semibold"
+          className="press flex h-14 flex-1 items-center justify-center gap-2.5 rounded-2xl bg-volt px-5 font-display text-xl font-extrabold uppercase tracking-[0.1em] text-night-950 disabled:opacity-70"
         >
           {confirming && <span className="spinner spinner-sm" aria-hidden />}
-          {confirming ? 'Procesando...' : 'Aplicar'}
+          {confirming ? 'Procesando' : 'Aplicar'}
         </button>
       </div>
     </div>
@@ -492,20 +506,23 @@ export function EditView({ image, queueLabel, onConfirm, onBack }: Props): React
 function ToolButton({
   icon,
   label,
+  ariaLabel,
   onClick,
 }: {
   icon: React.ReactNode;
   label: string;
+  ariaLabel?: string;
   onClick: () => void;
 }): React.ReactElement {
   return (
     <button
       type="button"
       onClick={onClick}
-      className="btn-ghost flex min-h-[52px] flex-col items-center justify-center gap-0.5 rounded-lg px-1 py-1.5 text-stamp-600"
+      aria-label={ariaLabel ?? label}
+      className="press flex min-h-[56px] flex-col items-center justify-center gap-1 rounded-xl border border-night-700 bg-night-850 px-1 py-2 text-night-200 active:border-volt active:text-volt"
     >
       {icon}
-      <span className="text-[11px] font-semibold text-cocoa-700">{label}</span>
+      <span className="font-mono text-[10px] font-bold tracking-[0.08em]">{label}</span>
     </button>
   );
 }
@@ -574,8 +591,8 @@ function QuadOverlay({ quad }: { quad: Quad }): React.ReactElement {
       preserveAspectRatio="none"
       aria-hidden
     >
-      <path d={`M0 0 H100 V100 H0 Z ${innerPath} Z`} fillRule="evenodd" fill="rgba(43, 36, 21, 0.5)" />
-      <polygon points={pts} fill="none" stroke="#C73E1D" strokeWidth="2" vectorEffect="non-scaling-stroke" />
+      <path d={`M0 0 H100 V100 H0 Z ${innerPath} Z`} fillRule="evenodd" fill="rgba(0, 0, 0, 0.55)" />
+      <polygon points={pts} fill="rgba(212, 255, 58, 0.06)" stroke="#D4FF3A" strokeWidth="2" vectorEffect="non-scaling-stroke" />
     </svg>
   );
 }
@@ -622,8 +639,8 @@ function Handle({
       style={{ left: `${point.x * 100}%`, top: `${point.y * 100}%`, touchAction: 'none' }}
     >
       <span
-        className={`block rounded-full border-[3px] border-cocoa-900 shadow-paper-ink-sm transition-transform group-focus-visible:ring-2 group-focus-visible:ring-stamp-600 ${
-          active ? 'h-7 w-7 scale-110 bg-stamp-600' : 'h-6 w-6 bg-paper'
+        className={`block border-[3px] border-volt transition-transform group-focus-visible:ring-2 group-focus-visible:ring-volt group-focus-visible:ring-offset-2 group-focus-visible:ring-offset-night-950 ${
+          active ? 'h-6 w-6 scale-110 bg-volt' : 'h-[18px] w-[18px] bg-night-950'
         }`}
       />
     </button>

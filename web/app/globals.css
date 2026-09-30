@@ -3,16 +3,15 @@
 @tailwind utilities;
 
 :root {
-  color-scheme: light;
+  color-scheme: dark;
 }
 
-/* Fondo del documento = papel del scanner. Antes quedaba el azul marino
-   de los agentes viejos: se veia en el rebote de scroll de iOS, detras de
-   las barras del navegador y en el area del notch. */
+/* Fondo del documento = negro del scanner (tambien en el rebote de scroll
+   de iOS, detras de las barras del navegador y en el area del notch). */
 html,
 body {
-  background: #ede4d3;
-  color: #2b2415;
+  background: #0b0b0c;
+  color: #f2f2f0;
 }
 
 /* Scrollbar mas discreto */
@@ -290,155 +289,17 @@ body {
 }
 
 /* =====================================================================
-   Scanner — tema "El Escritorio": la interfaz como papeleria fisica.
-   Papel kraft con grano real, fichas con sombra dura desplazada (recorte
-   de papel, no blur), pestanas de carpeta, botones que se estampan.
-   Sin degradados decorativos, sin glow, sin glassmorphism.
+   Scanner — tema "Obturador": la app de camara de un profesional.
+   Negro neutro, un solo acento lima, rotulos condensados en mayusculas y
+   datos tecnicos en monoespaciada. La camara es la protagonista.
    ===================================================================== */
 
 .scanner-theme {
-  background-color: #ede4d3;
-  /* Grano de papel: ruido fractal inline (autocontenido, sin requests). */
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0.17 0 0 0 0 0.14 0 0 0 0 0.08 0 0 0 0.05 0'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)'/%3E%3C/svg%3E");
-  color-scheme: light;
+  background: #0b0b0c;
+  color-scheme: dark;
   /* Evita el zoom por doble tap en iOS sin bloquear el pinch-zoom. */
   touch-action: manipulation;
-}
-
-/* --- Visor de camara ------------------------------------------------- */
-/* Las esquinas superiores bajan para no chocar con los interruptores
-   Auto / Rafaga (arriba a la derecha) ni con "Mis paginas". */
-
-.viewfinder-corner {
-  position: absolute;
-  width: 24px;
-  height: 24px;
-  border-color: rgba(255, 255, 255, 0.9);
-  border-style: solid;
-  border-width: 0;
-  pointer-events: none;
-}
-.viewfinder-corner.tl { top: 62px; left: 14px; border-top-width: 3px; border-left-width: 3px; }
-.viewfinder-corner.tr { top: 62px; right: 14px; border-top-width: 3px; border-right-width: 3px; }
-.viewfinder-corner.br { bottom: 14px; right: 14px; border-bottom-width: 3px; border-right-width: 3px; }
-.viewfinder-corner.bl { bottom: 14px; left: 14px; border-bottom-width: 3px; border-left-width: 3px; }
-
-/* Linea de escaneo: trazo DISCONTINUO (como linea de corte de papel). */
-@keyframes scan-sweep {
-  0%, 100% { top: 12%; }
-  50% { top: 84%; }
-}
-.scan-line {
-  position: absolute;
-  left: 10%;
-  right: 10%;
-  height: 0;
-  border-top: 2px dashed rgba(255, 255, 255, 0.65);
-  animation: scan-sweep 3.8s ease-in-out infinite;
-  pointer-events: none;
-}
-
-.viewfinder-vignette {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background: radial-gradient(ellipse 88% 80% at 50% 50%, transparent 62%, rgba(0, 0, 0, 0.3));
-}
-
-/* --- Boton shutter: sello de goma ------------------------------------- */
-
-.shutter {
-  width: 72px;
-  height: 72px;
-  border-radius: 9999px;
-  background: #fdfbf5;
-  border: 2px solid #2b2415;
-  box-shadow: 3px 3px 0 0 #2b2415;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: transform 110ms ease, box-shadow 110ms ease;
-}
-.shutter:active {
-  transform: translate(3px, 3px);
-  box-shadow: 0 0 0 0 #2b2415;
-}
-.shutter-inner {
-  width: 52px;
-  height: 52px;
-  border-radius: 9999px;
-  background: #c73e1d;
-  border: 2px solid #2b2415;
-}
-
-/* --- Componentes del tema --------------------------------------------- */
-
-/* Boton primario: etiqueta estampada — se hunde al presionar. */
-.btn-scan {
-  background: #c73e1d;
-  color: #fdfbf5;
-  border: 2px solid #2b2415;
-  box-shadow: 3px 3px 0 0 #2b2415;
-  transition: transform 110ms ease, box-shadow 110ms ease, background 150ms ease;
-}
-.btn-scan:hover:not(:disabled) { background: #a93317; }
-.btn-scan:active:not(:disabled) {
-  transform: translate(3px, 3px);
-  box-shadow: 0 0 0 0 #2b2415;
-}
-.btn-scan:disabled { opacity: 0.5; box-shadow: 2px 2px 0 0 rgba(43, 36, 21, 0.4); }
-
-/* Boton secundario: ficha de papel. */
-.btn-ghost {
-  border: 2px solid #2b2415;
-  background: #fdfbf5;
-  box-shadow: 2px 2px 0 0 rgba(43, 36, 21, 0.35);
-  transition: transform 110ms ease, box-shadow 110ms ease, background 150ms ease;
-}
-.btn-ghost:hover { background: #f5eedf; }
-.btn-ghost:active {
-  transform: translate(2px, 2px);
-  box-shadow: 0 0 0 0 rgba(43, 36, 21, 0.35);
-}
-
-/* Chip seleccionable: borde de tinta + punto de sello rojo (via ::after
-   en el wrapper .chip-stamp). */
-.chip-selected {
-  border-color: #2b2415 !important;
-  background: #fdfbf5 !important;
-  box-shadow: 2px 2px 0 0 #2b2415 !important;
-}
-.chip-stamp {
-  position: relative;
-}
-.chip-stamp.chip-selected::after {
-  content: '';
-  position: absolute;
-  top: -5px;
-  right: -5px;
-  width: 14px;
-  height: 14px;
-  border-radius: 9999px;
-  background: #c73e1d;
-  border: 2px solid #fdfbf5;
-}
-
-/* Pestanas de carpeta (steps). La activa "sube" y se funde con la linea
-   base; las demas quedan hundidas y atenuadas. */
-.folder-tab {
-  border: 2px solid #2b2415;
-  border-bottom: none;
-  border-radius: 10px 10px 0 0;
-  margin-bottom: 0;
-}
-.folder-tab.tab-active {
-  background: #fdfbf5;
-  transform: translateY(2px);
-}
-.folder-tab.tab-idle {
-  background: #dfd2b8;
-  border-color: rgba(43, 36, 21, 0.45);
-  transform: translateY(6px);
+  -webkit-tap-highlight-color: transparent;
 }
 
 /* Contenedor de la app a alto de pantalla real: 100dvh descuenta las
@@ -447,12 +308,71 @@ body {
 .app-shell {
   height: 100vh;
   height: 100dvh;
-  padding-top: max(0.625rem, env(safe-area-inset-top));
-  padding-left: max(0.75rem, env(safe-area-inset-left));
-  padding-right: max(0.75rem, env(safe-area-inset-right));
 }
 
-/* Indicador de trabajo: circulo de tinta que gira. */
+/* Margenes seguros (notch / home indicator). */
+.safe-top { padding-top: max(0.75rem, env(safe-area-inset-top)); }
+.safe-bottom { padding-bottom: max(0.875rem, env(safe-area-inset-bottom)); }
+.safe-x {
+  padding-left: max(0.875rem, env(safe-area-inset-left));
+  padding-right: max(0.875rem, env(safe-area-inset-right));
+}
+.top-safe { top: max(0.75rem, env(safe-area-inset-top)); }
+
+/* --- Visor ------------------------------------------------------------ */
+
+.viewfinder-vignette {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(to bottom, rgba(0, 0, 0, 0.45), transparent 22%),
+    linear-gradient(to top, rgba(0, 0, 0, 0.5), transparent 26%);
+}
+
+/* Marcas de encuadre (esquinas) mientras no hay documento detectado. */
+.frame-mark {
+  position: absolute;
+  width: 26px;
+  height: 26px;
+  border-color: rgba(242, 242, 240, 0.75);
+  border-style: solid;
+  border-width: 0;
+  pointer-events: none;
+}
+.frame-mark.tl { top: 18%; left: 9%; border-top-width: 2px; border-left-width: 2px; }
+.frame-mark.tr { top: 18%; right: 9%; border-top-width: 2px; border-right-width: 2px; }
+.frame-mark.bl { bottom: 16%; left: 9%; border-bottom-width: 2px; border-left-width: 2px; }
+.frame-mark.br { bottom: 16%; right: 9%; border-bottom-width: 2px; border-right-width: 2px; }
+
+/* Punto "grabando" del HUD mientras busca bordes. */
+@keyframes hud-blink { 50% { opacity: 0.25; } }
+.hud-blink { animation: hud-blink 1.1s steps(1) infinite; }
+
+/* --- Obturador -------------------------------------------------------- */
+
+.shutter {
+  width: 80px;
+  height: 80px;
+  border-radius: 9999px;
+  border: 4px solid #f2f2f0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  transition: transform 120ms ease;
+}
+.shutter-inner {
+  width: 64px;
+  height: 64px;
+  border-radius: 9999px;
+  background: #f2f2f0;
+  transition: transform 120ms ease, background 150ms ease;
+}
+.shutter:active:not(:disabled) .shutter-inner { transform: scale(0.86); background: #d4ff3a; }
+.shutter:disabled { opacity: 0.45; }
+
+/* Indicador de trabajo. */
 @keyframes spin { to { transform: rotate(360deg); } }
 .spinner {
   display: inline-block;
@@ -465,38 +385,39 @@ body {
 }
 .spinner-sm { width: 18px; height: 18px; border-width: 2.5px; }
 
+/* Presion de botones: se hunden levemente. */
+.press { transition: transform 110ms ease, background-color 150ms ease, border-color 150ms ease, color 150ms ease; }
+.press:active:not(:disabled) { transform: scale(0.97); }
+
+/* Scroll horizontal sin barra visible (tira de filtros, modos). */
+.no-scrollbar { scrollbar-width: none; -ms-overflow-style: none; }
+.no-scrollbar::-webkit-scrollbar { display: none; }
+
+/* Flash de captura. */
+@keyframes shot-flash {
+  from { opacity: 0.8; }
+  to { opacity: 0; }
+}
+.shot-flash { animation: shot-flash 220ms ease-out both; }
+
 @keyframes toast-in {
   from { opacity: 0; transform: translateY(10px); }
   to { opacity: 1; transform: none; }
 }
 .toast-in { animation: toast-in 200ms ease-out both; }
 
-/* Barra inferior respetando el notch/home-indicator de iOS. */
-.safe-bottom { padding-bottom: max(0.75rem, env(safe-area-inset-bottom)); }
-
-/* Scroll horizontal sin barra visible (strips de filtros). */
-.no-scrollbar { scrollbar-width: none; -ms-overflow-style: none; }
-.no-scrollbar::-webkit-scrollbar { display: none; }
-
-/* Flash de confirmacion en modo rafaga. */
-@keyframes shot-flash {
-  from { opacity: 0.75; }
-  to { opacity: 0; }
-}
-.shot-flash { animation: shot-flash 220ms ease-out both; }
-
 /* Entrada de las vistas del flujo. */
 @keyframes stage-in {
-  from { opacity: 0; transform: translateY(8px); }
-  to { opacity: 1; transform: none; }
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
-.stage-in { animation: stage-in 260ms ease-out both; }
+.stage-in { animation: stage-in 220ms ease-out both; }
 
 @media (prefers-reduced-motion: reduce) {
-  .scan-line,
   .stage-in,
   .toast-in,
-  .shot-flash {
+  .shot-flash,
+  .hud-blink {
     animation: none !important;
   }
 }
