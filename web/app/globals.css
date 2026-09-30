@@ -3,13 +3,16 @@
 @tailwind utilities;
 
 :root {
-  color-scheme: dark;
+  color-scheme: light;
 }
 
+/* Fondo del documento = papel del scanner. Antes quedaba el azul marino
+   de los agentes viejos: se veia en el rebote de scroll de iOS, detras de
+   las barras del navegador y en el area del notch. */
 html,
 body {
-  background: #020617;
-  color: #e2e8f0;
+  background: #ede4d3;
+  color: #2b2415;
 }
 
 /* Scrollbar mas discreto */
@@ -303,6 +306,8 @@ body {
 }
 
 /* --- Visor de camara ------------------------------------------------- */
+/* Las esquinas superiores bajan para no chocar con los interruptores
+   Auto / Rafaga (arriba a la derecha) ni con "Mis paginas". */
 
 .viewfinder-corner {
   position: absolute;
@@ -313,8 +318,8 @@ body {
   border-width: 0;
   pointer-events: none;
 }
-.viewfinder-corner.tl { top: 14px; left: 14px; border-top-width: 3px; border-left-width: 3px; }
-.viewfinder-corner.tr { top: 14px; right: 14px; border-top-width: 3px; border-right-width: 3px; }
+.viewfinder-corner.tl { top: 62px; left: 14px; border-top-width: 3px; border-left-width: 3px; }
+.viewfinder-corner.tr { top: 62px; right: 14px; border-top-width: 3px; border-right-width: 3px; }
 .viewfinder-corner.br { bottom: 14px; right: 14px; border-bottom-width: 3px; border-right-width: 3px; }
 .viewfinder-corner.bl { bottom: 14px; left: 14px; border-bottom-width: 3px; border-left-width: 3px; }
 
@@ -436,6 +441,36 @@ body {
   transform: translateY(6px);
 }
 
+/* Contenedor de la app a alto de pantalla real: 100dvh descuenta las
+   barras dinamicas del navegador movil (100vh en iOS las incluye y el
+   pie quedaba escondido detras de la barra de Safari). */
+.app-shell {
+  height: 100vh;
+  height: 100dvh;
+  padding-top: max(0.625rem, env(safe-area-inset-top));
+  padding-left: max(0.75rem, env(safe-area-inset-left));
+  padding-right: max(0.75rem, env(safe-area-inset-right));
+}
+
+/* Indicador de trabajo: circulo de tinta que gira. */
+@keyframes spin { to { transform: rotate(360deg); } }
+.spinner {
+  display: inline-block;
+  width: 28px;
+  height: 28px;
+  border-radius: 9999px;
+  border: 3px solid currentColor;
+  border-right-color: transparent;
+  animation: spin 800ms linear infinite;
+}
+.spinner-sm { width: 18px; height: 18px; border-width: 2.5px; }
+
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: none; }
+}
+.toast-in { animation: toast-in 200ms ease-out both; }
+
 /* Barra inferior respetando el notch/home-indicator de iOS. */
 .safe-bottom { padding-bottom: max(0.75rem, env(safe-area-inset-bottom)); }
 
@@ -460,6 +495,7 @@ body {
 @media (prefers-reduced-motion: reduce) {
   .scan-line,
   .stage-in,
+  .toast-in,
   .shot-flash {
     animation: none !important;
   }

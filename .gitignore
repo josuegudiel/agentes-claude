@@ -44,3 +44,6 @@ _split/**/node_modules
 _split/**/.next
 _split/**/*.tsbuildinfo
 _split/**/next-env.d.ts
+
+# Notas de trabajo de investigacion (el informe final va en reports/)
+research_notes/

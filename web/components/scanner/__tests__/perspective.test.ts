@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   applyHomography,
   computeHomography,
+  estimateAspectRatio,
   FULL_QUAD,
   isAxisAlignedRect,
   isConvexQuad,
@@ -274,6 +275,25 @@ describe('warpPerspective', () => {
     expect(out!.data[ci]).toBeGreaterThan(200);
   });
 
+  it('acota la salida al lado maximo conservando el aspecto', () => {
+    // Quad muy inclinado: su borde superior mide la diagonal (~566px)
+    // sobre una fuente de 400px. Con tope 300 la salida no pasa de 300.
+    const src = makeImageData(400, 400, () => [128, 128, 128]);
+    const quadPx: Quad = [
+      { x: 0, y: 0 },
+      { x: 400, y: 400 },
+      { x: 300, y: 400 },
+      { x: 0, y: 120 },
+    ];
+    const free = warpPerspective(src, quadPx, 10_000);
+    const capped = warpPerspective(src, quadPx, 300);
+    expect(free).not.toBeNull();
+    expect(capped).not.toBeNull();
+    expect(free!.width).toBeGreaterThan(400);
+    expect(Math.max(capped!.width, capped!.height)).toBe(300);
+    expect(capped!.width / capped!.height).toBeCloseTo(free!.width / free!.height, 1);
+  });
+
   it('devuelve null para quad degenerado', () => {
     const src = makeImageData(4, 4, () => [100, 100, 100]);
     const degenerate: Quad = [
@@ -298,5 +318,59 @@ describe('warpPerspective', () => {
     for (let i = 3; i < out!.data.length; i += 4) {
       expect(out!.data[i]).toBe(255);
     }
+  });
+});
+
+describe('estimateAspectRatio (Zhang & He)', () => {
+  /** Proyecta un rectangulo W x H (en su plano) con una camara pinhole. */
+  function project(
+    W: number,
+    H: number,
+    f: number,
+    cx: number,
+    cy: number,
+    rx: number,
+    ry: number,
+    dist: number,
+  ): Quad {
+    const pts = [
+      [-W / 2, -H / 2],
+      [W / 2, -H / 2],
+      [W / 2, H / 2],
+      [-W / 2, H / 2],
+    ];
+    const cX = Math.cos(rx), sX = Math.sin(rx), cY = Math.cos(ry), sY = Math.sin(ry);
+    return pts.map(([x, y]) => {
+      // Rotacion en X (inclinacion hacia atras) y en Y (giro lateral).
+      let X = x!, Y = y!, Z = 0;
+      [Y, Z] = [Y * cX - Z * sX, Y * sX + Z * cX];
+      [X, Z] = [X * cY + Z * sY, -X * sY + Z * cY];
+      Z += dist;
+      return { x: cx + (f * X) / Z, y: cy + (f * Y) / Z };
+    }) as Quad;
+  }
+
+  it('recupera la proporcion A4 de una hoja fotografiada inclinada', () => {
+    const q = project(210, 297, 3000, 2016, 1512, 0.55, 0.3, 700);
+    const top = Math.hypot(q[1].x - q[0].x, q[1].y - q[0].y);
+    const left = Math.hypot(q[3].x - q[0].x, q[3].y - q[0].y);
+    const naive = top / left;
+    const est = estimateAspectRatio(q, { x: 2016, y: 1512 }, 4032)!;
+    const truth = 210 / 297;
+    // La proporcion "por bordes" esta muy lejos; la estimada, a <2%.
+    expect(Math.abs(naive - truth) / truth).toBeGreaterThan(0.08);
+    expect(Math.abs(est - truth) / truth).toBeLessThan(0.02);
+  });
+
+  it('foto frontal: coincide con el cociente de bordes', () => {
+    const q = project(300, 200, 3000, 2016, 1512, 0, 0, 800);
+    const est = estimateAspectRatio(q, { x: 2016, y: 1512 }, 4032)!;
+    expect(est).toBeCloseTo(1.5, 2);
+  });
+
+  it('solo inclinacion en un eje (trapecio) tambien funciona', () => {
+    const q = project(216, 279, 2800, 2016, 1512, 0.6, 0, 650);
+    const est = estimateAspectRatio(q, { x: 2016, y: 1512 }, 4032)!;
+    expect(Math.abs(est - 216 / 279) / (216 / 279)).toBeLessThan(0.03);
   });
 });

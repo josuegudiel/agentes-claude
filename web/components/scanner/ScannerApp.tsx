@@ -5,15 +5,11 @@ import { CaptureView } from './CaptureView';
 import { EditView } from './EditView';
 import { ExportView } from './ExportView';
 import { IconCheck, IconX } from './icons';
+import { pageFromBlob, pageFromCanvas, type ScanPage } from './pages';
 import { loadImageFromFile } from './pipeline';
 import { isStorageAvailable, loadPages, savePages } from './storage';
 
 type Stage = 'capture' | 'edit' | 'export';
-
-interface Page {
-  canvas: HTMLCanvasElement;
-  thumb: string;
-}
 
 interface PendingImage {
   id: number;
@@ -39,19 +35,20 @@ export function ScannerApp(): React.ReactElement {
   const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
   const [pendingTotal, setPendingTotal] = useState(0);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [pages, setPages] = useState<Page[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [pages, setPages] = useState<ScanPage[]>([]);
   const [restoredCount, setRestoredCount] = useState(0);
   const nextIdRef = useRef(1);
 
-  // hydrated evita que el effect de persistencia escriba [] en IndexedDB
-  // antes de que la restauracion inicial termine (borraria la sesion).
-  const hydratedRef = useRef(false);
-  // El usuario ya capturo/actuo: la restauracion NO debe pisar su trabajo
-  // (race: loadPages resuelve despues de la primera captura -> perdia la
-  // pagina nueva). Se marca en el primer handleCapture.
+  // hydrated es ESTADO (no ref) a proposito: si el usuario confirma una
+  // pagina antes de que termine la restauracion, el effect de persistencia
+  // tiene que volver a correr cuando hydrated pase a true. Con un ref esa
+  // primera pagina nunca se guardaba.
+  const [hydrated, setHydrated] = useState(false);
+  // El usuario ya actuo: la restauracion no debe sacarlo de la vista en la
+  // que esta (solo agrega las paginas guardadas).
   const userActedRef = useRef(false);
-  // Aviso de que la persistencia fallo (cuota / modo privado): el usuario
-  // debe saber que su sesion NO sobrevivira un refresh.
+  // Aviso de que la persistencia fallo (cuota / modo privado).
   const [persistError, setPersistError] = useState(false);
 
   // Restauracion al montar.
@@ -61,22 +58,25 @@ export function ScannerApp(): React.ReactElement {
       try {
         if (!isStorageAvailable()) return;
         const blobs = await loadPages();
-        // Si el usuario ya capturo algo mientras cargaba, NO restaurar:
-        // pisaria su pagina nueva (y la persistencia la borraria en disco).
-        if (cancelled || userActedRef.current || blobs.length === 0) return;
-        const restored: Page[] = [];
+        if (cancelled || blobs.length === 0) return;
+        const restored: ScanPage[] = [];
         for (const blob of blobs) {
-          const canvas = await blobToCanvas(blob);
-          restored.push({ canvas, thumb: canvas.toDataURL('image/jpeg', 0.6) });
+          try {
+            restored.push(await pageFromBlob(blob, nextIdRef.current++));
+          } catch {
+            // Una pagina corrupta no debe tirar la sesion entera.
+          }
         }
-        if (cancelled || userActedRef.current) return;
-        setPages(restored);
+        if (cancelled || restored.length === 0) return;
+        // Se ANTEPONEN a lo que el usuario haya hecho mientras cargaba:
+        // ni se pierde la sesion guardada ni su captura nueva.
+        setPages((prev) => [...restored, ...prev]);
         setRestoredCount(restored.length);
-        setStage('export');
+        if (!userActedRef.current) setStage('export');
       } catch {
         // Storage roto (modo privado, cuota) — la app funciona sin persistir.
       } finally {
-        if (!cancelled) hydratedRef.current = true;
+        if (!cancelled) setHydrated(true);
       }
     })();
     return () => {
@@ -84,59 +84,66 @@ export function ScannerApp(): React.ReactElement {
     };
   }, []);
 
-  // Persistencia: cada cambio en pages re-escribe IndexedDB.
+  // Persistencia: las paginas YA son JPEG, se guardan tal cual (sin
+  // recomprimir en cada cambio ni en cada recarga).
   useEffect(() => {
-    if (!hydratedRef.current || !isStorageAvailable()) return;
+    if (!hydrated || !isStorageAvailable()) return;
     let cancelled = false;
-    (async () => {
-      try {
-        const blobs: Blob[] = [];
-        for (const p of pages) {
-          blobs.push(await canvasToBlob(p.canvas));
-        }
-        if (!cancelled) {
-          await savePages(blobs);
-          setPersistError(false);
-        }
-      } catch {
-        // Sin espacio / modo privado: la app sigue, pero avisamos que la
-        // sesion no se guardara.
+    savePages(pages.map((p) => p.blob))
+      .then(() => {
+        if (!cancelled) setPersistError(false);
+      })
+      .catch(() => {
         if (!cancelled && pages.length > 0) setPersistError(true);
-      }
-    })();
+      });
     return () => {
       cancelled = true;
     };
-  }, [pages]);
+  }, [pages, hydrated]);
 
+  const loadingRef = useRef(false);
   const handleCapture = useCallback(async (files: File[]) => {
+    // Evita cargas duplicadas por doble toque mientras decodifica.
+    if (loadingRef.current) return;
+    loadingRef.current = true;
     userActedRef.current = true;
     setLoadError(null);
+    setLoading(true);
     try {
       const loaded: PendingImage[] = [];
+      const failed: string[] = [];
       for (const file of files) {
-        const img = await loadImageFromFile(file);
-        loaded.push({ id: nextIdRef.current++, img });
+        try {
+          const img = await loadImageFromFile(file);
+          loaded.push({ id: nextIdRef.current++, img });
+        } catch (err) {
+          failed.push(err instanceof Error ? err.message : String(err));
+        }
+      }
+      if (failed.length > 0) {
+        setLoadError(
+          loaded.length > 0
+            ? `${failed.length} de ${files.length} imagenes no se pudieron abrir. ${failed[0]}`
+            : failed[0]!,
+        );
       }
       if (loaded.length === 0) return;
       setPendingImages(loaded);
       setPendingTotal(loaded.length);
       setStage('edit');
-    } catch (err) {
-      setLoadError(err instanceof Error ? err.message : String(err));
+    } finally {
+      loadingRef.current = false;
+      setLoading(false);
     }
   }, []);
 
-  const handleConfirm = useCallback(
-    (canvas: HTMLCanvasElement) => {
-      const thumb = canvas.toDataURL('image/jpeg', 0.6);
-      setPages((prev) => [...prev, { canvas, thumb }]);
-      // Avanza la cola; el effect de abajo decide a que stage ir cuando
-      // se vacia.
-      setPendingImages((prev) => prev.slice(1));
-    },
-    [],
-  );
+  const handleConfirm = useCallback(async (canvas: HTMLCanvasElement) => {
+    const page = await pageFromCanvas(canvas, nextIdRef.current++);
+    setPages((prev) => [...prev, page]);
+    // Avanza la cola; el effect de abajo decide a que stage ir cuando
+    // se vacia.
+    setPendingImages((prev) => prev.slice(1));
+  }, []);
 
   // Cuando la cola de edicion se vacia, pasa a export (o a capture si no
   // hay ninguna pagina — p.ej. el usuario cancelo la unica edicion).
@@ -146,18 +153,60 @@ export function ScannerApp(): React.ReactElement {
     setPendingTotal(0);
   }, [stage, pendingImages, pages.length]);
 
+  const handleEditBack = useCallback(() => {
+    // Descartar varias fotos de una rafaga con un toque es facil de hacer
+    // sin querer en el telefono: confirmar.
+    if (
+      pendingImages.length > 1 &&
+      !window.confirm(`Se descartaran ${pendingImages.length} fotos sin editar. ¿Continuar?`)
+    ) {
+      return;
+    }
+    setPendingImages([]);
+    setPendingTotal(0);
+    setStage(pages.length > 0 ? 'export' : 'capture');
+  }, [pendingImages.length, pages.length]);
+
   const handleAddPage = useCallback(() => {
+    setLoadError(null);
     setStage('capture');
   }, []);
 
-  const handleRemovePage = useCallback((index: number) => {
-    setPages((prev) => prev.filter((_, i) => i !== index));
-  }, []);
+  // Borrado con "Deshacer" en vez de dialogo: rapido en el telefono y sin
+  // perdida por un toque accidental.
+  const [lastRemoved, setLastRemoved] = useState<{ page: ScanPage; index: number } | null>(null);
+  useEffect(() => {
+    if (!lastRemoved) return;
+    const t = setTimeout(() => setLastRemoved(null), 6000);
+    return () => clearTimeout(t);
+  }, [lastRemoved]);
 
-  const handleMovePage = useCallback((index: number, delta: -1 | 1) => {
+  const handleRemovePage = useCallback(
+    (id: number) => {
+      const index = pages.findIndex((p) => p.id === id);
+      if (index < 0) return;
+      setLastRemoved({ page: pages[index]!, index });
+      setPages((prev) => prev.filter((p) => p.id !== id));
+    },
+    [pages],
+  );
+
+  const handleUndoRemove = useCallback(() => {
+    if (!lastRemoved) return;
     setPages((prev) => {
+      if (prev.some((p) => p.id === lastRemoved.page.id)) return prev;
+      const next = [...prev];
+      next.splice(Math.min(lastRemoved.index, next.length), 0, lastRemoved.page);
+      return next;
+    });
+    setLastRemoved(null);
+  }, [lastRemoved]);
+
+  const handleMovePage = useCallback((id: number, delta: -1 | 1) => {
+    setPages((prev) => {
+      const index = prev.findIndex((p) => p.id === id);
       const target = index + delta;
-      if (target < 0 || target >= prev.length) return prev;
+      if (index < 0 || target < 0 || target >= prev.length) return prev;
       const next = [...prev];
       const [moved] = next.splice(index, 1);
       next.splice(target, 0, moved!);
@@ -166,44 +215,76 @@ export function ScannerApp(): React.ReactElement {
   }, []);
 
   const handleRestart = useCallback(() => {
+    if (
+      pages.length > 0 &&
+      !window.confirm(
+        `Se borraran ${pages.length === 1 ? 'la pagina escaneada' : `las ${pages.length} paginas escaneadas`}. ¿Empezar de nuevo?`,
+      )
+    ) {
+      return;
+    }
     setPages([]);
     setPendingImages([]);
     setPendingTotal(0);
     setLoadError(null);
     setRestoredCount(0);
+    setLastRemoved(null);
+    setPersistError(false);
     setStage('capture');
-  }, []);
+  }, [pages.length]);
+
+  const queueLabel =
+    pendingTotal > 1
+      ? `Foto ${pendingTotal - pendingImages.length + 1} de ${pendingTotal}`
+      : undefined;
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex min-h-0 flex-1 flex-col gap-3">
       <Steps stage={stage} pageCount={pages.length} />
 
       {loadError && (
-        <div className="stage-in rounded-lg border-2 border-stamp-600 bg-stamp-50 px-4 py-3 text-sm text-stamp-700 shadow-paper-sm">
-          <strong className="font-semibold">Error cargando imagen:</strong>{' '}
-          {loadError}
+        <div
+          role="alert"
+          className="stage-in flex shrink-0 items-start justify-between gap-2 rounded-lg border-2 border-stamp-600 bg-stamp-50 px-3 py-2 text-sm text-stamp-700 shadow-paper-sm"
+        >
+          <span>
+            <strong className="font-semibold">No se pudo abrir la imagen.</strong> {loadError}
+          </span>
+          <button
+            type="button"
+            onClick={() => setLoadError(null)}
+            aria-label="Cerrar aviso"
+            className="-m-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full"
+          >
+            <IconX className="h-4 w-4" />
+          </button>
         </div>
       )}
 
       {persistError && pages.length > 0 && (
-        <div className="stage-in rounded-lg border-2 border-note-300 bg-note-100 px-4 py-2.5 text-sm text-note-700 shadow-paper-sm">
-          No se pudo guardar la sesion (almacenamiento lleno o modo
-          privado). Exporta ahora — si recargas, perderas las paginas.
+        <div
+          role="status"
+          className="stage-in shrink-0 rounded-lg border-2 border-note-300 bg-note-100 px-3 py-2 text-sm text-note-700 shadow-paper-sm"
+        >
+          No se pudo guardar la sesion (almacenamiento lleno o modo privado). Guarda el archivo
+          ahora: si recargas, perderas las paginas.
         </div>
       )}
 
       {restoredCount > 0 && stage === 'export' && (
-        <div className="stage-in flex items-center justify-between gap-3 rounded-lg border-2 border-dashed border-cocoa-900 bg-paper px-4 py-2.5 text-sm text-cocoa-700 shadow-paper-sm">
+        <div
+          role="status"
+          className="stage-in flex shrink-0 items-center justify-between gap-3 rounded-lg border-2 border-dashed border-cocoa-900 bg-paper px-3 py-1.5 text-sm text-cocoa-700 shadow-paper-sm"
+        >
           <span className="flex items-center gap-2">
             <IconCheck className="h-4 w-4 shrink-0" />
-            Sesion anterior restaurada ({restoredCount}{' '}
-            {restoredCount === 1 ? 'pagina' : 'paginas'}).
+            Sesion anterior restaurada ({restoredCount} {restoredCount === 1 ? 'pagina' : 'paginas'}).
           </span>
           <button
             type="button"
             onClick={() => setRestoredCount(0)}
             aria-label="Cerrar aviso"
-            className="btn-ghost flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-cocoa-500"
+            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-cocoa-500"
           >
             <IconX className="h-4 w-4" />
           </button>
@@ -213,31 +294,21 @@ export function ScannerApp(): React.ReactElement {
       {stage === 'capture' && (
         <CaptureView
           onCapture={handleCapture}
+          busy={loading}
           onCancel={pages.length > 0 ? () => setStage('export') : undefined}
         />
       )}
 
       {stage === 'edit' && pendingImages.length > 0 && (
-        <>
-          {pendingTotal > 1 && (
-            <p className="text-center font-display text-sm font-semibold text-stamp-600">
-              Editando pagina {pendingTotal - pendingImages.length + 1} de {pendingTotal}
-            </p>
-          )}
-          <EditView
-            // key fuerza el reset del estado del editor (quad, filtro,
-            // rotacion) al pasar a la siguiente imagen de la cola.
-            key={pendingImages[0]!.id}
-            image={pendingImages[0]!.img}
-            onConfirm={handleConfirm}
-            onBack={() => {
-              // Descarta la cola completa.
-              setPendingImages([]);
-              setPendingTotal(0);
-              setStage(pages.length > 0 ? 'export' : 'capture');
-            }}
-          />
-        </>
+        <EditView
+          // key fuerza el reset del estado del editor (quad, filtro,
+          // rotacion) al pasar a la siguiente imagen de la cola.
+          key={pendingImages[0]!.id}
+          image={pendingImages[0]!.img}
+          queueLabel={queueLabel}
+          onConfirm={handleConfirm}
+          onBack={handleEditBack}
+        />
       )}
 
       {stage === 'export' && (
@@ -249,51 +320,25 @@ export function ScannerApp(): React.ReactElement {
           onRestart={handleRestart}
         />
       )}
+
+      {lastRemoved && stage === 'export' && (
+        <div
+          role="status"
+          className="toast-in fixed inset-x-3 z-40 mx-auto flex max-w-md items-center justify-between gap-3 rounded-lg border-2 border-cocoa-900 bg-cocoa-900 px-4 py-2 text-sm text-paper shadow-paper-ink"
+          style={{ bottom: 'calc(env(safe-area-inset-bottom) + 10.5rem)' }}
+        >
+          <span>Pagina eliminada</span>
+          <button
+            type="button"
+            onClick={handleUndoRemove}
+            className="min-h-[40px] rounded-md px-3 font-display text-base font-semibold text-note-300 underline underline-offset-4"
+          >
+            Deshacer
+          </button>
+        </div>
+      )}
     </div>
   );
-}
-
-function canvasToBlob(canvas: HTMLCanvasElement): Promise<Blob> {
-  return new Promise((resolve, reject) => {
-    canvas.toBlob(
-      (blob) => (blob ? resolve(blob) : reject(new Error('toBlob fallo'))),
-      'image/jpeg',
-      0.92,
-    );
-  });
-}
-
-// Tope de megapixeles para el path de RESTAURACION (mismo que
-// loadImageFromFile). En operacion normal los blobs guardados vienen de
-// canvases ya acotados a <=4096px, pero si la IndexedDB del origen fuera
-// manipulada (dispositivo compartido / otra pestana comprometida) un blob
-// con dimensiones gigantes causaria OOM al recargar. Defensa en profundidad.
-const RESTORE_MAX_MEGAPIXELS = 100;
-
-async function blobToCanvas(blob: Blob): Promise<HTMLCanvasElement> {
-  const url = URL.createObjectURL(blob);
-  try {
-    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
-      const el = new Image();
-      el.onload = () => resolve(el);
-      el.onerror = () => reject(new Error('No se pudo restaurar la pagina'));
-      el.src = url;
-    });
-    const nw = img.naturalWidth;
-    const nh = img.naturalHeight;
-    if (!nw || !nh || (nw * nh) / 1e6 > RESTORE_MAX_MEGAPIXELS) {
-      throw new Error('Pagina guardada con dimensiones invalidas');
-    }
-    const canvas = document.createElement('canvas');
-    canvas.width = nw;
-    canvas.height = nh;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) throw new Error('canvas 2d no disponible');
-    ctx.drawImage(img, 0, 0);
-    return canvas;
-  } finally {
-    URL.revokeObjectURL(url);
-  }
 }
 
 const STAGE_ORDER: Stage[] = ['capture', 'edit', 'export'];
@@ -303,31 +348,25 @@ const STAGE_ORDER: Stage[] = ['capture', 'edit', 'export'];
  * "sube" y se funde con la linea base de tinta; las otras quedan
  * hundidas detras.
  */
-function Steps({
-  stage,
-  pageCount,
-}: {
-  stage: Stage;
-  pageCount: number;
-}): React.ReactElement {
+function Steps({ stage, pageCount }: { stage: Stage; pageCount: number }): React.ReactElement {
   const items: { id: Stage; label: string }[] = [
     { id: 'capture', label: 'Capturar' },
     { id: 'edit', label: 'Editar' },
-    { id: 'export', label: pageCount ? `Exportar (${pageCount})` : 'Exportar' },
+    { id: 'export', label: pageCount ? `Guardar (${pageCount})` : 'Guardar' },
   ];
   const activeIdx = STAGE_ORDER.indexOf(stage);
 
   return (
-    <ol
-      className="flex items-end gap-1.5 border-b-2 border-cocoa-900 px-1"
-      aria-label="Progreso"
-    >
+    <ol className="flex shrink-0 items-end gap-1.5 border-b-2 border-cocoa-900 px-1" aria-label="Progreso">
       {items.map((it, i) => {
         const state = i < activeIdx ? 'done' : i === activeIdx ? 'active' : 'todo';
         return (
-          <li key={it.id} className="min-w-0 flex-1">
+          <li
+            key={it.id}
+            className={`min-w-0 ${state === 'active' ? 'flex-[2] min-[360px]:flex-1' : 'flex-1'}`}
+          >
             <div
-              className={`folder-tab flex items-center justify-center gap-1.5 px-2 py-2 ${
+              className={`folder-tab flex items-center justify-center gap-1.5 px-2 py-1.5 ${
                 state === 'active' ? 'tab-active' : 'tab-idle'
               }`}
               aria-current={state === 'active' ? 'step' : undefined}
@@ -343,9 +382,11 @@ function Steps({
               >
                 {state === 'done' ? <IconCheck className="h-3 w-3" /> : i + 1}
               </span>
+              {/* En pantallas muy angostas (<360px) solo la pestana activa
+                  muestra el texto: las otras quedaban como "Capt..." */}
               <span
                 className={`truncate font-display text-sm font-semibold ${
-                  state === 'active' ? 'text-cocoa-900' : 'text-cocoa-500'
+                  state === 'active' ? 'text-cocoa-900' : 'hidden text-cocoa-500 min-[360px]:inline'
                 }`}
               >
                 {it.label}
