@@ -392,6 +392,13 @@ body {
 /* Scroll horizontal sin barra visible (tira de filtros, modos). */
 .no-scrollbar { scrollbar-width: none; -ms-overflow-style: none; }
 .no-scrollbar::-webkit-scrollbar { display: none; }
+/* Hojas que se ordenan manteniendo presionado: sin menu de "guardar
+   imagen"/seleccion de texto de iOS y Android al mantener el dedo. */
+.no-callout, .no-callout * {
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
 
 /* Flash de captura. */
 @keyframes shot-flash {

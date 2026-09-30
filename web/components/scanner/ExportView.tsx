@@ -11,23 +11,33 @@ import {
   type ExportFormat,
 } from './export';
 import {
+  IconCamera,
   IconChevronLeft,
   IconChevronRight,
-  IconPlus,
+  IconFileAdd,
   IconRefresh,
+  IconRotate,
   IconShare,
   IconTrash,
   IconX,
 } from './icons';
-import type { ScanPage } from './pages';
+import { PageThumb } from './PageThumb';
+import { rotatedSize, type ScanPage } from './pages';
+import { useDragReorder } from './reorder';
 
 interface Props {
   pages: ScanPage[];
   onAddPage: () => void;
+  onImportPdf: (file: File) => void;
   onRemovePage: (id: number) => void;
   onMovePage: (id: number, delta: -1 | 1) => void;
+  onReorderPage: (id: number, toIndex: number) => void;
+  onRotatePage: (id: number) => void;
   onRestart: () => void;
 }
+
+/** Proporcion de las miniaturas de la grilla (ancho/alto). */
+const TILE_ASPECT = 3 / 4;
 
 const FORMATS: { id: ExportFormat; label: string; hint: string }[] = [
   { id: 'pdf', label: 'PDF', hint: 'Todas las páginas en un solo archivo' },
@@ -45,8 +55,11 @@ type Status =
 export function ExportView({
   pages,
   onAddPage,
+  onImportPdf,
   onRemovePage,
   onMovePage,
+  onReorderPage,
+  onRotatePage,
   onRestart,
 }: Props): React.ReactElement {
   const [format, setFormat] = useState<ExportFormat>('pdf');
@@ -111,13 +124,19 @@ export function ExportView({
 
   // Datos tecnicos reales (fila "meta"): tamano de la 1a pagina, dpi del
   // PDF y peso estimado (las paginas ya son JPEG: PDF y JPG pesan ~eso).
-  const first = pages[0];
+  const first = pages[0] ? rotatedSize(pages[0].width, pages[0].height, pages[0].rotation) : null;
   const totalBytes = pages.reduce((a, p) => a + p.blob.size, 0);
   const sizeLabel =
     format === 'png' ? 'SIN PÉRDIDA' : `≈ ${totalBytes >= 1e6 ? (totalBytes / 1e6).toFixed(1) + ' MB' : Math.max(1, Math.round(totalBytes / 1e3)) + ' KB'}`;
 
   const viewIndex = viewing === null ? -1 : pages.findIndex((p) => p.id === viewing);
   const viewPage = viewIndex >= 0 ? pages[viewIndex]! : null;
+
+  // Ordenar arrastrando (mantener presionada una hoja).
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const drag = useDragReorder({ ids: pages.map((p) => p.id), scrollRef, onDrop: onReorderPage });
+  const byId = new Map(pages.map((p) => [p.id, p]));
+  const ghostPage = drag.ghost ? byId.get(drag.ghost.id) : undefined;
 
   return (
     <div className="stage-in safe-top flex min-h-0 flex-1 flex-col">
@@ -130,37 +149,85 @@ export function ExportView({
       </div>
 
       {/* Contenido desplazable */}
-      <div className="safe-x min-h-0 flex-1 overflow-y-auto pb-3">
+      <div ref={scrollRef} className="safe-x min-h-0 flex-1 overflow-y-auto overscroll-contain pb-3">
         <div className="grid grid-cols-3 gap-2.5 sm:grid-cols-4">
-          {pages.map((p, i) => (
-            <button
-              key={p.id}
-              type="button"
-              onClick={() => setViewing(p.id)}
-              aria-label={`Página ${i + 1} de ${n}. Ver`}
-              className="press relative aspect-[3/4] overflow-hidden rounded-xl border border-night-700 bg-night-800"
-            >
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={p.thumb} alt="" className="h-full w-full object-cover" />
-              <span className="absolute left-1.5 top-1.5 rounded-md bg-night-950 px-1.5 py-0.5 font-mono text-[11px] font-bold text-volt">
-                {String(i + 1).padStart(2, '0')}
-              </span>
-            </button>
-          ))}
+          {drag.order.map((id, i) => {
+            const p = byId.get(id);
+            if (!p) return null;
+            const dragging = drag.draggingId === id;
+            return (
+              <div
+                key={id}
+                data-reorder-index={i}
+                className={`no-callout relative aspect-[3/4] rounded-xl ${
+                  dragging ? 'border-[1.5px] border-dashed border-volt bg-volt/5' : ''
+                }`}
+              >
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!drag.swallowClick()) setViewing(id);
+                  }}
+                  onTouchStart={(e) => drag.startTouch(id, e)}
+                  onPointerDown={(e) => drag.startMouse(id, e)}
+                  onContextMenu={(e) => e.preventDefault()}
+                  aria-label={`Página ${i + 1} de ${n}. Ver`}
+                  className={`press absolute inset-0 overflow-hidden rounded-xl border border-night-700 bg-night-800 ${
+                    dragging ? 'invisible' : ''
+                  }`}
+                >
+                  <PageThumb src={p.thumb} rotation={p.rotation} aspect={TILE_ASPECT} />
+                  <span className="absolute left-1.5 top-1.5 rounded-md bg-night-950 px-1.5 py-0.5 font-mono text-[11px] font-bold text-volt">
+                    {String(i + 1).padStart(2, '0')}
+                  </span>
+                </button>
+                {!dragging && (
+                  <button
+                    type="button"
+                    onClick={() => onRotatePage(id)}
+                    aria-label={`Girar página ${i + 1}`}
+                    className="press absolute bottom-1 right-1 flex h-9 w-9 items-center justify-center rounded-full border border-night-600 bg-night-950/90 text-night-100 active:border-volt active:text-volt"
+                  >
+                    <IconRotate className="h-[18px] w-[18px]" />
+                  </button>
+                )}
+              </div>
+            );
+          })}
 
           <button
             type="button"
             onClick={onAddPage}
-            aria-label="Agregar página"
+            aria-label="Escanear otra página"
             className="press flex aspect-[3/4] flex-col items-center justify-center gap-1.5 rounded-xl border-[1.5px] border-dashed border-night-600 text-night-400 active:border-volt active:text-volt"
           >
-            <IconPlus className="h-6 w-6" />
-            <span className="font-display text-[13px] font-bold uppercase tracking-[0.12em]">Añadir</span>
+            <IconCamera className="h-6 w-6" />
+            <span className="font-display text-[13px] font-bold uppercase tracking-[0.12em]">Escanear</span>
           </button>
+
+          <label
+            aria-label="Añadir un PDF"
+            className="press flex aspect-[3/4] cursor-pointer flex-col items-center justify-center gap-1.5 rounded-xl border-[1.5px] border-dashed border-night-600 text-night-400 focus-within:border-volt active:border-volt active:text-volt"
+          >
+            <IconFileAdd className="h-6 w-6" />
+            <span className="font-display text-[13px] font-bold uppercase tracking-[0.12em]">Añadir PDF</span>
+            <input
+              type="file"
+              accept="application/pdf,.pdf"
+              className="sr-only"
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                e.target.value = '';
+                if (f) onImportPdf(f);
+              }}
+            />
+          </label>
         </div>
 
-        <div className="mt-2.5 flex items-center justify-between">
-          <p className="font-mono text-[10px] tracking-[0.08em] text-night-500">TOCA UNA PÁGINA PARA VERLA</p>
+        <p className="mt-2.5 font-mono text-[10px] leading-relaxed tracking-[0.06em] text-night-500">
+          {n > 1 ? 'MANTÉN PRESIONADA UNA HOJA PARA MOVERLA' : 'TOCA UNA PÁGINA PARA VERLA'}
+        </p>
+        <div className="flex justify-end">
           <button
             type="button"
             onClick={onRestart}
@@ -274,6 +341,21 @@ export function ExportView({
         </p>
       </div>
 
+      {/* Hoja que sigue al dedo mientras se arrastra */}
+      {drag.ghost && ghostPage && (
+        <div
+          aria-hidden
+          className="pointer-events-none fixed left-0 top-0 z-50 overflow-hidden rounded-xl border-2 border-volt bg-night-800 shadow-[0_18px_40px_rgba(0,0,0,0.65)]"
+          style={{
+            width: drag.ghost.width,
+            height: drag.ghost.height,
+            transform: `translate(${drag.ghost.x}px, ${drag.ghost.y}px) scale(1.06)`,
+          }}
+        >
+          <PageThumb src={ghostPage.thumb} rotation={ghostPage.rotation} aspect={TILE_ASPECT} />
+        </div>
+      )}
+
       {viewPage && (
         <PageViewer
           page={viewPage}
@@ -281,6 +363,7 @@ export function ExportView({
           total={n}
           onClose={() => setViewing(null)}
           onMove={(d) => onMovePage(viewPage.id, d)}
+          onRotate={() => onRotatePage(viewPage.id)}
           onRemove={() => {
             setViewing(null);
             onRemovePage(viewPage.id);
@@ -298,6 +381,7 @@ function PageViewer({
   total,
   onClose,
   onMove,
+  onRotate,
   onRemove,
 }: {
   page: ScanPage;
@@ -305,6 +389,7 @@ function PageViewer({
   total: number;
   onClose: () => void;
   onMove: (delta: -1 | 1) => void;
+  onRotate: () => void;
   onRemove: () => void;
 }): React.ReactElement {
   const [url, setUrl] = useState<string | null>(null);
@@ -313,6 +398,30 @@ function PageViewer({
     setUrl(u);
     return () => URL.revokeObjectURL(u);
   }, [page.blob]);
+
+  // La foto se dibuja SIN girar y se rota con CSS: se calcula el tamano
+  // para que, ya girada, quepa entera en el area disponible.
+  const boxRef = useRef<HTMLDivElement>(null);
+  const [box, setBox] = useState<{ w: number; h: number } | null>(null);
+  useEffect(() => {
+    const el = boxRef.current;
+    if (!el) return;
+    const measure = (): void => setBox({ w: el.clientWidth, h: el.clientHeight });
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  const turned = rotatedSize(page.width, page.height, page.rotation);
+  const k = box ? Math.min(box.w / turned.width, box.h / turned.height) : 0;
+  const fit = box && k > 0 ? { w: page.width * k, h: page.height * k } : null;
+  // Angulo acumulado: la animacion siempre gira en sentido horario.
+  const angleRef = useRef({ rotation: page.rotation, angle: page.rotation as number });
+  if (angleRef.current.rotation !== page.rotation) {
+    const delta = (page.rotation - angleRef.current.rotation + 360) % 360;
+    angleRef.current = { rotation: page.rotation, angle: angleRef.current.angle + delta };
+  }
+  const angle = angleRef.current.angle;
 
   const closeRef = useRef<HTMLButtonElement>(null);
   useEffect(() => {
@@ -353,17 +462,24 @@ function PageViewer({
         </button>
       </div>
 
-      <div className="flex min-h-0 flex-1 items-center justify-center px-4" onClick={onClose}>
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img
-          src={url ?? page.thumb}
-          alt={`Página ${index + 1}`}
-          onClick={(e) => e.stopPropagation()}
-          className="max-h-full max-w-full rounded-md object-contain shadow-[0_20px_50px_rgba(0,0,0,0.6)]"
-        />
+      <div ref={boxRef} className="relative min-h-0 flex-1 mx-4" onClick={onClose}>
+        {fit && (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={url ?? page.thumb}
+            alt={`Página ${index + 1}`}
+            onClick={(e) => e.stopPropagation()}
+            className="absolute left-1/2 top-1/2 max-w-none rounded-md shadow-[0_20px_50px_rgba(0,0,0,0.6)] transition-transform duration-200 ease-out motion-reduce:transition-none"
+            style={{
+              width: fit.w,
+              height: fit.h,
+              transform: `translate(-50%, -50%) rotate(${angle}deg)`,
+            }}
+          />
+        )}
       </div>
 
-      <div className="grid shrink-0 grid-cols-3 gap-2.5 px-4 pt-3.5">
+      <div className="grid shrink-0 grid-cols-4 gap-2 px-4 pt-3.5">
         <ViewerAction
           onClick={() => onMove(-1)}
           disabled={index === 0}
@@ -371,6 +487,7 @@ function PageViewer({
           label="ANTES"
           ariaLabel="Mover antes"
         />
+        <ViewerAction onClick={onRotate} icon={<IconRotate className="h-5 w-5" />} label="GIRAR" ariaLabel="Girar" />
         <ViewerAction onClick={onRemove} icon={<IconTrash className="h-5 w-5" />} label="QUITAR" ariaLabel="Quitar" danger />
         <ViewerAction
           onClick={() => onMove(1)}
@@ -406,7 +523,7 @@ function ViewerAction({
       onClick={onClick}
       disabled={disabled}
       aria-label={ariaLabel}
-      className={`press flex min-h-[58px] flex-col items-center justify-center gap-1 rounded-2xl border font-mono text-[11px] font-bold tracking-[0.08em] disabled:opacity-25 ${
+      className={`press flex min-h-[58px] flex-col items-center justify-center gap-1 rounded-2xl border font-mono text-[10.5px] font-bold tracking-[0.06em] disabled:opacity-25 ${
         danger ? 'border-danger/70 text-danger' : 'border-night-600 text-night-100'
       }`}
     >

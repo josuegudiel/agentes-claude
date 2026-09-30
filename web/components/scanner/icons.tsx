@@ -213,3 +213,14 @@ export function IconScanFrame(props: IconProps): React.ReactElement {
     </svg>
   );
 }
+
+/** Hoja con esquina doblada y "+" (añadir un PDF existente). */
+export function IconFileAdd(props: IconProps): React.ReactElement {
+  return (
+    <svg {...base(props)}>
+      <path d="M14 3.5H7.5A2 2 0 0 0 5.5 5.5v13a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2V8z" />
+      <path d="M14 3.5V8h4.5" />
+      <path d="M12 11.5v6M9 14.5h6" />
+    </svg>
+  );
+}

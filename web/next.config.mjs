@@ -31,10 +31,13 @@ const nextConfig = {
   // inline; el riesgo es aceptable porque la app no tiene NINGUN vector de
   // inyeccion de HTML (sin dangerouslySetInnerHTML, React escapa todo, sin
   // backend que refleje input).
+  // 'wasm-unsafe-eval' SOLO habilita compilar WebAssembly (no eval de JS):
+  // lo necesita pdf.js para leer PDFs de fotocopiadora (JBIG2/JPEG2000)
+  // al usar "Añadir PDF".
   async headers() {
     const csp = [
       "default-src 'self'",
-      "script-src 'self' 'unsafe-inline'",
+      "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'",
       "style-src 'self' 'unsafe-inline'",
       "img-src 'self' data: blob:",
       "font-src 'self'",

@@ -4,8 +4,8 @@
   "private": true,
   "description": "UI Next.js para el agente predictivo (TimesFM + Ollama via SSE)",
   "scripts": {
-    "dev": "next dev --webpack --port 3000",
-    "build": "next build --webpack",
+    "dev": "node scripts/copy-pdfjs.mjs && next dev --webpack --port 3000",
+    "build": "node scripts/copy-pdfjs.mjs && next build --webpack",
     "start": "next start --port 3000",
     "lint": "next lint",
     "typecheck": "tsc --noEmit"
@@ -13,6 +13,7 @@
   "dependencies": {
     "jspdf": "^4.2.1",
     "next": "^16.0.0",
+    "pdfjs-dist": "^6.3.289",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "recharts": "^3.0.0",

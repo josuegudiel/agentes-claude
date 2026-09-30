@@ -9,8 +9,10 @@ import {
   STABLE_TICKS_NEEDED,
 } from './auto-capture';
 import { detectDocumentQuad } from './edge-detect';
-import { IconCamera, IconImages, IconLayers, IconRefresh, IconScanFrame, IconTorch } from './icons';
+import { IconCamera, IconFileAdd, IconImages, IconLayers, IconRefresh, IconScanFrame, IconTorch } from './icons';
 import { SCAN_MODES, type ScanModeId } from './modes';
+import { PageThumb } from './PageThumb';
+import type { ScanPage } from './pages';
 import type { Quad } from './perspective';
 
 interface Props {
@@ -24,8 +26,10 @@ interface Props {
   scanMode: ScanModeId;
   onScanModeChange: (m: ScanModeId) => void;
   pageCount: number;
-  /** Miniatura de la ultima pagina guardada (para la pila de la izquierda). */
-  lastThumb?: string | undefined;
+  /** Ultima pagina guardada (su miniatura va en la pila de la izquierda). */
+  lastPage?: ScanPage | undefined;
+  /** "PDF": añadir las hojas de un PDF ya exportado. */
+  onImportPdf: (file: File) => void;
 }
 
 /**
@@ -45,7 +49,8 @@ export function CaptureView({
   scanMode,
   onScanModeChange,
   pageCount,
-  lastThumb,
+  lastPage,
+  onImportPdf,
 }: Props): React.ReactElement {
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -397,7 +402,7 @@ export function CaptureView({
             ? { text: 'DOCUMENTO DETECTADO', tone: 'volt' }
             : { text: 'BUSCANDO BORDES', tone: 'idle' };
 
-  const stackThumb = lastShotUrl ?? (pageCount > 0 ? lastThumb : undefined);
+  const stackPage = lastShotUrl ? undefined : lastPage;
   const stackCount = shots.length > 0 ? shots.length : pageCount;
 
   return (
@@ -597,16 +602,39 @@ export function CaptureView({
               aria-label={shots.length > 0 ? `Editar ${shots.length} capturas` : `Mis páginas (${pageCount})`}
               className="press relative h-14 w-14 rounded-xl border-2 border-night-100 bg-night-850"
             >
-              {stackThumb && (
+              {lastShotUrl ? (
                 // eslint-disable-next-line @next/next/no-img-element
-                <img src={stackThumb} alt="" className="h-full w-full rounded-[10px] object-cover" />
+                <img src={lastShotUrl} alt="" className="h-full w-full rounded-[10px] object-cover" />
+              ) : (
+                stackPage && (
+                  <PageThumb src={stackPage.thumb} rotation={stackPage.rotation} aspect={1} className="rounded-[10px]" />
+                )
               )}
               <span className="absolute -right-2 -top-2 flex h-6 min-w-6 items-center justify-center rounded-lg bg-volt px-1.5 font-mono text-xs font-bold text-night-950">
                 {stackCount}
               </span>
             </button>
           ) : (
-            <span className="h-14 w-14" aria-hidden />
+            <label
+              aria-label="Añadir un PDF"
+              className={`press flex h-14 w-14 cursor-pointer flex-col items-center justify-center gap-0.5 rounded-full border border-night-600 text-night-100 ${
+                busy ? 'pointer-events-none opacity-50' : ''
+              }`}
+            >
+              <IconFileAdd className="h-5 w-5" />
+              <span className="font-mono text-[9px] font-bold tracking-[0.08em]">PDF</span>
+              <input
+                type="file"
+                accept="application/pdf,.pdf"
+                className="sr-only"
+                disabled={busy}
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  e.target.value = '';
+                  if (f) onImportPdf(f);
+                }}
+              />
+            </label>
           )}
         </div>
 
