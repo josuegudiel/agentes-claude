@@ -25,12 +25,22 @@ const mono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: 'Scanner — escanea documentos desde tu celular',
+  metadataBase: new URL('https://scannerfree.vercel.app'),
+  applicationName: 'ScannerFree',
+  title: 'ScannerFree — escanea documentos desde tu celular',
   description:
-    'Escanea documentos con la camara: deteccion de bordes, correccion de perspectiva, filtros y export a JPG, PNG o PDF. Todo en tu navegador.',
+    'Escanea documentos gratis con la cámara: detección de bordes, corrección de perspectiva, filtros y export a PDF, JPG o PNG. Todo en tu navegador.',
+  openGraph: {
+    type: 'website',
+    url: '/',
+    siteName: 'ScannerFree',
+    title: 'ScannerFree — escanea documentos desde tu celular',
+    description: 'Escanea documentos gratis desde el navegador y guárdalos en PDF.',
+    locale: 'es',
+  },
   appleWebApp: {
     capable: true,
-    title: 'Scanner',
+    title: 'ScannerFree',
     statusBarStyle: 'black-translucent',
   },
 };

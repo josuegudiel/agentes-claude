@@ -7,10 +7,10 @@ import type { MetadataRoute } from 'next';
  */
 export default function manifest(): MetadataRoute.Manifest {
   return {
-    name: 'Scanner — documentos desde tu celular',
-    short_name: 'Scanner',
+    name: 'ScannerFree — documentos desde tu celular',
+    short_name: 'ScannerFree',
     description:
-      'Escanea documentos con la camara: bordes automaticos, perspectiva, filtros y export a PDF.',
+      'Escanea documentos gratis con la cámara: bordes automáticos, perspectiva, filtros y export a PDF.',
     start_url: '/',
     display: 'standalone',
     orientation: 'portrait',
