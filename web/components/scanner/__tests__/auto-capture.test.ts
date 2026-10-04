@@ -86,9 +86,13 @@ describe('shouldRearm', () => {
     { x: 0.9 + dx, y: 0.9 },
     { x: 0.1 + dx, y: 0.9 },
   ];
-  it('se re-arma cuando deja de verse el documento', () => {
-    expect(shouldRearm(q(), null)).toBe(true);
-    expect(shouldRearm(null, null)).toBe(true);
+  it('se re-arma cuando el documento deja de verse varios ticks seguidos', () => {
+    expect(shouldRearm(q(), null, 3)).toBe(true);
+    expect(shouldRearm(null, null, 5)).toBe(true);
+  });
+  it('un solo tick sin deteccion (reflejo, reenfoque) NO re-arma', () => {
+    expect(shouldRearm(q(), null, 1)).toBe(false);
+    expect(shouldRearm(q(), null, 2)).toBe(false);
   });
   it('la misma hoja quieta NO re-arma (no mas capturas repetidas)', () => {
     expect(shouldRearm(q(), q(0.01))).toBe(false);

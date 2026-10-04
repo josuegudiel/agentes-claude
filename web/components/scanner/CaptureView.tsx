@@ -253,6 +253,7 @@ export function CaptureView({
   // Auto-captura: se desarma tras cada foto (ver shouldRearm).
   const armedRef = useRef(pageCount === 0);
   const rearmRefQuad = useRef<Quad | null>(null);
+  const missesRef = useRef(0);
 
   const handleShutter = useCallback(
     (fromAuto = false, quadAtShot: Quad | null = null) => {
@@ -447,8 +448,9 @@ export function CaptureView({
       // Tras una foto (o al volver a la camara con paginas ya escaneadas)
       // no se dispara otra vez sobre la misma hoja: hay que cambiarla o
       // mover el telefono.
+      missesRef.current = quad ? 0 : missesRef.current + 1;
       if (!armedRef.current) {
-        if (shouldRearm(rearmRefQuad.current, quad)) {
+        if (shouldRearm(rearmRefQuad.current, quad, missesRef.current)) {
           armedRef.current = true;
           rearmRefQuad.current = null;
         } else if (quad && !rearmRefQuad.current) {

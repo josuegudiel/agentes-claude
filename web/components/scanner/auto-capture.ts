@@ -24,6 +24,11 @@ export const AUTO_COOLDOWN_MS = 2600;
  * se queda quieta se capturaba una y otra vez cada ~3 s.
  */
 export const REARM_SHIFT = 0.12;
+/**
+ * Ticks seguidos SIN documento para re-armar: un solo tick fallido (reenfoque,
+ * reflejo) no significa que se cambio la hoja.
+ */
+export const REARM_MISSES = 3;
 
 /** Distancia maxima entre esquinas correspondientes de dos quads. */
 export function quadShift(a: Quad, b: Quad): number {
@@ -90,10 +95,11 @@ export function mapCoverPoint(
  * cuando deja de verse el documento (se cambio la hoja / se movio el
  * telefono) o cuando el documento visible es claramente otro.
  * `reference` es el quad de la ultima captura (o el primero visto al abrir
- * la camara); null = aun no hay referencia.
+ * la camara); null = aun no hay referencia. `misses` = ticks seguidos sin
+ * documento (incluido este).
  */
-export function shouldRearm(reference: Quad | null, quad: Quad | null): boolean {
-  if (!quad) return true;
+export function shouldRearm(reference: Quad | null, quad: Quad | null, misses = REARM_MISSES): boolean {
+  if (!quad) return misses >= REARM_MISSES;
   if (!reference) return false;
   return quadShift(reference, quad) > REARM_SHIFT;
 }

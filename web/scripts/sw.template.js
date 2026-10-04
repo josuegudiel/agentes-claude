@@ -6,9 +6,9 @@
  * conservador a proposito:
  *   - Paginas (navegacion): RED PRIMERO. Con conexion siempre se ve la
  *     ultima version; sin conexion, la copia guardada.
- *   - /_next/static, /pdfjs/<version>, /icons: archivos con hash o version
- *     en el nombre (nunca cambian): CACHE PRIMERO. Se conservan entre
- *     versiones (una pestana vieja aun puede pedir los suyos).
+ *   - /_next/static y /pdfjs/<version>: archivos con hash o version en el
+ *     nombre (nunca cambian): CACHE PRIMERO. Se conservan entre versiones
+ *     (una pestana vieja aun puede pedir los suyos).
  *   - Todo lo demas: pasa directo a la red.
  */
 const BUILD = '__BUILD__';
@@ -19,22 +19,18 @@ const STATIC_MAX_ENTRIES = 400;
 self.addEventListener('install', (event) => {
   event.waitUntil(
     (async () => {
-      try {
-        const res = await fetch('/', { cache: 'no-cache' });
-        if (res.ok) {
-          const shell = await caches.open(SHELL);
-          await shell.put('/', res.clone());
-          const html = await res.text();
-          const urls = new Set(
-            [...html.matchAll(/(?:src|href)="(\/_next\/static\/[^"]+)"/g)].map((m) => m[1]),
-          );
-          for (const extra of ['/manifest.webmanifest', '/icon.svg', '/icons/icon-192.png']) urls.add(extra);
-          const stat = await caches.open(STATIC);
-          await Promise.all([...urls].map((u) => stat.add(u).catch(() => {})));
-        }
-      } catch {
-        /* sin conexion al instalar: se cachea al navegar */
-      }
+      // Si no se puede guardar la pagina, la instalacion FALLA a proposito:
+      // asi sigue el service worker anterior con su copia (si no, se borraba
+      // la unica copia sin conexion).
+      const res = await fetch('/', { cache: 'no-cache' });
+      if (!res.ok) throw new Error(`install: / respondio ${res.status}`);
+      const shell = await caches.open(SHELL);
+      await shell.put('/', res.clone());
+      const html = await res.text();
+      const urls = new Set([...html.matchAll(/(?:src|href)="(\/_next\/static\/[^"]+)"/g)].map((m) => m[1]));
+      for (const extra of ['/manifest.webmanifest', '/icon.svg', '/icons/icon-192.png']) urls.add(extra);
+      const stat = await caches.open(STATIC);
+      await Promise.all([...urls].map((u) => stat.add(u).catch(() => {})));
       await self.skipWaiting();
     })(),
   );
@@ -81,7 +77,7 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  if (/^\/(_next\/static|pdfjs|icons)\//.test(url.pathname)) {
+  if (/^\/(_next\/static|pdfjs)\//.test(url.pathname)) {
     event.respondWith(
       (async () => {
         const stat = await caches.open(STATIC);

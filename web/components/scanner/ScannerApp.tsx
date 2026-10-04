@@ -110,8 +110,8 @@ export function ScannerApp(): React.ReactElement {
   }, []);
   // Revision de la sesion que esta pestana leyo/escribio por ultima vez.
   const revRef = useRef(0);
-  // La base anterior se borra tras el primer guardado exitoso.
-  const legacyPendingRef = useRef(false);
+  // El usuario cambio nombre o formato (la restauracion no debe pisarlos).
+  const userTouchedRef = useRef(false);
   const [persistError, setPersistError] = useState<'none' | 'failed' | 'conflict'>('none');
   const [persistDismissed, setPersistDismissed] = useState(false);
   // Fotos sin editar encontradas al restaurar (se ofrece continuar).
@@ -145,14 +145,21 @@ export function ScannerApp(): React.ReactElement {
             }
             restored.push({ ...p, id: nextIdRef.current++, blob });
           }
-          if (session.filename) setFilename(session.filename);
-          if (isExportFormat(session.format)) setFormat(session.format);
+          // Si el usuario ya cambio nombre/formato mientras cargaba, gana el suyo.
+          if (session.filename && !userTouchedRef.current) setFilename(session.filename);
+          if (isExportFormat(session.format) && !userTouchedRef.current) setFormat(session.format);
+          // La base anterior (si quedo de una migracion) se borra en un
+          // arranque POSTERIOR: en WebKit borrarla invalida los Blobs que la
+          // sesion migrada aun tiene en memoria.
+          void deleteLegacyDb();
           const pend = session.pending.flatMap((uid) => {
             const blob = blobs.get(uid);
             return blob ? [{ uid, blob }] : [];
           });
           if (restored.length > 0) {
-            setPages(restored);
+            // Se ANTEPONEN a lo que el usuario haya hecho si la restauracion
+            // tardo (no se pisa su pagina nueva).
+            setPages((prev) => [...restored, ...prev]);
             goExport = true;
             setNotice({
               text:
@@ -175,14 +182,14 @@ export function ScannerApp(): React.ReactElement {
           }
           if (cancelled) return;
           if (restored.length > 0) {
-            setPages(restored);
+            setPages((prev) => [...restored, ...prev]);
             goExport = true;
             setNotice({
               text: `Sesión anterior restaurada · ${restored.length} ${restored.length === 1 ? 'página' : 'páginas'}`,
             });
           }
-          // Guardar en el formato nuevo; la base vieja se borra despues.
-          legacyPendingRef.current = true;
+          // Guardar en el formato nuevo; la base vieja se borra en el
+          // proximo arranque (ver arriba).
           dirtyRef.current = true;
         }
       } catch {
@@ -245,10 +252,6 @@ export function ScannerApp(): React.ReactElement {
             revRef.current,
           );
           setPersistError('none');
-          if (legacyPendingRef.current) {
-            legacyPendingRef.current = false;
-            void deleteLegacyDb();
-          }
         } catch (err) {
           if (err instanceof SessionConflictError) {
             conflictRef.current = true;
@@ -509,6 +512,7 @@ export function ScannerApp(): React.ReactElement {
 
   const changeFilename = useCallback(
     (v: string) => {
+      userTouchedRef.current = true;
       markDirty();
       setFilename(v);
     },
@@ -516,6 +520,7 @@ export function ScannerApp(): React.ReactElement {
   );
   const changeFormat = useCallback(
     (f: ExportFormat) => {
+      userTouchedRef.current = true;
       markDirty();
       setFormat(f);
     },
