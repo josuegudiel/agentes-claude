@@ -15,6 +15,8 @@ import { releaseCanvas } from './pipeline';
  */
 export interface ScanPage {
   id: number;
+  /** Id estable para el almacenamiento (el JPEG se guarda una sola vez). */
+  uid: string;
   blob: Blob;
   /** Dimensiones del JPEG guardado (SIN aplicar `rotation`). */
   width: number;
@@ -30,6 +32,15 @@ export interface ScanPage {
 }
 
 export type Rotation = 0 | 90 | 180 | 270;
+
+/** Id unico estable (clave del JPEG en el almacenamiento). */
+export function newUid(): string {
+  try {
+    return crypto.randomUUID();
+  } catch {
+    return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
+  }
+}
 
 export function isRotation(v: unknown): v is Rotation {
   return v === 0 || v === 90 || v === 180 || v === 270;
@@ -109,12 +120,17 @@ function makeThumb(source: CanvasImageSource, w: number, h: number): string {
 }
 
 /** Codifica el canvas del editor como pagina y LIBERA el canvas. */
-export async function pageFromCanvas(canvas: HTMLCanvasElement, id: number): Promise<ScanPage> {
+export async function pageFromCanvas(canvas: HTMLCanvasElement, id: number, uid: string = newUid()): Promise<ScanPage> {
   const { width, height } = canvas;
-  const thumb = makeThumb(canvas, width, height);
-  const blob = await canvasToBlob(canvas);
-  releaseCanvas(canvas);
-  return { id, blob, width, height, rotation: 0, thumb };
+  try {
+    const thumb = makeThumb(canvas, width, height);
+    const blob = await canvasToBlob(canvas);
+    return { id, uid, blob, width, height, rotation: 0, thumb };
+  } finally {
+    // Tambien si el JPEG falla: cada reintento apilaria otro canvas enorme
+    // contra el limite de memoria de canvas de iOS.
+    releaseCanvas(canvas);
+  }
 }
 
 export function decodeBlob(blob: Blob): Promise<HTMLImageElement> {
@@ -128,12 +144,17 @@ export function decodeBlob(blob: Blob): Promise<HTMLImageElement> {
 }
 
 /** Reconstruye una pagina desde el Blob persistido (restauracion). */
-export async function pageFromBlob(blob: Blob, id: number, rotation: Rotation = 0): Promise<ScanPage> {
+export async function pageFromBlob(
+  blob: Blob,
+  id: number,
+  rotation: Rotation = 0,
+  uid: string = newUid(),
+): Promise<ScanPage> {
   const img = await decodeBlob(blob);
   const width = img.naturalWidth;
   const height = img.naturalHeight;
   if (!width || !height || (width * height) / 1e6 > RESTORE_MAX_MEGAPIXELS) {
     throw new Error('Pagina guardada con dimensiones invalidas');
   }
-  return { id, blob, width, height, rotation, thumb: makeThumb(img, width, height) };
+  return { id, uid, blob, width, height, rotation, thumb: makeThumb(img, width, height) };
 }

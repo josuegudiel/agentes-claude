@@ -221,7 +221,12 @@ export function useDragReorder({
           if (Math.hypot(touch.clientX - cur.startX, touch.clientY - cur.startY) > TOUCH_SLOP) finish(false);
           return;
         }
-        if (ev.cancelable) ev.preventDefault();
+        if (!ev.cancelable) {
+          // El navegador ya esta desplazando la pagina: no pelear con el.
+          finish(false);
+          return;
+        }
+        ev.preventDefault();
         move(touch.clientX, touch.clientY);
       };
       const onEnd = (): void => finish(true);
@@ -281,6 +286,19 @@ export function useDragReorder({
 
   // Desmontar a mitad de un arrastre: soltar listeners y timers.
   useEffect(() => () => finish(false), [finish]);
+
+  // iOS Safari decide en el touchstart si los touchmove de ese gesto se
+  // pueden cancelar, mirando los listeners que YA existen. El listener del
+  // arrastre se agrega durante el touchstart (tarde) y el de React es
+  // pasivo: sin esto, preventDefault() se ignora y la lista se desplaza
+  // bajo el dedo mientras se arrastra la hoja. Un listener no pasivo
+  // permanente (que no hace nada) vuelve cancelables esos touchmove.
+  // Mismo truco que usa dnd-kit (TouchSensor.setup).
+  useEffect(() => {
+    const noop = (): void => {};
+    window.addEventListener('touchmove', noop, { passive: false });
+    return () => window.removeEventListener('touchmove', noop);
+  }, []);
 
   return {
     order: preview ?? ids,

@@ -6,7 +6,19 @@ import { applyFilter, FILTERS, type FilterId } from './filters';
 import { IconChevronLeft, IconExpand, IconFrame, IconRotate, IconWand } from './icons';
 import { loupePlacement, loupeRects } from './loupe';
 import { releaseCanvas, renderEdited, renderRotatedPreview, type EditState } from './pipeline';
-import { cloneQuad, FULL_QUAD, INSET_QUAD, type Point, type Quad } from './perspective';
+import {
+  cloneQuad,
+  FULL_QUAD,
+  INSET_QUAD,
+  isConvexQuad,
+  orderQuad,
+  quadAreaOf,
+  type Point,
+  type Quad,
+} from './perspective';
+
+/** Area minima del recorte (fraccion de la foto) para poder aplicar. */
+const MIN_QUAD_AREA = 0.01;
 
 interface Props {
   image: HTMLImageElement;
@@ -77,7 +89,13 @@ export function EditView({
     }
     setBase(b);
     return () => {
-      if (b) releaseCanvas(b);
+      // Liberar DESPUES: en el mismo ciclo los demas effects todavia dibujan
+      // la base anterior (al ROTAR, liberarla aqui la dejaba en 0x0 y
+      // drawImage lanzaba InvalidStateError, cerrando el editor).
+      if (b) {
+        const old = b;
+        setTimeout(() => releaseCanvas(old), 0);
+      }
     };
   }, [image, rotation]);
 
@@ -96,7 +114,7 @@ export function EditView({
   // documento ya recortado.
   useEffect(() => {
     const c = previewRef.current;
-    if (!c || !base || !display) return;
+    if (!c || !base || !display || base.width === 0) return;
     if (dragCorner !== null) return; // al soltar se refresca
 
     // Pixeles reales = CSS * devicePixelRatio (tope 2): nitido en pantallas
@@ -194,10 +212,11 @@ export function EditView({
     setFilterThumbs(thumbs);
   }, [image, rotation, quad, dragCorner]);
 
-  // Deteccion automatica de bordes al montar y al rotar.
+  // Deteccion automatica de bordes al abrir la foto. Al ROTAR no se vuelve
+  // a detectar: se giran las esquinas que el usuario ya ajusto.
   const [autoDetected, setAutoDetected] = useState<boolean | null>(null);
   useEffect(() => {
-    const detected = detectQuadForImage(image, rotation);
+    const detected = detectQuadForImage(image, 0);
     if (detected) {
       setQuad(detected);
       setAutoDetected(true);
@@ -205,11 +224,22 @@ export function EditView({
       setQuad(cloneQuad(INSET_QUAD));
       setAutoDetected(false);
     }
-  }, [image, rotation]);
+  }, [image]);
+
+  // Aviso breve cuando AUTO no encuentra los bordes.
+  const [toolMsg, setToolMsg] = useState<string | null>(null);
+  useEffect(() => {
+    if (!toolMsg) return;
+    const t = setTimeout(() => setToolMsg(null), 2600);
+    return () => clearTimeout(t);
+  }, [toolMsg]);
 
   const handleRotate = useCallback(() => {
-    // El effect de deteccion re-posiciona el quad para la nueva rotacion.
     setRotation((r) => (r + 90) % 360);
+    // Mismo giro (+90 horario) que renderEdited: (x, y) -> (1 - y, x), y la
+    // nueva esquina sup-izq es la que antes era inf-izq.
+    const rot = (p: Point): Point => ({ x: 1 - p.y, y: p.x });
+    setQuad((q) => [rot(q[3]), rot(q[0]), rot(q[1]), rot(q[2])]);
   }, []);
 
   const handleDetect = useCallback(() => {
@@ -218,7 +248,8 @@ export function EditView({
       setQuad(detected);
       setAutoDetected(true);
     } else {
-      setAutoDetected(false);
+      setAutoDetected(null);
+      setToolMsg('NO ENCONTRÉ LOS BORDES · AJÚSTALOS A MANO');
     }
   }, [image, rotation]);
 
@@ -226,20 +257,24 @@ export function EditView({
   // Se guarda el DESFASE entre el dedo y la esquina al tocar: la esquina se
   // mueve con el dedo sin "saltar" bajo la yema (antes se teletransportaba
   // al punto de contacto y quedaba tapada).
-  const draggingRef = useRef<{ corner: number; rect: DOMRect; dx: number; dy: number } | null>(null);
+  const draggingRef = useRef<{ corner: number; rect: DOMRect; dx: number; dy: number; pointerId: number } | null>(
+    null,
+  );
   const quadRef = useRef(quad);
   quadRef.current = quad;
 
   const onPointerDown = useCallback(
     (corner: number) => (e: React.PointerEvent<HTMLElement>) => {
       e.preventDefault();
+      // Un solo dedo a la vez: un segundo dedo no "roba" la esquina.
+      if (draggingRef.current || !e.isPrimary) return;
       const overlay = e.currentTarget.parentElement;
       if (!overlay) return;
       const rect = overlay.getBoundingClientRect();
       const px = (e.clientX - rect.left) / rect.width;
       const py = (e.clientY - rect.top) / rect.height;
       const start = quadRef.current[corner]!;
-      draggingRef.current = { corner, rect, dx: start.x - px, dy: start.y - py };
+      draggingRef.current = { corner, rect, dx: start.x - px, dy: start.y - py, pointerId: e.pointerId };
       setDragCorner(corner);
       setConfirmError(null);
       (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
@@ -249,7 +284,7 @@ export function EditView({
 
   const onPointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     const drag = draggingRef.current;
-    if (!drag) return;
+    if (!drag || e.pointerId !== drag.pointerId) return;
     const { corner, rect, dx, dy } = drag;
     const x = clamp01((e.clientX - rect.left) / rect.width + dx);
     const y = clamp01((e.clientY - rect.top) / rect.height + dy);
@@ -260,10 +295,17 @@ export function EditView({
     });
   }, []);
 
-  const onPointerUp = useCallback(() => {
+  const onPointerUp = useCallback((e: React.PointerEvent<HTMLElement>) => {
+    const drag = draggingRef.current;
+    if (!drag || e.pointerId !== drag.pointerId) return;
     draggingRef.current = null;
     setDragCorner(null);
+    setAutoDetected(null);
+    // Si al arrastrar una esquina paso por encima de otra, se reordenan.
+    setQuad((q) => (isConvexQuad(q) ? q : orderQuad(q)));
   }, []);
+
+  const quadOk = isConvexQuad(orderQuad(quad)) && quadAreaOf(quad) >= MIN_QUAD_AREA;
 
   // --- Lupa de precision ----------------------------------------------------
   const loupeRef = useRef<HTMLCanvasElement>(null);
@@ -315,7 +357,7 @@ export function EditView({
   }, []);
 
   const handleConfirm = useCallback(() => {
-    if (confirmedRef.current) return;
+    if (confirmedRef.current || !quadOk) return;
     confirmedRef.current = true;
     setConfirming(true);
     setConfirmError(null);
@@ -326,30 +368,40 @@ export function EditView({
       setTimeout(() => {
         if (unmountedRef.current) return;
         void (async () => {
+          let final: HTMLCanvasElement | null = null;
           try {
             const state: EditState = { rotation, filter, quad };
-            const final = renderEdited(image, state);
+            final = renderEdited(image, state);
             await onConfirm(final, state);
             // Sin reset: onConfirm desmonta este editor (avanza la cola).
           } catch {
+            // Liberar el canvas enorme: si no, el reintento choca con el
+            // limite de memoria de canvas de iOS y vuelve a fallar.
+            if (final) releaseCanvas(final);
             if (unmountedRef.current) return;
             confirmedRef.current = false;
             setConfirming(false);
             setConfirmError(
-              'No se pudo procesar la pagina (memoria insuficiente). Guarda las paginas que ya tienes e intenta de nuevo.',
+              'No se pudo procesar la página (memoria insuficiente). Guarda las páginas que ya tienes e inténtalo de nuevo.',
             );
           }
         })();
       }, 0);
     });
-  }, [image, rotation, filter, quad, onConfirm]);
+  }, [image, rotation, filter, quad, onConfirm, quadOk]);
 
-  const hint = autoDetected
-    ? 'BORDES LISTOS · AJUSTA SI HACE FALTA'
-    : 'ARRASTRA LAS 4 ESQUINAS';
+  const hint = toolMsg
+    ? toolMsg
+    : !quadOk
+      ? 'LAS ESQUINAS SE CRUZAN · AJÚSTALAS'
+      : autoDetected
+        ? 'BORDES LISTOS · AJUSTA SI HACE FALTA'
+        : autoDetected === false
+          ? 'ARRASTRA LAS 4 ESQUINAS'
+          : 'AJUSTA LAS ESQUINAS SI HACE FALTA';
 
   return (
-    <div className="stage-in safe-top safe-x flex min-h-0 flex-1 flex-col gap-3">
+    <div className="stage-in safe-top safe-x flex min-h-0 flex-1 flex-col gap-3 short:grid short:grid-cols-[minmax(0,1fr)_minmax(240px,44%)] short:grid-rows-[auto_minmax(0,1fr)] short:gap-x-3">
       {/* Cabecera */}
       <div className="flex shrink-0 items-baseline justify-between">
         <h2 className="font-display text-[28px] font-extrabold uppercase leading-none tracking-[0.02em]">Ajustar</h2>
@@ -361,7 +413,7 @@ export function EditView({
       {/* Lienzo con overlay del quad */}
       <div
         ref={stageRef}
-        className="relative flex min-h-[150px] flex-1 items-center justify-center overflow-hidden rounded-2xl border border-night-700 bg-night-850"
+        className="relative flex min-h-[150px] flex-1 items-center justify-center overflow-hidden rounded-2xl border border-night-700 bg-night-850 short:col-start-1 short:row-start-2 short:min-h-0"
         style={{ touchAction: 'none' }}
       >
         {display && (
@@ -373,23 +425,25 @@ export function EditView({
             onPointerCancel={onPointerUp}
           >
             <canvas ref={previewRef} className="block h-full w-full" />
-            <QuadOverlay quad={quad} />
+            <QuadOverlay quad={quad} invalid={!quadOk} />
             {quad.map((p, i) => (
               <Handle
                 key={i}
                 point={p}
                 active={dragCorner === i}
-                onDown={onPointerDown(i)}
-                onNudge={(dx, dy) =>
+                onDown={confirming ? () => {} : onPointerDown(i)}
+                onNudge={(dx, dy) => {
+                  if (confirming) return;
+                  setAutoDetected(null);
                   setQuad((prev) => {
                     const next = cloneQuad(prev);
                     next[i] = {
                       x: clamp01(next[i]!.x + dx),
                       y: clamp01(next[i]!.y + dy),
                     };
-                    return next;
-                  })
-                }
+                    return isConvexQuad(next) ? next : orderQuad(next);
+                  });
+                }}
                 label={CORNER_LABELS[i]!}
               />
             ))}
@@ -411,30 +465,51 @@ export function EditView({
         )}
       </div>
 
-      <p className="flex shrink-0 items-center justify-center gap-1.5 font-mono text-[11px] tracking-[0.06em] text-night-400">
+      {/* En horizontal, los controles van en una columna a la derecha. */}
+      <div className="contents short:col-start-2 short:row-span-2 short:row-start-1 short:flex short:min-h-0 short:flex-col short:gap-2.5 short:overflow-y-auto">
+      <p
+        role="status"
+        className={`flex shrink-0 items-center justify-center gap-1.5 font-mono text-[11px] tracking-[0.06em] ${
+          !quadOk ? 'text-danger' : toolMsg ? 'text-warn' : 'text-night-400'
+        }`}
+      >
         {autoDetected && <IconWand className="h-3.5 w-3.5 shrink-0 text-volt" />}
         <span className="truncate">{hint}</span>
       </p>
 
       {/* Herramientas */}
       <div className="grid shrink-0 grid-cols-4 gap-2">
-        <ToolButton icon={<IconRotate className="h-5 w-5" />} label="ROTAR" onClick={handleRotate} />
-        <ToolButton icon={<IconWand className="h-5 w-5" />} label="AUTO" ariaLabel="Detectar bordes" onClick={handleDetect} />
+        <ToolButton icon={<IconRotate className="h-5 w-5" />} label="ROTAR" onClick={handleRotate} disabled={confirming} />
+        <ToolButton
+          icon={<IconWand className="h-5 w-5" />}
+          label="AUTO"
+          ariaLabel="Detectar bordes"
+          onClick={handleDetect}
+          disabled={confirming}
+        />
         <ToolButton
           icon={<IconFrame className="h-5 w-5" />}
           label="MARGEN"
-          onClick={() => setQuad(cloneQuad(INSET_QUAD))}
+          disabled={confirming}
+          onClick={() => {
+            setAutoDetected(null);
+            setQuad(cloneQuad(INSET_QUAD));
+          }}
         />
         <ToolButton
           icon={<IconExpand className="h-5 w-5" />}
           label="TODO"
           ariaLabel="Imagen completa"
-          onClick={() => setQuad(cloneQuad(FULL_QUAD))}
+          disabled={confirming}
+          onClick={() => {
+            setAutoDetected(null);
+            setQuad(cloneQuad(FULL_QUAD));
+          }}
         />
       </div>
 
       {/* Filtros con preview real (tira de pelicula) */}
-      <div className="shrink-0" role="group" aria-label="Filtro">
+      <div className="no-callout shrink-0" role="group" aria-label="Filtro">
         <div className="no-scrollbar -mx-3.5 flex snap-x gap-2 overflow-x-auto px-3.5 pb-0.5">
           {FILTERS.map((f) => {
             const selected = filter === f.id;
@@ -444,6 +519,7 @@ export function EditView({
                 key={f.id}
                 type="button"
                 onClick={() => setFilter(f.id)}
+                disabled={confirming}
                 title={f.hint}
                 aria-label={f.label}
                 aria-pressed={selected}
@@ -492,12 +568,13 @@ export function EditView({
         <button
           type="button"
           onClick={handleConfirm}
-          disabled={confirming}
+          disabled={confirming || !quadOk}
           className="press flex h-14 flex-1 items-center justify-center gap-2.5 rounded-2xl bg-volt px-5 font-display text-xl font-extrabold uppercase tracking-[0.1em] text-night-950 disabled:opacity-70"
         >
           {confirming && <span className="spinner spinner-sm" aria-hidden />}
           {confirming ? 'Procesando' : 'Aplicar'}
         </button>
+      </div>
       </div>
     </div>
   );
@@ -508,18 +585,21 @@ function ToolButton({
   label,
   ariaLabel,
   onClick,
+  disabled = false,
 }: {
   icon: React.ReactNode;
   label: string;
   ariaLabel?: string;
   onClick: () => void;
+  disabled?: boolean;
 }): React.ReactElement {
   return (
     <button
       type="button"
       onClick={onClick}
+      disabled={disabled}
       aria-label={ariaLabel ?? label}
-      className="press flex min-h-[56px] flex-col items-center justify-center gap-1 rounded-xl border border-night-700 bg-night-850 px-1 py-2 text-night-200 active:border-volt active:text-volt"
+      className="press flex min-h-[56px] flex-col items-center justify-center gap-1 rounded-xl border border-night-700 bg-night-850 px-1 py-2 text-night-200 active:border-volt active:text-volt disabled:opacity-40 short:min-h-[44px]"
     >
       {icon}
       <span className="font-mono text-[10px] font-bold tracking-[0.08em]">{label}</span>
@@ -581,7 +661,7 @@ function insetQuad(q: Quad, frac: number): Quad {
  * oscurecido. viewBox 0-100 con preserveAspectRatio none para que las
  * coordenadas normalizadas mapeen directo a porcentajes.
  */
-function QuadOverlay({ quad }: { quad: Quad }): React.ReactElement {
+function QuadOverlay({ quad, invalid = false }: { quad: Quad; invalid?: boolean }): React.ReactElement {
   const pts = quad.map((p) => `${p.x * 100},${p.y * 100}`).join(' ');
   const innerPath = quad.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x * 100} ${p.y * 100}`).join(' ');
   return (
@@ -592,7 +672,13 @@ function QuadOverlay({ quad }: { quad: Quad }): React.ReactElement {
       aria-hidden
     >
       <path d={`M0 0 H100 V100 H0 Z ${innerPath} Z`} fillRule="evenodd" fill="rgba(0, 0, 0, 0.55)" />
-      <polygon points={pts} fill="rgba(212, 255, 58, 0.06)" stroke="#D4FF3A" strokeWidth="2" vectorEffect="non-scaling-stroke" />
+      <polygon
+        points={pts}
+        fill={invalid ? 'rgba(255, 90, 79, 0.08)' : 'rgba(212, 255, 58, 0.06)'}
+        stroke={invalid ? '#FF5A4F' : '#D4FF3A'}
+        strokeWidth="2"
+        vectorEffect="non-scaling-stroke"
+      />
     </svg>
   );
 }

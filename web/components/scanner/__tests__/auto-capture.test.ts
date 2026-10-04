@@ -3,6 +3,8 @@ import {
   isStableSequence,
   mapCoverPoint,
   quadShift,
+  REARM_SHIFT,
+  shouldRearm,
   STABLE_TICKS_NEEDED,
 } from '../auto-capture';
 import type { Quad } from '../perspective';
@@ -74,5 +76,25 @@ describe('mapCoverPoint', () => {
     expect(top.y).toBeCloseTo(0, 9);
     const bottom = mapCoverPoint({ x: 0.5, y: 0.75 }, 100, 200, 100, 100);
     expect(bottom.y).toBeCloseTo(1, 9);
+  });
+});
+
+describe('shouldRearm', () => {
+  const q = (dx = 0): Quad => [
+    { x: 0.1 + dx, y: 0.1 },
+    { x: 0.9 + dx, y: 0.1 },
+    { x: 0.9 + dx, y: 0.9 },
+    { x: 0.1 + dx, y: 0.9 },
+  ];
+  it('se re-arma cuando deja de verse el documento', () => {
+    expect(shouldRearm(q(), null)).toBe(true);
+    expect(shouldRearm(null, null)).toBe(true);
+  });
+  it('la misma hoja quieta NO re-arma (no mas capturas repetidas)', () => {
+    expect(shouldRearm(q(), q(0.01))).toBe(false);
+    expect(shouldRearm(null, q())).toBe(false);
+  });
+  it('un documento claramente distinto si re-arma', () => {
+    expect(shouldRearm(q(), q(REARM_SHIFT + 0.05))).toBe(true);
   });
 });

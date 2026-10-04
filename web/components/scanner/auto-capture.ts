@@ -18,6 +18,13 @@ export const LOW_CONTRAST_TICKS = 9;
 /** Pausa tras una auto-captura antes de volver a buscar (ms). */
 export const AUTO_COOLDOWN_MS = 2600;
 
+/**
+ * Tras una captura, cuanto debe cambiar la escena (esquina que mas se
+ * movio, coords 0..1) para volver a auto-capturar. Sin esto, una hoja que
+ * se queda quieta se capturaba una y otra vez cada ~3 s.
+ */
+export const REARM_SHIFT = 0.12;
+
 /** Distancia maxima entre esquinas correspondientes de dos quads. */
 export function quadShift(a: Quad, b: Quad): number {
   let max = 0;
@@ -76,4 +83,17 @@ export function mapCoverPoint(
   const visibleFrac = videoAspect / boxAspect;
   const y0 = (1 - visibleFrac) / 2;
   return { x: p.x, y: (p.y - y0) / visibleFrac };
+}
+
+/**
+ * Re-armado de la auto-captura despues de una foto: se vuelve a armar
+ * cuando deja de verse el documento (se cambio la hoja / se movio el
+ * telefono) o cuando el documento visible es claramente otro.
+ * `reference` es el quad de la ultima captura (o el primero visto al abrir
+ * la camara); null = aun no hay referencia.
+ */
+export function shouldRearm(reference: Quad | null, quad: Quad | null): boolean {
+  if (!quad) return true;
+  if (!reference) return false;
+  return quadShift(reference, quad) > REARM_SHIFT;
 }

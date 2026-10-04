@@ -206,35 +206,62 @@ const MAX_MEGAPIXELS = 100;
  * para usar en `renderEdited`. Rechaza imagenes absurdamente grandes
  * (bomba de descompresion / OOM) y pre-escala las que superan MAX_SIDE.
  */
-export async function loadImageFromFile(file: File): Promise<HTMLImageElement> {
+export async function loadImageFromFile(file: Blob): Promise<HTMLImageElement> {
   const url = URL.createObjectURL(file);
   try {
-    const img = await loadImage(url);
+    let img: HTMLImageElement;
+    try {
+      img = await loadImage(url);
+    } catch (err) {
+      // HEIC/HEIF (fotos de Samsung/iPhone en "alta eficiencia"): Chrome
+      // en Android no las sabe abrir. Decirlo claro en vez de un error generico.
+      const name = (file as File).name ?? '';
+      if (/hei[cf]/i.test(file.type) || /\.hei[cf]$/i.test(name)) {
+        throw new Error(
+          'Este navegador no abre fotos HEIC. Cambia la cámara a "JPG / Más compatible" o compártela como JPG.',
+        );
+      }
+      throw err;
+    }
     const nw = img.naturalWidth;
     const nh = img.naturalHeight;
 
     // Guarda anti-OOM: si el decode devolvio dimensiones absurdas,
     // abortar con error claro en vez de arrastrar cientos de MB.
-    if (!nw || !nh) throw new Error('La imagen no tiene dimensiones validas');
+    if (!nw || !nh) throw new Error('La imagen no tiene dimensiones válidas');
     if ((nw * nh) / 1e6 > MAX_MEGAPIXELS) {
       throw new Error(
-        `Imagen demasiado grande (${Math.round((nw * nh) / 1e6)} MP). Maximo ${MAX_MEGAPIXELS} MP.`,
+        `Imagen demasiado grande (${Math.round((nw * nh) / 1e6)} MP). Máximo ${MAX_MEGAPIXELS} MP.`,
       );
     }
 
+    // PNG/WebP/GIF pueden traer transparencia: los filtros la leian como
+    // negro. Se aplanan sobre blanco (como una hoja de papel).
+    const mayHaveAlpha = /png|webp|gif/i.test(file.type);
     const longest = Math.max(nw, nh);
-    if (longest <= MAX_SIDE) return img;
+    if (longest <= MAX_SIDE && !mayHaveAlpha) return img;
 
-    const scale = MAX_SIDE / longest;
+    const scale = Math.min(1, MAX_SIDE / longest);
     const c = document.createElement('canvas');
     c.width = Math.round(nw * scale);
     c.height = Math.round(nh * scale);
     const ctx = c.getContext('2d');
     if (!ctx) return img;
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, c.width, c.height);
     ctx.drawImage(img, 0, 0, c.width, c.height);
-    const dataUrl = c.toDataURL('image/jpeg', 0.92);
+    // toBlob (asincrono) en vez de toDataURL: no congela la pantalla
+    // codificando una foto de 12 MP.
+    const blob = await new Promise<Blob | null>((resolve) => c.toBlob(resolve, 'image/jpeg', 0.92));
     releaseCanvas(c);
-    return await loadImage(dataUrl);
+    if (!blob) return img;
+    const scaledUrl = URL.createObjectURL(blob);
+    try {
+      return await loadImage(scaledUrl);
+    } finally {
+      // La imagen ya decodificada no necesita la URL.
+      URL.revokeObjectURL(scaledUrl);
+    }
   } finally {
     URL.revokeObjectURL(url);
   }
@@ -281,7 +308,7 @@ function loadImage(src: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.onload = () => resolve(img);
-    img.onerror = () => reject(new Error('No se pudo cargar la imagen'));
+    img.onerror = () => reject(new Error('No se pudo abrir la imagen (formato no compatible o archivo dañado).'));
     img.src = src;
   });
 }

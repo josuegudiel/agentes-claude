@@ -7,7 +7,9 @@ import './globals.css';
 // Instrument Sans para el texto corrido.
 const display = Barlow_Condensed({
   subsets: ['latin'],
-  weight: ['500', '600', '700', '800'],
+  // Solo los pesos que se usan (bold/extrabold): cada peso extra es otra
+  // descarga en la primera visita.
+  weight: ['700', '800'],
   variable: '--font-display',
   display: 'swap',
 });
