@@ -1,22 +1,25 @@
 /**
- * Helpers de exportacion. jsPDF se carga con dynamic import solo cuando el
- * usuario pide PDF, asi el bundle principal no paga ~150 KB extra.
+ * Helpers de exportacion. El PDF lo arma pdf-writer.ts (sin jsPDF).
  *
  * Las paginas llegan como JPEG ya codificados (ver pages.ts): el PDF y el
  * JPG los usan tal cual, sin recomprimir.
  */
 
-import {
-  PAGE_JPEG_QUALITY,
-  canvasToBlob,
-  decodeBlob,
-  drawRotated,
-  rotatedSize,
-  type Rotation,
-} from './pages';
+import { PAGE_JPEG_QUALITY, canvasToBlob, decodeBlob, drawRotated, type Rotation } from './pages';
+import { buildPdf, type PaperSize, type PdfPageInput } from './pdf-writer';
 import { releaseCanvas } from './pipeline';
 
 export type ExportFormat = 'png' | 'jpg' | 'pdf';
+
+export function isExportFormat(v: unknown): v is ExportFormat {
+  return v === 'pdf' || v === 'jpg' || v === 'png';
+}
+
+/** Nombre por defecto con la fecha de hoy: "escaneo_2026-10-04". */
+export function defaultFilename(d: Date = new Date()): string {
+  const pad = (n: number): string => String(n).padStart(2, '0');
+  return `escaneo_${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
 
 export interface ExportPageInput {
   blob: Blob;
@@ -45,56 +48,20 @@ export function sanitizeFilename(raw: string): string {
   return cleaned || DEFAULT_NAME;
 }
 
-/** A4 en puntos PDF (1 pt = 1/72 in). */
-const A4_SHORT_PT = 595.28;
-const A4_LONG_PT = 841.89;
+/** Calidad de salida: la de escaneo, o reducida para correo/WhatsApp. */
+export type ExportQuality = 'max' | 'small';
 
-/**
- * Tamano fisico de la pagina PDF: el aspecto de la imagen, escalado para
- * caber en un A4 (en su orientacion). Antes se usaba 1 px = 1 pt: una
- * pagina de 4096px media 1.4 m y al imprimir salia ampliada/cortada.
- * La resolucion no se pierde: el JPEG se incrusta completo (~350 dpi).
- */
-export function pdfPageSize(w: number, h: number): { width: number; height: number } {
-  const portrait = h >= w;
-  const boxW = portrait ? A4_SHORT_PT : A4_LONG_PT;
-  const boxH = portrait ? A4_LONG_PT : A4_SHORT_PT;
-  const s = Math.min(boxW / w, boxH / h);
-  return { width: w * s, height: h * s };
+export function isExportQuality(v: unknown): v is ExportQuality {
+  return v === 'max' || v === 'small';
 }
 
-/**
- * Como colocar el JPEG en la pagina PDF para que se vea girado `r` grados
- * (horario) SIN recomprimirlo: el giro va en la matriz de dibujo.
- *
- * Parametros para jsPDF.addImage(x, y, w, h, ..., angle). jsPDF ancla la
- * esquina inferior izquierda de la imagen en (x, y + h) (coordenadas desde
- * arriba) y gira `angle` grados ANTIHORARIO alrededor de ese punto; los
- * x/y de abajo compensan ese giro para que la imagen llene la pagina
- * exacta. Verificado en export.test.ts reproduciendo la matriz de jsPDF.
- */
-export function pdfPlacement(
-  w: number,
-  h: number,
-  r: Rotation,
-): { pageW: number; pageH: number; x: number; y: number; drawW: number; drawH: number; angle: number } {
-  const turned = rotatedSize(w, h, r);
-  const page = pdfPageSize(turned.width, turned.height);
-  // Tamano de la imagen SIN girar, en puntos.
-  const s = page.width / turned.width;
-  const drawW = w * s;
-  const drawH = h * s;
-  const base = { pageW: page.width, pageH: page.height, drawW, drawH };
-  switch (r) {
-    case 90:
-      return { ...base, x: 0, y: -drawH, angle: -90 };
-    case 180:
-      return { ...base, x: drawW, y: -drawH, angle: -180 };
-    case 270:
-      return { ...base, x: drawH, y: drawW - drawH, angle: -270 };
-    default:
-      return { ...base, x: 0, y: 0, angle: 0 };
-  }
+/** "Ligera": ~150 dpi en A4 y JPEG 0.72 — suele pesar 4-6x menos. */
+const SMALL_MAX_SIDE = 1754;
+const SMALL_JPEG_QUALITY = 0.72;
+
+export interface ExportOptions {
+  paper?: PaperSize;
+  quality?: ExportQuality;
 }
 
 /** Nombres de salida: "base.ext" para 1 archivo, "base_1.ext".. para varios. */
@@ -108,73 +75,70 @@ export function outputNames(base: string, count: number, ext: string): string[] 
  *   - PDF: un solo archivo con todas las paginas.
  *   - JPG/PNG: UN ARCHIVO POR PAGINA (antes se exportaba solo la primera y
  *     el resto se perdia sin aviso claro).
+ *
+ * Una pagina a la vez en memoria. Con calidad maxima, PDF y JPG sin giro
+ * usan el JPEG guardado tal cual (sin recomprimir).
  */
 export async function exportFiles(
   pages: ExportPageInput[],
   format: ExportFormat,
   baseName: string,
+  opts: ExportOptions = {},
 ): Promise<File[]> {
   if (pages.length === 0) throw new Error('No hay paginas para exportar');
   const base = sanitizeFilename(baseName);
+  const small = opts.quality === 'small';
 
   if (format === 'pdf') {
-    const blob = await pagesToPdfBlob(pages);
+    const input: PdfPageInput[] = [];
+    for (const p of pages) {
+      const r = p.rotation ?? 0;
+      if (small) {
+        // Se reduce sin girar: el giro sigue yendo en la matriz del PDF.
+        const blob = await reencode(p.blob, 0, 'image/jpeg', SMALL_JPEG_QUALITY, SMALL_MAX_SIDE);
+        input.push({ blob, width: 0, height: 0, rotation: r });
+      } else {
+        input.push({ blob: p.blob, width: p.width, height: p.height, rotation: r });
+      }
+    }
+    const blob = await buildPdf(input, opts.paper ?? 'auto');
     const name = pages.length > 1 ? `${base}_${pages.length}p.pdf` : `${base}.pdf`;
     return [new File([blob], name, { type: 'application/pdf' })];
   }
 
   const names = outputNames(base, pages.length, format);
-  // Una pagina a la vez en memoria. Un JPG sin giro se entrega tal cual
-  // (sin recomprimir); girado o PNG se re-codifica una vez.
   const files: File[] = [];
   for (let i = 0; i < pages.length; i++) {
     const p = pages[i]!;
     const r = p.rotation ?? 0;
     if (format === 'jpg') {
-      const blob = r === 0 ? p.blob : await reencode(p.blob, r, 'image/jpeg', PAGE_JPEG_QUALITY);
+      const blob =
+        r === 0 && !small
+          ? p.blob
+          : await reencode(
+              p.blob,
+              r,
+              'image/jpeg',
+              small ? SMALL_JPEG_QUALITY : PAGE_JPEG_QUALITY,
+              small ? SMALL_MAX_SIDE : Infinity,
+            );
       files.push(new File([blob], names[i]!, { type: 'image/jpeg' }));
     } else {
-      const png = await reencode(p.blob, r, 'image/png');
+      const png = await reencode(p.blob, r, 'image/png', undefined, small ? SMALL_MAX_SIDE : Infinity);
       files.push(new File([png], names[i]!, { type: 'image/png' }));
     }
   }
   return files;
 }
 
-async function reencode(blob: Blob, r: Rotation, mime: string, quality?: number): Promise<Blob> {
+async function reencode(blob: Blob, r: Rotation, mime: string, quality?: number, maxSide = Infinity): Promise<Blob> {
   const img = await decodeBlob(blob);
-  const c = drawRotated(img, img.naturalWidth, img.naturalHeight, r);
+  const c = drawRotated(img, img.naturalWidth, img.naturalHeight, r, maxSide);
   try {
     return await canvasToBlob(c, mime, quality);
   } finally {
     releaseCanvas(c);
   }
-}
-
-async function pagesToPdfBlob(pages: ExportPageInput[]): Promise<Blob> {
-  const { jsPDF } = await import('jspdf');
-  const place = pages.map((p) => pdfPlacement(p.width, p.height, p.rotation ?? 0));
-  const first = place[0]!;
-  const pdf = new jsPDF({
-    unit: 'pt',
-    format: [first.pageW, first.pageH],
-    orientation: first.pageW > first.pageH ? 'landscape' : 'portrait',
-    compress: true,
-  });
-
-  for (let i = 0; i < pages.length; i++) {
-    const p = pages[i]!;
-    const pl = place[i]!;
-    if (i > 0) {
-      pdf.addPage([pl.pageW, pl.pageH], pl.pageW > pl.pageH ? 'landscape' : 'portrait');
-    }
-    // El JPEG se incrusta tal cual (DCTDecode): sin recomprimir, aunque
-    // este girado (el giro va en la matriz, ver pdfPlacement).
-    const bytes = new Uint8Array(await p.blob.arrayBuffer());
-    pdf.addImage(bytes, 'JPEG', pl.x, pl.y, pl.drawW, pl.drawH, undefined, 'NONE', pl.angle);
-  }
-
-  return pdf.output('blob');
 }
 
 export function downloadBlob(blob: Blob, filename: string): void {
@@ -192,16 +156,41 @@ export function downloadBlob(blob: Blob, filename: string): void {
 
 export type SaveResult = 'shared' | 'downloaded' | 'cancelled' | 'needs-gesture';
 
+/** Chrome (no iOS) rechaza compartir mas de 10 archivos o mas de 50 MB. */
+const CHROME_SHARE_MAX_FILES = 10;
+const CHROME_SHARE_MAX_BYTES = 50 * 1024 * 1024;
+
+function isChromiumShare(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  const ua = navigator.userAgent;
+  // En iOS todos los navegadores usan WebKit (otro limite, otras reglas).
+  return /Chrome\/|Chromium\//.test(ua) && !/iPhone|iPad|iPod|CriOS/.test(ua);
+}
+
+/** El dispositivo "compartiria" en vez de descargar (telefonos y tablets). */
+export function prefersShare(): boolean {
+  if (typeof window === 'undefined' || typeof navigator === 'undefined') return false;
+  if (typeof navigator.share !== 'function' || typeof navigator.canShare !== 'function') return false;
+  // Puntero principal tactil: un portatil con pantalla tactil (Surface,
+  // Chromebook) tiene puntero fino y descarga, como espera la gente.
+  try {
+    return window.matchMedia('(pointer: coarse)').matches;
+  } catch {
+    return navigator.maxTouchPoints > 0;
+  }
+}
+
 function canShareFiles(files: File[]): boolean {
-  const isTouchDevice =
-    typeof navigator !== 'undefined' &&
-    (navigator.maxTouchPoints > 0 || 'ontouchstart' in window);
-  return (
-    isTouchDevice &&
-    typeof navigator.canShare === 'function' &&
-    typeof navigator.share === 'function' &&
-    navigator.canShare({ files })
-  );
+  if (!prefersShare()) return false;
+  if (isChromiumShare()) {
+    const bytes = files.reduce((a, f) => a + f.size, 0);
+    if (files.length > CHROME_SHARE_MAX_FILES || bytes > CHROME_SHARE_MAX_BYTES) return false;
+  }
+  try {
+    return navigator.canShare({ files });
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -210,12 +199,12 @@ function canShareFiles(files: File[]): boolean {
  *   - Movil con Web Share de archivos: share sheet nativo (en iPhone
  *     incluye "Guardar imagen/N imagenes" -> FOTOTECA; una descarga normal
  *     termina en Archivos, que no es lo que la gente espera).
- *   - Desktop o sin soporte: descarga clasica (una por archivo).
+ *   - Desktop, sin soporte, o demasiados archivos para compartir: descarga
+ *     clasica (una por archivo).
  *
  * 'needs-gesture': Safari exige que share() ocurra DENTRO de un toque del
  * usuario. Si generar el PDF tardo, esa "activacion" ya caduco y share()
- * lanza NotAllowedError. Antes se caia a descarga (el JPG terminaba en
- * Archivos). Ahora el caller muestra un boton "Guardar" que llama a
+ * lanza NotAllowedError. El caller muestra un boton "Guardar" que llama a
  * shareFiles() en un toque nuevo, con los archivos ya listos.
  */
 export async function saveFiles(files: File[]): Promise<SaveResult> {
@@ -231,12 +220,19 @@ export async function saveFiles(files: File[]): Promise<SaveResult> {
 export async function shareFiles(
   files: File[],
 ): Promise<'shared' | 'cancelled' | 'needs-gesture' | 'failed'> {
+  // Si el toque sigue "activo" y aun asi share() dice NotAllowedError, no
+  // es falta de gesto: es un limite del sistema (tamano/cantidad). Pedir
+  // otro toque no serviria: mejor descargar.
+  const activeBefore = (navigator as Navigator & { userActivation?: { isActive: boolean } }).userActivation?.isActive;
   try {
     await navigator.share({ files });
     return 'shared';
   } catch (err) {
-    if (err instanceof Error && err.name === 'AbortError') return 'cancelled';
-    if (err instanceof Error && err.name === 'NotAllowedError') return 'needs-gesture';
+    const name = err instanceof Error ? err.name : '';
+    if (name === 'AbortError') return 'cancelled';
+    // Ya hay una hoja de compartir abierta (doble toque): no descargar.
+    if (name === 'InvalidStateError') return 'cancelled';
+    if (name === 'NotAllowedError') return activeBefore === true ? 'failed' : 'needs-gesture';
     return 'failed';
   }
 }

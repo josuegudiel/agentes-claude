@@ -11,18 +11,21 @@ export default function manifest(): MetadataRoute.Manifest {
     short_name: 'ScannerFree',
     description:
       'Escanea documentos gratis con la cámara: bordes automáticos, perspectiva, filtros y export a PDF.',
+    id: '/',
     start_url: '/',
+    scope: '/',
+    lang: 'es',
     display: 'standalone',
     orientation: 'portrait',
     background_color: '#0B0B0C',
     theme_color: '#0B0B0C',
+    // PNG: Android los necesita para instalar (192/512 + maskable) y iOS
+    // usa app/apple-icon.png (180). El SVG queda para navegadores de escritorio.
     icons: [
-      {
-        src: '/icon.svg',
-        sizes: 'any',
-        type: 'image/svg+xml',
-        purpose: 'any',
-      },
+      { src: '/icons/icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
+      { src: '/icons/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
+      { src: '/icons/maskable-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
+      { src: '/icon.svg', sizes: 'any', type: 'image/svg+xml', purpose: 'any' },
     ],
   };
 }

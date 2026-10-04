@@ -7,6 +7,10 @@ const config: Config = {
   ],
   theme: {
     extend: {
+      screens: {
+        // Telefono en horizontal: muy poca altura.
+        short: { raw: '(orientation: landscape) and (max-height: 500px)' },
+      },
       fontFamily: {
         // Diseno "Obturador": Barlow Condensed (titulos y etiquetas en
         // mayusculas, como los rotulos de una camara), JetBrains Mono (datos

@@ -12,6 +12,9 @@ html,
 body {
   background: #0b0b0c;
   color: #f2f2f0;
+  /* Sin "deslizar para recargar" ni rebote: un deslizamiento accidental
+     hacia abajo recargaba la app a mitad de un escaneo. */
+  overscroll-behavior: none;
 }
 
 /* Scrollbar mas discreto */
@@ -300,6 +303,9 @@ body {
   /* Evita el zoom por doble tap en iOS sin bloquear el pinch-zoom. */
   touch-action: manipulation;
   -webkit-tap-highlight-color: transparent;
+  /* La app ocupa exactamente la pantalla: el documento no se desplaza
+     (cada vista desplaza su propio contenido). */
+  overflow: hidden;
 }
 
 /* Contenedor de la app a alto de pantalla real: 100dvh descuenta las
@@ -423,8 +429,9 @@ body {
 @media (prefers-reduced-motion: reduce) {
   .stage-in,
   .toast-in,
-  .shot-flash,
   .hud-blink {
     animation: none !important;
   }
+  /* El destello NO se quita: es solo opacidad (no es movimiento) y sin su
+     animacion el div quedaba blanco y opaco tapando el visor. */
 }

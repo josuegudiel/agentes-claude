@@ -373,4 +373,34 @@ describe('estimateAspectRatio (Zhang & He)', () => {
     const est = estimateAspectRatio(q, { x: 2016, y: 1512 }, 4032)!;
     expect(Math.abs(est - 216 / 279) / (216 / 279)).toBeLessThan(0.03);
   });
+
+  it('trapecio puro (lados sup/inf paralelos) de un A4 vertical: sigue vertical', () => {
+    // Telefono inclinado hacia la hoja, encuadre derecho: la focal no es
+    // observable. Antes salia 1.34 (apaisado, texto aplastado).
+    for (const rx of [-0.6, -0.35, 0.4]) {
+      const q = project(210, 297, 3000, 1512, 2016, rx, 0, 600);
+      const est = estimateAspectRatio(q, { x: 1512, y: 2016 }, 4032)!;
+      expect(est).toBeLessThan(1);
+      expect(Math.abs(est - 210 / 297) / (210 / 297)).toBeLessThan(0.15);
+    }
+  });
+
+  it('cuadrilateros arbitrarios: resultado acotado cerca del cociente de bordes', () => {
+    let seed = 7;
+    const rnd = (): number => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+    for (let k = 0; k < 300; k++) {
+      const q: Quad = [
+        { x: 200 + rnd() * 1200, y: 200 + rnd() * 1200 },
+        { x: 1700 + rnd() * 1200, y: 200 + rnd() * 1200 },
+        { x: 1700 + rnd() * 1200, y: 2200 + rnd() * 1500 },
+        { x: 200 + rnd() * 1200, y: 2200 + rnd() * 1500 },
+      ];
+      const d = (a: { x: number; y: number }, b: { x: number; y: number }): number => Math.hypot(a.x - b.x, a.y - b.y);
+      const edge = (d(q[0], q[1]) + d(q[3], q[2])) / (d(q[0], q[3]) + d(q[1], q[2]));
+      const est = estimateAspectRatio(q, { x: 1512, y: 2016 }, 4032);
+      if (est === null) continue;
+      expect(est).toBeGreaterThanOrEqual(edge / 2 - 1e-9);
+      expect(est).toBeLessThanOrEqual(edge * 2 + 1e-9);
+    }
+  });
 });

@@ -43,13 +43,17 @@ export function isPdfFile(file: File): boolean {
 }
 
 type PdfJs = typeof import('pdfjs-dist/legacy/build/pdf.mjs');
+const pdfjsBase = (version: string): string => `/pdfjs/${version}/`;
 let pdfjsPromise: Promise<PdfJs> | null = null;
 
 function loadPdfJs(): Promise<PdfJs> {
   if (!pdfjsPromise) {
     // Build "legacy": funciona en iPhones con iOS algo viejo.
+    // (scripts/downlevel.cjs la baja a iOS 15.4+, incluido el worker).
     pdfjsPromise = import('pdfjs-dist/legacy/build/pdf.mjs').then((m) => {
-      m.GlobalWorkerOptions.workerSrc = '/pdfjs/pdf.worker.min.mjs';
+      // La carpeta lleva la version (scripts/copy-pdfjs.mjs): el worker
+      // siempre coincide con esta copia de la libreria.
+      m.GlobalWorkerOptions.workerSrc = `${pdfjsBase(m.version)}pdf.worker.min.mjs`;
       return m;
     });
     pdfjsPromise.catch(() => {
@@ -63,6 +67,10 @@ export interface ImportResult {
   pages: ScanPage[];
   /** Hojas que tenia el PDF (puede ser > pages.length si se trunco). */
   total: number;
+  /** Hojas que no se pudieron leer (se saltan, no abortan la importacion). */
+  failed: number;
+  /** El usuario cancelo: no se devuelve ninguna hoja. */
+  cancelled: boolean;
 }
 
 /**
@@ -73,19 +81,31 @@ export async function importPdf(
   file: File,
   nextId: () => number,
   onProgress?: (done: number, total: number) => void,
+  signal?: AbortSignal,
 ): Promise<ImportResult> {
   if (file.size > MAX_IMPORT_BYTES) {
     throw new PdfImportError('El PDF es demasiado grande (máximo 50 MB).');
   }
-  const pdfjs = await loadPdfJs().catch(() => {
-    throw new PdfImportError('No se pudo cargar el lector de PDF. Revisa tu conexión e inténtalo de nuevo.');
+  const pdfjs = await loadPdfJs().catch((err: unknown) => {
+    // ChunkLoadError = no llego el archivo (sin red, o la app se actualizo
+    // mientras estaba abierta). Cualquier otra cosa: el navegador no puede.
+    const name = err instanceof Error ? err.name : '';
+    throw new PdfImportError(
+      name === 'ChunkLoadError'
+        ? 'No se pudo cargar el lector de PDF. Revisa tu conexión o recarga la página e inténtalo de nuevo.'
+        : 'Este navegador no puede leer PDF. Actualiza el sistema del teléfono o prueba con otro navegador.',
+    );
   });
+  const empty = (): ImportResult => ({ pages: [], total: 0, failed: 0, cancelled: true });
+  if (signal?.aborted) return empty();
 
   const data = new Uint8Array(await file.arrayBuffer());
   const task = pdfjs.getDocument({
     data,
-    wasmUrl: '/pdfjs/wasm/',
-    standardFontDataUrl: '/pdfjs/standard_fonts/',
+    wasmUrl: `${pdfjsBase(pdfjs.version)}wasm/`,
+    standardFontDataUrl: `${pdfjsBase(pdfjs.version)}standard_fonts/`,
+    cMapUrl: `${pdfjsBase(pdfjs.version)}cmaps/`,
+    cMapPacked: true,
     verbosity: 0,
   });
   let doc: PDFDocumentProxy;
@@ -107,40 +127,54 @@ export async function importPdf(
     const total = doc.numPages;
     const count = Math.min(total, MAX_IMPORT_PAGES);
     const pages: ScanPage[] = [];
+    let failed = 0;
     onProgress?.(0, count);
     for (let i = 1; i <= count; i++) {
-      const page = await doc.getPage(i);
+      if (signal?.aborted) return empty();
+      // Una hoja ilegible (o sin memoria para dibujarla) se salta: no se
+      // pierden las demas.
       try {
-        const base = page.getViewport({ scale: 1 });
-        const viewport = page.getViewport({ scale: importScale(base.width, base.height) });
-        const canvas = document.createElement('canvas');
-        canvas.width = Math.max(1, Math.floor(viewport.width));
-        canvas.height = Math.max(1, Math.floor(viewport.height));
-        const ctx = canvas.getContext('2d');
-        if (!ctx) {
-          releaseCanvas(canvas);
-          throw new PdfImportError('Tu navegador no pudo dibujar la hoja.');
-        }
-        // Fondo blanco: el JPEG no tiene transparencia (saldria negro).
-        ctx.fillStyle = '#ffffff';
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
-        try {
-          await page.render({ canvas, canvasContext: ctx, viewport, background: '#ffffff' }).promise;
-        } catch (err) {
-          releaseCanvas(canvas);
-          throw err instanceof PdfImportError
-            ? err
-            : new PdfImportError(`No se pudo leer la hoja ${i} del PDF.`);
-        }
-        // pageFromCanvas codifica a JPEG y libera el canvas.
-        pages.push(await pageFromCanvas(canvas, nextId()));
-      } finally {
-        page.cleanup();
+        pages.push(await renderPage(doc, i, nextId));
+      } catch {
+        failed++;
       }
       onProgress?.(i, count);
     }
-    return { pages, total };
+    if (signal?.aborted) return empty();
+    if (pages.length === 0 && failed > 0) {
+      throw new PdfImportError('No se pudo leer ninguna hoja del PDF.');
+    }
+    return { pages, total, failed, cancelled: false };
   } finally {
     void task.destroy();
+  }
+}
+
+async function renderPage(doc: PDFDocumentProxy, i: number, nextId: () => number): Promise<ScanPage> {
+  const page = await doc.getPage(i);
+  try {
+    const base = page.getViewport({ scale: 1 });
+    const viewport = page.getViewport({ scale: importScale(base.width, base.height) });
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.floor(viewport.width));
+    canvas.height = Math.max(1, Math.floor(viewport.height));
+    const ctx = canvas.getContext('2d');
+    if (!ctx) {
+      releaseCanvas(canvas);
+      throw new PdfImportError('Tu navegador no pudo dibujar la hoja.');
+    }
+    // Fondo blanco: el JPEG no tiene transparencia (saldria negro).
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    try {
+      await page.render({ canvas, canvasContext: ctx, viewport, background: '#ffffff' }).promise;
+    } catch (err) {
+      releaseCanvas(canvas);
+      throw err;
+    }
+    // pageFromCanvas codifica a JPEG y libera el canvas (tambien si falla).
+    return await pageFromCanvas(canvas, nextId());
+  } finally {
+    page.cleanup();
   }
 }

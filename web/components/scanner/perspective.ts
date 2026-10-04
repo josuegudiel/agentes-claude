@@ -90,6 +90,33 @@ export function isConvexQuad(q: Quad, minSin = 1e-3): boolean {
   return true;
 }
 
+/** Area del quad (en las unidades de sus coordenadas; 0..1 si normalizado). */
+export function quadAreaOf(q: Quad): number {
+  let sum = 0;
+  for (let i = 0; i < 4; i++) {
+    const a = q[i]!;
+    const b = q[(i + 1) % 4]!;
+    sum += a.x * b.y - b.x * a.y;
+  }
+  return Math.abs(sum) / 2;
+}
+
+/**
+ * Reordena las 4 esquinas en el orden canonico sup-izq, sup-der, inf-der,
+ * inf-izq (sentido horario en pantalla). Arregla los quads "cruzados" que
+ * quedan cuando el usuario arrastra una esquina por encima de otra.
+ */
+export function orderQuad(q: Quad): Quad {
+  const cx = (q[0].x + q[1].x + q[2].x + q[3].x) / 4;
+  const cy = (q[0].y + q[1].y + q[2].y + q[3].y) / 4;
+  const sorted = [...q].sort((a, b) => Math.atan2(a.y - cy, a.x - cx) - Math.atan2(b.y - cy, b.x - cx));
+  let start = 0;
+  for (let i = 1; i < 4; i++) {
+    if (sorted[i]!.x + sorted[i]!.y < sorted[start]!.x + sorted[start]!.y) start = i;
+  }
+  return [0, 1, 2, 3].map((k) => ({ ...sorted[(start + k) % 4]! })) as Quad;
+}
+
 /**
  * Resuelve A·x = b (n x n) por eliminacion gaussiana con pivoteo parcial.
  * Devuelve null si la matriz es singular (quad degenerado / colineal).
@@ -207,12 +234,35 @@ export function estimateAspectRatio(q: Quad, center: Point, maxDim: number): num
   const k3 = dot(c14, m2) / den3;
   const n2 = [k2 * m2[0]! - m1[0]!, k2 * m2[1]! - m1[1]!, k2 * m2[2]! - m1[2]!];
   const n3 = [k3 * m3[0]! - m1[0]!, k3 * m3[1]! - m1[1]!, k3 * m3[2]! - m1[2]!];
-  const edgeRatio = Math.sqrt((n2[0]! ** 2 + n2[1]! ** 2) / (n3[0]! ** 2 + n3[1]! ** 2));
+  // Cociente de los largos REALES de los bordes en la foto (promedio de los
+  // lados opuestos). Antes se usaba el modulo de n2/n3, que depende del
+  // origen de coordenadas y daba proporciones absurdas (A4 vertical salia
+  // apaisado) justo en las fotos inclinadas.
+  const dist = (a: Point, b: Point): number => Math.hypot(a.x - b.x, a.y - b.y);
+  const edgeRatio = (dist(tl, tr) + dist(bl, br)) / Math.max(1e-9, dist(tl, bl) + dist(tr, br));
+  if (!(edgeRatio > 0) || !Number.isFinite(edgeRatio)) return null;
+
+  // ratio^2 = (n2' A^-T A^-1 n2) / (n3' A^-T A^-1 n3), A = K de la camara.
+  const ratioWithFocal = (f: number): number | null => {
+    const q2 = (n: number[]): number => {
+      const x = (n[0]! - u0 * n[2]!) / f;
+      const y = (n[1]! - v0 * n[2]!) / f;
+      return x * x + y * y + n[2]! * n[2]!;
+    };
+    const r = Math.sqrt(q2(n2) / q2(n3));
+    if (!Number.isFinite(r) || r <= 0) return null;
+    // Proteccion: si discrepa de forma absurda del cociente de bordes, la
+    // estimacion no es confiable.
+    return Math.min(edgeRatio * 2, Math.max(edgeRatio / 2, r));
+  };
+  // Focal tipica de la camara principal de un telefono (26 mm equiv. ->
+  // 26/43.3 de la diagonal ~= 0.75 del lado mayor en 4:3):
+  // se usa cuando la focal no se puede recuperar de las esquinas.
+  const assumed = (): number => ratioWithFocal(0.75 * maxDim) ?? edgeRatio;
 
   const nz = n2[2]! * n3[2]!;
-  // Lados opuestos paralelos (foto frontal): la focal no es observable y
-  // el cociente de bordes ya es la proporcion real.
-  if (nz === 0) return Number.isFinite(edgeRatio) && edgeRatio > 0 ? edgeRatio : null;
+  // Un par de lados paralelos en la foto: la focal no es observable.
+  if (Math.abs(nz) < 1e-12) return assumed();
   const f2 =
     -(
       n2[0]! * n3[0]! -
@@ -221,23 +271,14 @@ export function estimateAspectRatio(q: Quad, center: Point, maxDim: number): num
       (n2[1]! * n3[1]! - (n2[1]! * n3[2]! + n2[2]! * n3[1]!) * v0 + nz * v0 * v0)
     ) / nz;
   // Focal implausible (ruido en las esquinas, foto recortada, centro
-  // optico desplazado, o casi frontal: f -> infinito): mejor el cociente
-  // de bordes, que en esos casos es correcto o lo mas seguro.
-  if (!(f2 > 0) || !Number.isFinite(f2)) return edgeRatio;
+  // optico desplazado, o casi frontal: f -> infinito): focal supuesta.
+  if (!(f2 > 0) || !Number.isFinite(f2)) return assumed();
   const f = Math.sqrt(f2);
-  if (f < 0.3 * maxDim || f > 6 * maxDim) return edgeRatio;
-  // ratio^2 = (n2' A^-T A^-1 n2) / (n3' A^-T A^-1 n3), A = K de la camara.
-  const q2 = (n: number[]): number => {
-    const x = (n[0]! - u0 * n[2]!) / f;
-    const y = (n[1]! - v0 * n[2]!) / f;
-    return x * x + y * y + n[2]! * n[2]!;
-  };
-  const r = Math.sqrt(q2(n2) / q2(n3));
-  if (!Number.isFinite(r) || r <= 0) return edgeRatio;
-  // Proteccion: si discrepa de forma absurda del cociente de bordes, la
-  // estimacion no es confiable.
-  if (r > edgeRatio * 2 || r < edgeRatio / 2) return edgeRatio;
-  return r;
+  if (f < 0.3 * maxDim || f > 6 * maxDim) return assumed();
+  const r = ratioWithFocal(f);
+  if (r === null) return assumed();
+  // Fuera del rango razonable respecto de los bordes: tampoco confiar.
+  return r >= edgeRatio * 2 || r <= edgeRatio / 2 ? assumed() : r;
 }
 
 export interface WarpResult {

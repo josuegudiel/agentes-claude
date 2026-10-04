@@ -5,13 +5,18 @@ import { createPortal } from 'react-dom';
 import {
   downloadAll,
   exportFiles,
+  isExportQuality,
+  prefersShare,
   sanitizeFilename,
   saveFiles,
   shareFiles,
   type ExportFormat,
+  type ExportQuality,
 } from './export';
+import { PAPERS, pageLayout, type PaperSize } from './pdf-writer';
 import {
   IconCamera,
+  IconDownload,
   IconChevronLeft,
   IconChevronRight,
   IconFileAdd,
@@ -27,6 +32,10 @@ import { useDragReorder } from './reorder';
 
 interface Props {
   pages: ScanPage[];
+  filename: string;
+  onFilenameChange: (v: string) => void;
+  format: ExportFormat;
+  onFormatChange: (f: ExportFormat) => void;
   onAddPage: () => void;
   onImportPdf: (file: File) => void;
   onRemovePage: (id: number) => void;
@@ -39,11 +48,57 @@ interface Props {
 /** Proporcion de las miniaturas de la grilla (ancho/alto). */
 const TILE_ASPECT = 3 / 4;
 
+const IS_IOS = typeof navigator !== 'undefined' && /iPhone|iPad|iPod/.test(navigator.userAgent);
+
 const FORMATS: { id: ExportFormat; label: string; hint: string }[] = [
   { id: 'pdf', label: 'PDF', hint: 'Todas las páginas en un solo archivo' },
-  { id: 'jpg', label: 'JPG', hint: 'Una imagen por página · se guarda en Fotos' },
+  {
+    id: 'jpg',
+    label: 'JPG',
+    hint: IS_IOS ? 'Una imagen por página · se guarda en Fotos' : 'Una imagen por página',
+  },
   { id: 'png', label: 'PNG', hint: 'Una imagen por página · sin compresión' },
 ];
+
+const PAPER_OPTIONS: { id: PaperSize; label: string }[] = [
+  { id: 'auto', label: 'Ajustar' },
+  { id: 'carta', label: 'Carta' },
+  { id: 'a4', label: 'A4' },
+  { id: 'oficio', label: 'Oficio' },
+];
+
+function isPaperSize(v: unknown): v is PaperSize {
+  return v === 'auto' || v === 'carta' || v === 'a4' || v === 'oficio';
+}
+
+/** Preferencia guardada en localStorage (o el valor por defecto). */
+function usePref<T extends string>(key: string, initial: T, valid: (v: unknown) => v is T): [T, (v: T) => void] {
+  const [value, setValue] = useState<T>(initial);
+  useEffect(() => {
+    try {
+      const v = localStorage.getItem(key);
+      if (valid(v)) setValue(v);
+    } catch {
+      /* sin almacenamiento */
+    }
+  }, [key, valid]);
+  const set = useCallback(
+    (v: T) => {
+      setValue(v);
+      try {
+        localStorage.setItem(key, v);
+      } catch {
+        /* ignorar */
+      }
+    },
+    [key],
+  );
+  return [value, set];
+}
+
+function formatBytes(b: number): string {
+  return b >= 1e6 ? `${(b / 1e6).toFixed(1)} MB` : `${Math.max(1, Math.round(b / 1e3))} KB`;
+}
 
 type Status =
   | { kind: 'idle' }
@@ -54,6 +109,10 @@ type Status =
 
 export function ExportView({
   pages,
+  filename,
+  onFilenameChange,
+  format,
+  onFormatChange,
   onAddPage,
   onImportPdf,
   onRemovePage,
@@ -62,15 +121,30 @@ export function ExportView({
   onRotatePage,
   onRestart,
 }: Props): React.ReactElement {
-  const [format, setFormat] = useState<ExportFormat>('pdf');
-  const [filename, setFilename] = useState<string>('escaneo');
+  const [paper, setPaper] = usePref<PaperSize>('scanner.paper', 'auto', isPaperSize);
+  const [quality, setQuality] = usePref<ExportQuality>('scanner.quality', 'max', isExportQuality);
   const [status, setStatus] = useState<Status>({ kind: 'idle' });
   const [viewing, setViewing] = useState<number | null>(null); // id de pagina
+  const working = status.kind === 'working';
 
-  // Cambiar paginas/formato/nombre invalida archivos ya preparados.
+  // Cada cambio de paginas/opciones invalida los archivos ya preparados.
+  // `gen` sube con cada cambio: un resultado que llega tarde (de antes del
+  // cambio) se descarta en vez de compartir una version vieja.
+  const genRef = useRef(0);
   useEffect(() => {
+    genRef.current++;
     setStatus((s) => (s.kind === 'working' ? s : { kind: 'idle' }));
-  }, [pages, format, filename]);
+  }, [pages, format, filename, paper, quality]);
+
+  // Si la vista se cierra a mitad de una exportacion, no abrir el menu de
+  // compartir encima de otra pantalla.
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   // Mensaje de exito efimero.
   useEffect(() => {
@@ -79,40 +153,77 @@ export function ExportView({
     return () => clearTimeout(t);
   }, [status]);
 
+  const doneMsg = (r: 'shared' | 'downloaded', count: number): string =>
+    r === 'shared' ? 'Listo.' : count > 1 ? `${count} archivos descargados.` : 'Archivo descargado.';
+
   const busyRef = useRef(false);
-  const handleSave = useCallback(async () => {
-    if (pages.length === 0 || busyRef.current) return;
-    busyRef.current = true;
-    setStatus({ kind: 'working' });
-    try {
-      const files = await exportFiles(pages, format, filename);
-      const r = await saveFiles(files);
-      if (r === 'needs-gesture') setStatus({ kind: 'ready', files });
-      else if (r === 'shared') setStatus({ kind: 'done', msg: 'Listo.' });
-      else if (r === 'downloaded')
-        setStatus({ kind: 'done', msg: files.length > 1 ? `${files.length} archivos descargados.` : 'Archivo descargado.' });
-      else setStatus({ kind: 'idle' });
-    } catch (err) {
-      setStatus({
-        kind: 'error',
-        msg: `No se pudo generar el archivo. ${err instanceof Error ? err.message : ''}`.trim(),
-      });
-    } finally {
-      busyRef.current = false;
-    }
-  }, [pages, format, filename]);
+  const run = useCallback(
+    async (mode: 'save' | 'download') => {
+      if (pages.length === 0 || busyRef.current) return;
+      busyRef.current = true;
+      const gen = genRef.current;
+      setStatus({ kind: 'working' });
+      try {
+        const files = await exportFiles(pages, format, filename, { paper, quality });
+        if (!mountedRef.current) return;
+        if (gen !== genRef.current) {
+          // Algo cambio mientras se preparaba (no deberia: la pantalla queda
+          // bloqueada), por si acaso no se entrega un archivo viejo.
+          setStatus({ kind: 'idle' });
+          return;
+        }
+        if (mode === 'download') {
+          await downloadAll(files);
+          setStatus({ kind: 'done', msg: doneMsg('downloaded', files.length) });
+          return;
+        }
+        const r = await saveFiles(files);
+        if (!mountedRef.current) return;
+        if (r === 'needs-gesture') setStatus({ kind: 'ready', files });
+        else if (r === 'shared' || r === 'downloaded') setStatus({ kind: 'done', msg: doneMsg(r, files.length) });
+        else setStatus({ kind: 'idle' });
+      } catch (err) {
+        if (mountedRef.current) {
+          setStatus({
+            kind: 'error',
+            msg: `No se pudo generar el archivo. ${err instanceof Error ? err.message : ''}`.trim(),
+          });
+        }
+      } finally {
+        busyRef.current = false;
+      }
+    },
+    [pages, format, filename, paper, quality],
+  );
 
   // Segundo toque (Safari): los archivos ya estan listos, share() se llama
   // de inmediato dentro del gesto.
+  const sharingRef = useRef(false);
   const handleShareReady = useCallback(async (files: File[]) => {
-    const r = await shareFiles(files);
-    if (r === 'shared') setStatus({ kind: 'done', msg: 'Listo.' });
-    else if (r === 'cancelled') setStatus({ kind: 'ready', files });
-    else {
-      await downloadAll(files);
-      setStatus({ kind: 'done', msg: 'Archivo descargado.' });
+    if (sharingRef.current) return;
+    sharingRef.current = true;
+    try {
+      const r = await shareFiles(files);
+      if (r === 'shared') setStatus({ kind: 'done', msg: 'Listo.' });
+      else if (r === 'cancelled') setStatus({ kind: 'ready', files });
+      else {
+        await downloadAll(files);
+        setStatus({ kind: 'done', msg: doneMsg('downloaded', files.length) });
+      }
+    } finally {
+      sharingRef.current = false;
     }
   }, []);
+
+  const handleDownload = useCallback(() => {
+    if (status.kind === 'ready') {
+      void downloadAll(status.files).then(() =>
+        setStatus({ kind: 'done', msg: doneMsg('downloaded', status.files.length) }),
+      );
+      return;
+    }
+    void run('download');
+  }, [status, run]);
 
   const n = pages.length;
   const what =
@@ -122,12 +233,39 @@ export function ExportView({
         ? `${n} ${format.toUpperCase()}`
         : format.toUpperCase();
 
-  // Datos tecnicos reales (fila "meta"): tamano de la 1a pagina, dpi del
-  // PDF y peso estimado (las paginas ya son JPEG: PDF y JPG pesan ~eso).
-  const first = pages[0] ? rotatedSize(pages[0].width, pages[0].height, pages[0].rotation) : null;
+  // Datos tecnicos reales (fila "meta"): tamano de la 1a pagina, papel y
+  // dpi del PDF, y peso estimado (las paginas ya son JPEG).
+  const firstPage = pages[0];
+  const first = firstPage ? rotatedSize(firstPage.width, firstPage.height, firstPage.rotation) : null;
   const totalBytes = pages.reduce((a, p) => a + p.blob.size, 0);
-  const sizeLabel =
-    format === 'png' ? 'SIN PÉRDIDA' : `≈ ${totalBytes >= 1e6 ? (totalBytes / 1e6).toFixed(1) + ' MB' : Math.max(1, Math.round(totalBytes / 1e3)) + ' KB'}`;
+  const small = quality === 'small';
+  const estBytes = small
+    ? pages.reduce((a, p) => {
+        const k = Math.min(1, 1754 / Math.max(p.width, p.height));
+        // Reducir el lado a k y bajar la calidad de 0.92 a 0.72 (~ /2).
+        return a + p.blob.size * k * k * 0.5;
+      }, 0)
+    : totalBytes;
+  const sizeLabel = format === 'png' ? 'SIN PÉRDIDA' : `≈ ${formatBytes(estBytes)}`;
+  const firstDpi =
+    firstPage && format === 'pdf'
+      ? pageLayout(
+          small ? Math.round(firstPage.width * Math.min(1, 1754 / Math.max(firstPage.width, firstPage.height))) : firstPage.width,
+          small ? Math.round(firstPage.height * Math.min(1, 1754 / Math.max(firstPage.width, firstPage.height))) : firstPage.height,
+          firstPage.rotation,
+          paper,
+        ).dpi
+      : null;
+  const paperLabel = paper === 'auto' ? 'AJUSTADO' : PAPERS[paper].label.toUpperCase();
+  const middleMeta =
+    format === 'pdf'
+      ? `${paperLabel}${firstDpi ? ` · ${firstDpi} DPI` : ''}`
+      : format === 'jpg'
+        ? small
+          ? 'JPEG · LIGERA'
+          : 'JPEG · 92%'
+        : 'PNG';
+  const showDownload = prefersShare();
 
   const viewIndex = viewing === null ? -1 : pages.findIndex((p) => p.id === viewing);
   const viewPage = viewIndex >= 0 ? pages[viewIndex]! : null;
@@ -149,7 +287,14 @@ export function ExportView({
       </div>
 
       {/* Contenido desplazable */}
-      <div ref={scrollRef} className="safe-x min-h-0 flex-1 overflow-y-auto overscroll-contain pb-3">
+      <div
+        ref={scrollRef}
+        // Mientras se prepara el archivo no se puede cambiar nada: lo que se
+        // comparte es exactamente lo que se ve.
+        inert={working}
+        aria-busy={working}
+        className={`safe-x min-h-0 flex-1 overflow-y-auto overscroll-contain pb-3 transition-opacity ${working ? 'opacity-60' : ''}`}
+      >
         <div className="grid grid-cols-3 gap-2.5 sm:grid-cols-4">
           {drag.order.map((id, i) => {
             const p = byId.get(id);
@@ -168,8 +313,12 @@ export function ExportView({
                   onClick={() => {
                     if (!drag.swallowClick()) setViewing(id);
                   }}
-                  onTouchStart={(e) => drag.startTouch(id, e)}
-                  onPointerDown={(e) => drag.startMouse(id, e)}
+                  onTouchStart={(e) => {
+                    if (!working) drag.startTouch(id, e);
+                  }}
+                  onPointerDown={(e) => {
+                    if (!working) drag.startMouse(id, e);
+                  }}
                   onContextMenu={(e) => e.preventDefault()}
                   aria-label={`Página ${i + 1} de ${n}. Ver`}
                   className={`press absolute inset-0 overflow-hidden rounded-xl border border-night-700 bg-night-800 ${
@@ -248,7 +397,7 @@ export function ExportView({
             id="scan-filename"
             type="text"
             value={filename}
-            onChange={(e) => setFilename(e.target.value)}
+            onChange={(e) => onFilenameChange(e.target.value)}
             onFocus={(e) => e.currentTarget.select()}
             autoComplete="off"
             autoCapitalize="none"
@@ -265,6 +414,45 @@ export function ExportView({
             → {sanitizeFilename(filename)}
           </span>
         </label>
+
+        {/* Opciones del archivo */}
+        <div className="mt-2.5 rounded-2xl border border-night-700 bg-night-850 px-4 py-3">
+          {format === 'pdf' && (
+            <>
+              <p id="paper-label" className="font-mono text-[11px] tracking-[0.08em] text-night-400">
+                TAMAÑO DE HOJA
+              </p>
+              <Segmented
+                labelledBy="paper-label"
+                options={PAPER_OPTIONS}
+                value={paper}
+                onChange={setPaper}
+              />
+              <p className="mt-1 font-mono text-[10px] leading-relaxed tracking-[0.04em] text-night-500">
+                {paper === 'auto'
+                  ? 'LA HOJA TOMA LA FORMA DEL DOCUMENTO, SIN BORDES'
+                  : `${PAPERS[paper].label.toUpperCase()} EXACTA PARA IMPRIMIR · DOCUMENTO CENTRADO`}
+              </p>
+            </>
+          )}
+          <p id="quality-label" className={`font-mono text-[11px] tracking-[0.08em] text-night-400 ${format === 'pdf' ? 'mt-3' : ''}`}>
+            CALIDAD
+          </p>
+          <Segmented
+            labelledBy="quality-label"
+            options={[
+              { id: 'max', label: 'Máxima' },
+              { id: 'small', label: 'Ligera' },
+            ]}
+            value={quality}
+            onChange={setQuality}
+          />
+          <p className="mt-1 font-mono text-[10px] leading-relaxed tracking-[0.04em] text-night-500">
+            {quality === 'max'
+              ? 'LA MEJOR NITIDEZ (300 DPI) · ARCHIVO MÁS PESADO'
+              : 'PESA MUCHO MENOS · IDEAL PARA WHATSAPP Y CORREO'}
+          </p>
+        </div>
       </div>
 
       {/* Barra de accion fija al pie */}
@@ -282,7 +470,8 @@ export function ExportView({
                 type="button"
                 role="radio"
                 aria-checked={selected}
-                onClick={() => setFormat(f.id)}
+                onClick={() => onFormatChange(f.id)}
+                disabled={working}
                 className={`min-h-[42px] rounded-xl font-display text-lg font-extrabold tracking-[0.12em] transition-colors ${
                   selected ? 'bg-night-100 text-night-950' : 'text-night-400'
                 }`}
@@ -294,7 +483,7 @@ export function ExportView({
         </div>
         <div className="mt-2 flex justify-between gap-2 px-1 font-mono text-[10.5px] tracking-[0.04em] text-night-400">
           <span>{first ? `${first.width}×${first.height} PX` : '—'}</span>
-          <span>{format === 'pdf' ? 'A4 · 300 DPI' : format === 'jpg' ? 'JPEG · 92%' : 'PNG'}</span>
+          <span>{middleMeta}</span>
           <span>{n > 0 ? sizeLabel : '—'}</span>
         </div>
         <p className="mt-1 text-center font-mono text-[10px] tracking-[0.04em] text-night-500">
@@ -319,7 +508,7 @@ export function ExportView({
         ) : (
           <button
             type="button"
-            onClick={() => void handleSave()}
+            onClick={() => void run('save')}
             disabled={status.kind === 'working' || n === 0}
             className="press mt-2.5 flex h-14 w-full items-center justify-center gap-2.5 rounded-2xl bg-volt px-5 font-display text-xl font-extrabold uppercase tracking-[0.1em] text-night-950 disabled:opacity-50"
           >
@@ -336,9 +525,27 @@ export function ExportView({
             )}
           </button>
         )}
-        <p className="mt-1 min-h-[1rem] text-center font-mono text-[11px] font-bold tracking-[0.06em] text-volt" role="status">
-          {status.kind === 'done' ? status.msg.toUpperCase() : ''}
-        </p>
+        <div className="mt-0.5 flex min-h-[40px] items-center justify-center">
+          {status.kind === 'done' ? (
+            <p className="text-center font-mono text-[11px] font-bold tracking-[0.06em] text-volt" role="status">
+              {status.msg.toUpperCase()}
+            </p>
+          ) : showDownload && n > 0 ? (
+            // En el telefono "Guardar" abre el menu de compartir; si ahi no
+            // aparece donde guardarlo, esto lo descarga directo.
+            <button
+              type="button"
+              onClick={handleDownload}
+              disabled={working}
+              className="flex min-h-[40px] items-center gap-1.5 px-3 font-mono text-[11px] font-bold tracking-[0.08em] text-night-400 active:text-volt disabled:opacity-40"
+            >
+              <IconDownload className="h-3.5 w-3.5" />
+              DESCARGAR AL DISPOSITIVO
+            </button>
+          ) : (
+            <span role="status" />
+          )}
+        </div>
       </div>
 
       {/* Hoja que sigue al dedo mientras se arrastra */}
@@ -370,6 +577,46 @@ export function ExportView({
           }}
         />
       )}
+    </div>
+  );
+}
+
+/** Control segmentado (radiogroup) compacto para opciones. */
+function Segmented<T extends string>({
+  labelledBy,
+  options,
+  value,
+  onChange,
+}: {
+  labelledBy: string;
+  options: { id: T; label: string }[];
+  value: T;
+  onChange: (v: T) => void;
+}): React.ReactElement {
+  return (
+    <div
+      role="radiogroup"
+      aria-labelledby={labelledBy}
+      className="mt-1.5 grid gap-1 rounded-xl border border-night-700 bg-night-900 p-1"
+      style={{ gridTemplateColumns: `repeat(${options.length}, minmax(0, 1fr))` }}
+    >
+      {options.map((o) => {
+        const on = o.id === value;
+        return (
+          <button
+            key={o.id}
+            type="button"
+            role="radio"
+            aria-checked={on}
+            onClick={() => onChange(o.id)}
+            className={`min-h-[40px] rounded-lg px-1 font-display text-[15px] font-bold uppercase tracking-[0.06em] transition-colors ${
+              on ? 'bg-night-100 text-night-950' : 'text-night-400'
+            }`}
+          >
+            {o.label}
+          </button>
+        );
+      })}
     </div>
   );
 }
@@ -423,15 +670,24 @@ function PageViewer({
   }
   const angle = angleRef.current.angle;
 
+  // Foco al abrir (una sola vez: girar/mover re-renderiza y antes el foco
+  // saltaba a "Cerrar", y un segundo Enter cerraba el visor). Al cerrar,
+  // el foco vuelve a donde estaba.
   const closeRef = useRef<HTMLButtonElement>(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
   useEffect(() => {
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     closeRef.current?.focus();
     const onKey = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape') onClose();
+      if (e.key === 'Escape') onCloseRef.current();
     };
     window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      opener?.focus?.();
+    };
+  }, []);
 
   // Portal a <body>: el visor cubre toda la pantalla aunque algun ancestro
   // tenga transform/animacion (que volveria relativos a los `fixed`).

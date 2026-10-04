@@ -6,6 +6,7 @@ import {
   isStableSequence,
   LOW_CONTRAST_TICKS,
   mapCoverPoint,
+  shouldRearm,
   STABLE_TICKS_NEEDED,
 } from './auto-capture';
 import { detectDocumentQuad } from './edge-detect';
@@ -18,11 +19,13 @@ import type { Quad } from './perspective';
 interface Props {
   /** Recibe 1..N archivos: 1 en captura normal, N en modo rafaga o al
    * seleccionar varios archivos en el picker. */
-  onCapture: (files: File[]) => void;
+  onCapture: (files: Blob[]) => void;
   /** Ir a "Mis paginas" (solo si ya hay paginas). */
   onCancel?: (() => void) | undefined;
   /** true mientras el padre decodifica las fotos recibidas. */
   busy?: boolean;
+  /** true mientras otra tarea ocupa la pantalla (p.ej. leer un PDF): sin auto-captura. */
+  suspended?: boolean;
   scanMode: ScanModeId;
   onScanModeChange: (m: ScanModeId) => void;
   pageCount: number;
@@ -45,15 +48,27 @@ interface Props {
 export function CaptureView({
   onCapture,
   onCancel,
-  busy = false,
+  busy: busyProp = false,
+  suspended = false,
   scanMode,
   onScanModeChange,
   pageCount,
   lastPage,
   onImportPdf,
 }: Props): React.ReactElement {
+  const busy = busyProp || suspended;
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+  // play() rechazado (p.ej. iPhone en modo ahorro de energia): hace falta
+  // un toque del usuario para arrancar el video.
+  const [needsTap, setNeedsTap] = useState(false);
   // Token de cancelacion compartido entre el effect (mount/unmount) y el
   // boton de reintento. Cada nueva invocacion a startCamera invalida el
   // token anterior — asi cubrimos:
@@ -67,7 +82,10 @@ export function CaptureView({
   const [res, setRes] = useState<string | null>(null);
   const [torchSupported, setTorchSupported] = useState(false);
   const [torchOn, setTorchOn] = useState(false);
+  const torchOnRef = useRef(false);
+  torchOnRef.current = torchOn;
 
+  const startRef = useRef<() => Promise<void>>(async () => {});
   const startCamera = useCallback(async (): Promise<void> => {
     cancellationRef.current.cancelled = true;
     const cancellation = { cancelled: false };
@@ -113,11 +131,21 @@ export function CaptureView({
       streamRef.current = stream;
 
       const v = videoRef.current;
+      let played = true;
       if (v) {
         v.srcObject = stream;
-        await v.play().catch(() => {});
+        played = await v.play().then(
+          () => true,
+          () => false,
+        );
       }
       if (cancellation.cancelled) return;
+      setNeedsTap(!played);
+      // Si la camara se corta (otra app la toma, el sistema la libera),
+      // reabrirla en vez de dejar el visor congelado.
+      stream.getVideoTracks()[0]?.addEventListener('ended', () => {
+        if (!cancellation.cancelled && !document.hidden) void startRef.current();
+      });
       // Linterna: solo si el navegador/dispositivo la expone (Chrome
       // Android). En iPhone no existe via web: el boton no aparece.
       const track = stream.getVideoTracks()[0];
@@ -130,6 +158,8 @@ export function CaptureView({
       setMode('fallback');
     }
   }, []);
+
+  startRef.current = startCamera;
 
   useEffect(() => {
     void startCamera();
@@ -204,75 +234,118 @@ export function CaptureView({
   // final — el flujo multi-pagina de CamScanner.
   const [batchMode, setBatchMode] = useState(false);
   const [shots, setShots] = useState<File[]>([]);
+  // Copia sincronica de `shots`: las capturas terminan de forma asincrona
+  // y deben ver la lista actual, no la de cuando se tomo la foto.
+  const shotsRef = useRef<File[]>([]);
+  const updateShots = useCallback((next: File[]) => {
+    shotsRef.current = next;
+    setShots(next);
+  }, []);
   const [flash, setFlash] = useState(0);
 
-  // Una captura a la vez (takePhoto puede tardar ~1 s).
+  // Una captura a la vez (takePhoto puede tardar ~1 s). `inflightRef`
+  // permite esperar a la foto en curso antes de pasar al editor.
   const shootingRef = useRef(false);
   const [shooting, setShooting] = useState(false);
+  const inflightRef = useRef<Promise<void> | null>(null);
+  const batchModeRef = useRef(batchMode);
+  batchModeRef.current = batchMode;
+  // Auto-captura: se desarma tras cada foto (ver shouldRearm).
+  const armedRef = useRef(pageCount === 0);
+  const rearmRefQuad = useRef<Quad | null>(null);
+  const missesRef = useRef(0);
 
-  const handleShutter = useCallback(() => {
-    if (busy || shootingRef.current) return;
-    const v = videoRef.current;
-    if (!v || v.readyState < 2 || !v.videoWidth) return;
-    shootingRef.current = true;
-    setShooting(true);
-    // Feedback inmediato de que la foto se tomo (en ambos modos).
-    setFlash((f) => f + 1);
+  const handleShutter = useCallback(
+    (fromAuto = false, quadAtShot: Quad | null = null) => {
+      if (busy || shootingRef.current) return;
+      const v = videoRef.current;
+      if (!v || !v.videoWidth) return;
+      if (v.paused) void v.play().catch(() => {});
+      if (v.readyState < 2) return;
+      shootingRef.current = true;
+      setShooting(true);
+      // Cualquier foto (manual o automatica) desarma la auto-captura hasta
+      // que cambie la escena.
+      armedRef.current = false;
+      rearmRefQuad.current = quadAtShot;
+      if (!fromAuto) cooldownUntilRef.current = Date.now() + AUTO_COOLDOWN_MS;
 
-    const deliver = (blob: Blob | null): void => {
-      shootingRef.current = false;
-      setShooting(false);
-      if (!blob) return;
-      const file = new File([blob], `captura-${Date.now()}.jpg`, { type: 'image/jpeg' });
-      if (batchMode) setShots((prev) => [...prev, file]);
-      else onCapture([file]);
-    };
+      const deliver = (blob: Blob | null): void => {
+        shootingRef.current = false;
+        if (!mountedRef.current) return; // la vista ya se cerro
+        setShooting(false);
+        if (!blob) return;
+        // El destello marca el momento en que la foto realmente se tomo.
+        setFlash((f) => f + 1);
+        try {
+          navigator.vibrate?.(20);
+        } catch {
+          /* sin vibracion */
+        }
+        const file = new File([blob], `captura-${Date.now()}.jpg`, { type: 'image/jpeg' });
+        if (batchModeRef.current) {
+          updateShots([...shotsRef.current, file]);
+        } else {
+          // Si quedaron fotos de rafaga (se apago RAFAGA a mitad), van juntas.
+          const pending = shotsRef.current;
+          updateShots([]);
+          onCapture([...pending, file]);
+        }
+      };
 
-    // Cuadro del video como respaldo (y unica via en Safari). Se toma YA,
-    // antes de esperar a takePhoto: es el instante que el usuario eligio.
-    const frameBlob = (): Promise<Blob | null> =>
-      new Promise((resolve) => {
-        const c = document.createElement('canvas');
-        c.width = v.videoWidth;
-        c.height = v.videoHeight;
-        const ctx = c.getContext('2d');
-        if (!ctx) return resolve(null);
-        ctx.drawImage(v, 0, 0, c.width, c.height);
-        c.toBlob(
-          (b) => {
-            c.width = 0;
-            c.height = 0;
-            resolve(b);
-          },
-          'image/jpeg',
-          0.95,
-        );
+      // Cuadro del video como respaldo (y unica via en Safari). Se toma YA,
+      // antes de esperar a takePhoto: es el instante que el usuario eligio.
+      const frameBlob = (): Promise<Blob | null> =>
+        new Promise((resolve) => {
+          const c = document.createElement('canvas');
+          c.width = v.videoWidth;
+          c.height = v.videoHeight;
+          const ctx = c.getContext('2d');
+          if (!ctx) return resolve(null);
+          ctx.drawImage(v, 0, 0, c.width, c.height);
+          c.toBlob(
+            (b) => {
+              c.width = 0;
+              c.height = 0;
+              resolve(b);
+            },
+            'image/jpeg',
+            0.95,
+          );
+        });
+
+      const job = (async () => {
+        const frame = frameBlob();
+        const still = await takeStill(streamRef.current, torchOnRef.current);
+        deliver(still ?? (await frame));
+      })();
+      inflightRef.current = job;
+      void job.finally(() => {
+        if (inflightRef.current === job) inflightRef.current = null;
       });
+    },
+    [onCapture, busy, updateShots],
+  );
 
-    void (async () => {
-      const frame = frameBlob();
-      const still = await takeStill(streamRef.current);
-      deliver(still ?? (await frame));
-    })();
-  }, [onCapture, batchMode, busy]);
-
-  const handleBatchDone = useCallback(() => {
-    if (shots.length === 0) return;
-    const files = shots;
-    setShots([]);
+  const handleBatchDone = useCallback(async () => {
+    // Esperar a la foto que se esta tomando: si no, se perdia la ultima.
+    if (inflightRef.current) await inflightRef.current;
+    const files = shotsRef.current;
+    if (files.length === 0 || !mountedRef.current) return;
+    updateShots([]);
     onCapture(files);
-  }, [shots, onCapture]);
+  }, [onCapture, updateShots]);
 
-  const handleCancel = useCallback(() => {
+  const handleCancel = useCallback(async () => {
     if (!onCancel) return;
-    if (
-      shots.length > 0 &&
-      !window.confirm(`Tienes ${shots.length} ${shots.length === 1 ? 'foto' : 'fotos'} sin editar. ¿Descartarlas?`)
-    ) {
+    if (inflightRef.current) await inflightRef.current;
+    if (!mountedRef.current) return;
+    const n = shotsRef.current.length;
+    if (n > 0 && !window.confirm(`Tienes ${n} ${n === 1 ? 'foto' : 'fotos'} sin editar. ¿Descartarlas?`)) {
       return;
     }
     onCancel();
-  }, [onCancel, shots.length]);
+  }, [onCancel]);
 
   const handleFile = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -281,10 +354,11 @@ export function CaptureView({
       if (files.length === 0) return;
       // Si habia fotos de rafaga sin editar, van junto con las de la
       // galeria (antes se perdian en silencio).
-      onCapture([...shots, ...files]);
-      setShots([]);
+      const pending = shotsRef.current;
+      updateShots([]);
+      onCapture([...pending, ...files]);
     },
-    [onCapture, shots],
+    [onCapture, updateShots],
   );
 
   // Miniatura de la ultima foto de la rafaga (pila de la izquierda).
@@ -310,27 +384,44 @@ export function CaptureView({
   const failsRef = useRef(0);
   const cooldownUntilRef = useRef(0);
   const viewfinderRef = useRef<HTMLDivElement>(null);
-  // Ref al shutter mas reciente: el interval no debe capturar un closure
-  // viejo de batchMode.
-  const shutterRef = useRef<() => void>(() => {});
+  // Ref al shutter mas reciente: el bucle no debe capturar un closure viejo.
+  const shutterRef = useRef(handleShutter);
   shutterRef.current = handleShutter;
+  // El documento sigue a la vista pero la auto-captura espera otra hoja.
+  const [waitingNext, setWaitingNext] = useState(false);
 
   useEffect(() => {
     if (mode !== 'live' || !autoMode || busy) {
       setLiveQuad(null);
       setLocking(false);
       setLowContrast(false);
+      setWaitingNext(false);
       historyRef.current = [];
       failsRef.current = 0;
       return;
     }
 
     const detCanvas = document.createElement('canvas');
-    const id = setInterval(() => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let stopped = false;
+
+    const tick = (): void => {
+      const started = performance.now();
+      detect();
+      if (stopped) return;
+      // En telefonos lentos la deteccion puede tardar: el siguiente ciclo
+      // espera al menos el doble de lo que tardo este (nunca en cadena).
+      const took = performance.now() - started;
+      timer = setTimeout(tick, Math.max(380, took * 2));
+    };
+
+    const detect = (): void => {
       if (Date.now() < cooldownUntilRef.current) return;
-      if (typeof document !== 'undefined' && document.hidden) return;
+      if (document.hidden || shootingRef.current) return;
       const v = videoRef.current;
-      if (!v || v.readyState < 2 || v.videoWidth === 0) return;
+      if (!v || v.readyState < 2 || v.videoWidth === 0 || v.paused) return;
+      const track = streamRef.current?.getVideoTracks()[0];
+      if (!track || track.readyState !== 'live' || track.muted) return;
 
       const scale = Math.min(1, 256 / Math.max(v.videoWidth, v.videoHeight));
       const dw = Math.max(8, Math.round(v.videoWidth * scale));
@@ -354,16 +445,34 @@ export function CaptureView({
         quad = null;
       }
 
+      // Tras una foto (o al volver a la camara con paginas ya escaneadas)
+      // no se dispara otra vez sobre la misma hoja: hay que cambiarla o
+      // mover el telefono.
+      missesRef.current = quad ? 0 : missesRef.current + 1;
+      if (!armedRef.current) {
+        if (shouldRearm(rearmRefQuad.current, quad, missesRef.current)) {
+          armedRef.current = true;
+          rearmRefQuad.current = null;
+        } else if (quad && !rearmRefQuad.current) {
+          rearmRefQuad.current = quad;
+        }
+      }
+      setWaitingNext(!armedRef.current && quad !== null);
+
       if (quad) {
         failsRef.current = 0;
         setLowContrast(false);
-        historyRef.current = [...historyRef.current.slice(-(STABLE_TICKS_NEEDED - 1)), quad];
-
         // Overlay alineado al recorte object-cover del video.
         const box = viewfinderRef.current;
         const bw = box?.clientWidth ?? 0;
         const bh = box?.clientHeight ?? 0;
         setLiveQuad(quad.map((p) => mapCoverPoint(p, v.videoWidth, v.videoHeight, bw, bh)) as Quad);
+        if (!armedRef.current) {
+          historyRef.current = [];
+          setLocking(false);
+          return;
+        }
+        historyRef.current = [...historyRef.current.slice(-(STABLE_TICKS_NEEDED - 1)), quad];
         setLocking(historyRef.current.length >= 2);
 
         if (isStableSequence(historyRef.current)) {
@@ -371,7 +480,7 @@ export function CaptureView({
           setLiveQuad(null);
           setLocking(false);
           cooldownUntilRef.current = Date.now() + AUTO_COOLDOWN_MS;
-          shutterRef.current();
+          shutterRef.current(true, quad);
         }
       } else {
         historyRef.current = [];
@@ -380,10 +489,12 @@ export function CaptureView({
         failsRef.current++;
         if (failsRef.current >= LOW_CONTRAST_TICKS) setLowContrast(true);
       }
-    }, 380);
+    };
 
+    timer = setTimeout(tick, 380);
     return () => {
-      clearInterval(id);
+      stopped = true;
+      if (timer) clearTimeout(timer);
       detCanvas.width = 0;
       detCanvas.height = 0;
     };
@@ -392,15 +503,19 @@ export function CaptureView({
   // Estado del HUD (abajo a la izquierda del visor).
   const hud: { text: string; tone: 'volt' | 'warn' | 'idle' } | null = busy
     ? null
-    : !autoMode
-      ? { text: 'MANUAL · TOCA EL OBTURADOR', tone: 'idle' }
-      : lowContrast
-        ? { text: 'POCO CONTRASTE · MÁS LUZ', tone: 'warn' }
-        : locking
-          ? { text: 'BLOQUEADO · NO TE MUEVAS', tone: 'volt' }
-          : liveQuad
-            ? { text: 'DOCUMENTO DETECTADO', tone: 'volt' }
-            : { text: 'BUSCANDO BORDES', tone: 'idle' };
+    : shooting
+      ? { text: 'CAPTURANDO · NO TE MUEVAS', tone: 'volt' }
+      : !autoMode
+        ? { text: 'MANUAL · TOCA EL OBTURADOR', tone: 'idle' }
+        : lowContrast
+          ? { text: 'POCO CONTRASTE · MÁS LUZ', tone: 'warn' }
+          : waitingNext
+            ? { text: 'LISTO · PON LA SIGUIENTE HOJA', tone: 'idle' }
+            : locking
+              ? { text: 'BLOQUEADO · NO TE MUEVAS', tone: 'volt' }
+              : liveQuad
+                ? { text: 'DOCUMENTO DETECTADO', tone: 'volt' }
+                : { text: 'BUSCANDO BORDES', tone: 'idle' };
 
   const stackPage = lastShotUrl ? undefined : lastPage;
   const stackCount = shots.length > 0 ? shots.length : pageCount;
@@ -408,7 +523,9 @@ export function CaptureView({
   return (
     <div className="stage-in relative flex min-h-0 flex-1 flex-col bg-night-950">
       {/* Visor a sangre */}
-      <div ref={viewfinderRef} className="relative min-h-[260px] flex-1 overflow-hidden bg-black">
+      {/* En horizontal (poca altura) el visor cede espacio para que el
+          obturador siga a la vista. */}
+      <div ref={viewfinderRef} className="relative min-h-[260px] flex-1 overflow-hidden bg-black short:min-h-0">
         {/* El <video> vive SIEMPRE en el DOM (solo cambia la visibilidad):
             asi videoRef.current existe cuando getUserMedia resuelve y el
             stream se ata de inmediato. Montarlo condicionado a live dejaba
@@ -420,6 +537,24 @@ export function CaptureView({
           muted
           className={`absolute inset-0 h-full w-full object-cover ${mode === 'live' ? 'visible' : 'invisible'}`}
         />
+
+        {mode === 'live' && needsTap && (
+          // El sistema no dejo reproducir el video solo (p.ej. iPhone en
+          // modo ahorro de energia): un toque lo arranca.
+          <button
+            type="button"
+            onClick={() => {
+              void videoRef.current?.play().then(
+                () => setNeedsTap(false),
+                () => {},
+              );
+            }}
+            className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-3 bg-black/70 text-night-100"
+          >
+            <IconCamera className="h-8 w-8" />
+            <span className="font-mono text-xs font-bold tracking-[0.12em]">TOCA PARA ACTIVAR LA CÁMARA</span>
+          </button>
+        )}
 
         {mode === 'starting' && (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-night-950 text-night-400">
@@ -570,7 +705,7 @@ export function CaptureView({
       <div
         role="radiogroup"
         aria-label="Modo de escaneo"
-        className="no-scrollbar flex shrink-0 justify-center gap-6 overflow-x-auto px-4 pb-1 pt-3.5"
+        className="no-scrollbar flex shrink-0 justify-center gap-6 overflow-x-auto px-4 pb-1 pt-3.5 short:hidden"
       >
         {SCAN_MODES.map((m) => {
           const on = m.id === scanMode;
@@ -597,7 +732,7 @@ export function CaptureView({
           {stackCount > 0 && (shots.length > 0 || onCancel) ? (
             <button
               type="button"
-              onClick={shots.length > 0 ? handleBatchDone : handleCancel}
+              onClick={() => void (shots.length > 0 ? handleBatchDone() : handleCancel())}
               disabled={busy}
               aria-label={shots.length > 0 ? `Editar ${shots.length} capturas` : `Mis páginas (${pageCount})`}
               className="press relative h-14 w-14 rounded-xl border-2 border-night-100 bg-night-850"
@@ -618,7 +753,7 @@ export function CaptureView({
             <label
               aria-label="Añadir un PDF"
               className={`press flex h-14 w-14 cursor-pointer flex-col items-center justify-center gap-0.5 rounded-full border border-night-600 text-night-100 ${
-                busy ? 'pointer-events-none opacity-50' : ''
+                busy || shooting ? 'pointer-events-none opacity-50' : ''
               }`}
             >
               <IconFileAdd className="h-5 w-5" />
@@ -642,7 +777,7 @@ export function CaptureView({
           {mode === 'live' ? (
             <button
               type="button"
-              onClick={handleShutter}
+              onClick={() => handleShutter()}
               disabled={busy || shooting}
               className="shutter shrink-0"
               aria-label={batchMode ? `Capturar página ${shots.length + 1}` : 'Capturar'}
@@ -658,7 +793,7 @@ export function CaptureView({
           {shots.length > 0 ? (
             <button
               type="button"
-              onClick={handleBatchDone}
+              onClick={() => void handleBatchDone()}
               disabled={busy}
               className="press flex h-14 items-center rounded-xl bg-volt px-4 font-display text-lg font-extrabold uppercase tracking-[0.1em] text-night-950"
             >
@@ -668,7 +803,7 @@ export function CaptureView({
             <label
               aria-label="Galería"
               className={`press flex h-14 w-14 cursor-pointer flex-col items-center justify-center gap-0.5 rounded-full border border-night-600 text-night-100 ${
-                busy ? 'pointer-events-none opacity-50' : ''
+                busy || shooting ? 'pointer-events-none opacity-50' : ''
               }`}
             >
               <IconImages className="h-5 w-5" />
@@ -679,7 +814,7 @@ export function CaptureView({
                 multiple
                 className="sr-only"
                 onChange={handleFile}
-                disabled={busy}
+                disabled={busy || shooting}
               />
             </label>
           )}
@@ -728,16 +863,46 @@ function Chip({
  * nativo. Safari no la implementa: devuelve null y se usa el cuadro del
  * video. Tope de 4 s por si el driver de la camara se cuelga.
  */
-async function takeStill(stream: MediaStream | null): Promise<Blob | null> {
+/** Lado mayor de la foto pedida a takePhoto (igual al tope del pipeline). */
+const STILL_MAX_SIDE = 4032;
+
+type ImageCaptureLike = {
+  takePhoto: (settings?: { imageWidth?: number; imageHeight?: number }) => Promise<Blob>;
+  getPhotoCapabilities?: () => Promise<{ imageWidth?: { min: number; max: number; step?: number } }>;
+};
+const photoWidthCache = new WeakMap<MediaStreamTrack, number | null>();
+
+/**
+ * Foto de alta calidad via ImageCapture (Chrome Android). Se pide un ancho
+ * acotado: sin pedir nada, algunos telefonos devuelven 48-108 MP (segundos
+ * de espera, cientos de MB al decodificar y "imagen demasiado grande").
+ */
+async function takeStill(stream: MediaStream | null, torchOn: boolean): Promise<Blob | null> {
   const track = stream?.getVideoTracks()[0];
-  const IC = (globalThis as { ImageCapture?: new (t: MediaStreamTrack) => { takePhoto: () => Promise<Blob> } })
-    .ImageCapture;
+  const IC = (globalThis as { ImageCapture?: new (t: MediaStreamTrack) => ImageCaptureLike }).ImageCapture;
   if (!track || track.readyState !== 'live' || typeof IC !== 'function') return null;
   try {
+    const ic = new IC(track);
+    let width = photoWidthCache.get(track);
+    if (width === undefined) {
+      width = null;
+      try {
+        const caps = await ic.getPhotoCapabilities?.();
+        const w = caps?.imageWidth;
+        if (w && w.max > 0) width = Math.max(w.min || 0, Math.min(w.max, STILL_MAX_SIDE));
+      } catch {
+        /* sin capacidades: foto por defecto */
+      }
+      photoWidthCache.set(track, width);
+    }
     const photo = await Promise.race([
-      new IC(track).takePhoto(),
+      ic.takePhoto(width ? { imageWidth: width } : undefined),
       new Promise<null>((resolve) => setTimeout(() => resolve(null), 4000)),
     ]);
+    // Algunos Chrome apagan la linterna al tomar la foto: re-encenderla.
+    if (torchOn && track.readyState === 'live') {
+      void track.applyConstraints({ advanced: [{ torch: true } as MediaTrackConstraintSet] }).catch(() => {});
+    }
     return photo instanceof Blob && photo.size > 0 ? photo : null;
   } catch {
     return null;
