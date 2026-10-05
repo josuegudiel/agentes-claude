@@ -1,3 +1,7 @@
 packages:
   - "."
   - "web"
+
+# No instalar versiones publicadas hace menos de 1 dia (minutos): las
+# versiones maliciosas de npm suelen detectarse y retirarse en horas.
+minimumReleaseAge: 1440

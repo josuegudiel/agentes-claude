@@ -7,14 +7,17 @@
  *   - Paginas (navegacion): RED PRIMERO. Con conexion siempre se ve la
  *     ultima version; sin conexion, la copia guardada.
  *   - /_next/static y /pdfjs/<version>: archivos con hash o version en el
- *     nombre (nunca cambian): CACHE PRIMERO. Se conservan entre versiones
- *     (una pestana vieja aun puede pedir los suyos).
+ *     nombre (nunca cambian): CACHE PRIMERO, en un cache por version (se
+ *     guarda tambien el de la version anterior).
  *   - Todo lo demas: pasa directo a la red.
  */
 const BUILD = '__BUILD__';
 const SHELL = `shell-${BUILD}`;
-const STATIC = 'static';
-const STATIC_MAX_ENTRIES = 400;
+// Un cache de estaticos POR VERSION: si alguna vez alguien lograra meter un
+// archivo alterado en el cache, desaparece con la siguiente version. Se
+// conserva solo el de la version anterior (pestanas abiertas antes de
+// actualizar todavia piden sus archivos).
+const STATIC = `static-${BUILD}`;
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
@@ -39,13 +42,17 @@ self.addEventListener('install', (event) => {
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     (async () => {
-      for (const key of await caches.keys()) {
-        if (key.startsWith('shell-') && key !== SHELL) await caches.delete(key);
+      const keys = await caches.keys(); // en orden de creacion
+      for (const key of keys) {
+        if (key.startsWith('shell-') && key !== `shell-${BUILD}`) await caches.delete(key);
       }
-      // Tope del cache de estaticos: se borran los mas viejos.
-      const stat = await caches.open(STATIC);
-      const keys = await stat.keys();
-      for (const req of keys.slice(0, Math.max(0, keys.length - STATIC_MAX_ENTRIES))) await stat.delete(req);
+      // Estaticos: esta version y la inmediatamente anterior; el resto fuera
+      // (incluido el cache 'static' compartido de versiones viejas).
+      const statics = keys.filter((k) => k.startsWith('static'));
+      const previous = statics.filter((k) => k !== STATIC && k !== 'static').slice(-1);
+      for (const key of statics) {
+        if (key !== STATIC && !previous.includes(key)) await caches.delete(key);
+      }
       await self.clients.claim();
     })(),
   );

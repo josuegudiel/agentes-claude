@@ -1,5 +1,8 @@
 'use client';
 
+// Primero: la politica de Trusted Types debe existir antes de cargar
+// workers o registrar el service worker.
+import './trusted-types';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { CaptureView } from './CaptureView';
 import { EditView } from './EditView';
