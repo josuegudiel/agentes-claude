@@ -3,6 +3,10 @@ import { fileURLToPath } from 'node:url';
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
+  // No anunciar el framework/version en cada respuesta.
+  poweredByHeader: false,
+  // Sin mapas de codigo fuente en produccion (ya es el default; explicito).
+  productionBrowserSourceMaps: false,
   experimental: {
     // Permite import desde fuera de web/ (ej: ../src/agents/predictive/runtime).
     externalDir: true,
@@ -23,16 +27,21 @@ const nextConfig = {
   // Cabeceras de seguridad para toda la app. El scanner es 100%
   // client-side y NO hace ninguna llamada de red externa: por eso la CSP
   // puede ser muy cerrada. Lo mas valioso aqui:
-  //   - connect-src 'self': aunque un atacante lograra ejecutar script,
-  //     NO podria exfiltrar los documentos escaneados a ningun host
-  //     externo (fetch/XHR/WebSocket/beacon bloqueados fuera del origen).
+  //   - connect-src 'self' (+ img/media/font/worker 'self'): fetch, XHR,
+  //     WebSocket, beacon e imagenes a otros hosts quedan bloqueados.
+  //     OJO: la CSP NO controla la navegacion de la pagina (location=...)
+  //     ni WebRTC, asi que no es una barrera total contra la exfiltracion:
+  //     la defensa principal es que no exista forma de inyectar script.
+  //   - require-trusted-types-for 'script' (Chrome/Edge): aunque algun dia
+  //     apareciera un fallo, el codigo inyectado no podria usar innerHTML,
+  //     eval ni cargar scripts de otro origen (ver trusted-types.ts).
   //   - frame-ancestors 'none': nadie puede embeber la app en un iframe
   //     para clickjackear la camara o el boton de captura.
   // script-src incluye 'unsafe-inline' porque las paginas son estaticas
   // (sin SSR por request no hay nonce posible) y Next inyecta un bootstrap
-  // inline; el riesgo es aceptable porque la app no tiene NINGUN vector de
-  // inyeccion de HTML (sin dangerouslySetInnerHTML, React escapa todo, sin
-  // backend que refleje input).
+  // inline; la app no tiene NINGUN vector de inyeccion de HTML (sin
+  // dangerouslySetInnerHTML, React escapa todo, sin backend que refleje
+  // input, nada se lee de la URL).
   // 'wasm-unsafe-eval' SOLO habilita compilar WebAssembly (no eval de JS):
   // lo necesita pdf.js para leer PDFs de fotocopiadora (JBIG2/JPEG2000)
   // al usar "Añadir PDF".
@@ -54,7 +63,14 @@ const nextConfig = {
       "base-uri 'none'",
       "form-action 'none'",
       "frame-ancestors 'none'",
-      ...(isDev ? [] : ['upgrade-insecure-requests']),
+      ...(isDev
+        ? []
+        : [
+            'upgrade-insecure-requests',
+            "require-trusted-types-for 'script'",
+            // Solo estas politicas: un script inyectado no puede crear otra.
+            "trusted-types nextjs nextjs#bundler default",
+          ]),
     ].join('; ');
 
     return [

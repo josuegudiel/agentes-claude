@@ -31,8 +31,9 @@ __pycache__/
 .ruff_cache/
 *.egg-info/
 
-# pnpm lock genera-do, no lo committeamos en este repo (usan pnpm install limpio)
-pnpm-lock.yaml
+# pnpm-lock.yaml SI se versiona: el deploy instala exactamente esas versiones
+# (--frozen-lockfile). Sin el, cada deploy tomaba la ultima version de cada
+# dependencia sin revisar (riesgo de cadena de suministro).
 
 # Next.js (web/)
 web/.next/

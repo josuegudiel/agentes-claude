@@ -105,6 +105,11 @@ export async function importPdf(
     wasmUrl: `${pdfjsBase(pdfjs.version)}wasm/`,
     standardFontDataUrl: `${pdfjsBase(pdfjs.version)}standard_fonts/`,
     cMapUrl: `${pdfjsBase(pdfjs.version)}cmaps/`,
+    // Tope a las imagenes dentro del PDF (pixeles): un PDF armado con una
+    // imagen gigante no puede agotar la memoria del telefono.
+    maxImageSize: 40e6,
+    // Sin scripts ni formularios XFA (ya son los valores por defecto).
+    enableXfa: false,
     cMapPacked: true,
     verbosity: 0,
   });
