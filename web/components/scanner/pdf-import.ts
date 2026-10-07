@@ -9,6 +9,7 @@
  * scripts/copy-pdfjs.mjs).
  */
 import type { PDFDocumentProxy } from 'pdfjs-dist/legacy/build/pdf.mjs';
+import { AppError } from './errors';
 import { pageFromCanvas, type ScanPage } from './pages';
 import { releaseCanvas } from './pipeline';
 
@@ -23,7 +24,8 @@ const IMPORT_MAX_PIXELS = 12e6;
 /** Hasta 50 MB: mas que eso no es un documento del colegio. */
 export const MAX_IMPORT_BYTES = 50 * 1024 * 1024;
 
-export class PdfImportError extends Error {
+/** Error de importacion; `code` es una clave de i18n ("pdf.*"). */
+export class PdfImportError extends AppError {
   override name = 'PdfImportError';
 }
 
@@ -84,16 +86,14 @@ export async function importPdf(
   signal?: AbortSignal,
 ): Promise<ImportResult> {
   if (file.size > MAX_IMPORT_BYTES) {
-    throw new PdfImportError('El PDF es demasiado grande (máximo 50 MB).');
+    throw new PdfImportError('pdf.tooBig');
   }
   const pdfjs = await loadPdfJs().catch((err: unknown) => {
     // ChunkLoadError = no llego el archivo (sin red, o la app se actualizo
     // mientras estaba abierta). Cualquier otra cosa: el navegador no puede.
     const name = err instanceof Error ? err.name : '';
     throw new PdfImportError(
-      name === 'ChunkLoadError'
-        ? 'No se pudo cargar el lector de PDF. Revisa tu conexión o recarga la página e inténtalo de nuevo.'
-        : 'Este navegador no puede leer PDF. Actualiza el sistema del teléfono o prueba con otro navegador.',
+      name === 'ChunkLoadError' ? 'pdf.loadNetwork' : 'pdf.loadBrowser',
     );
   });
   const empty = (): ImportResult => ({ pages: [], total: 0, failed: 0, cancelled: true });
@@ -120,12 +120,12 @@ export async function importPdf(
     void task.destroy();
     const name = err instanceof Error ? err.name : '';
     if (name === 'PasswordException') {
-      throw new PdfImportError('Ese PDF tiene contraseña. Ábrelo sin contraseña o guarda una copia sin protección.');
+      throw new PdfImportError('pdf.password');
     }
     if (name === 'InvalidPDFException') {
-      throw new PdfImportError('El archivo no es un PDF válido o está dañado.');
+      throw new PdfImportError('pdf.invalid');
     }
-    throw new PdfImportError('No se pudo abrir el PDF.');
+    throw new PdfImportError('pdf.open');
   }
 
   try {
@@ -147,7 +147,7 @@ export async function importPdf(
     }
     if (signal?.aborted) return empty();
     if (pages.length === 0 && failed > 0) {
-      throw new PdfImportError('No se pudo leer ninguna hoja del PDF.');
+      throw new PdfImportError('pdf.noneRead');
     }
     return { pages, total, failed, cancelled: false };
   } finally {
@@ -166,7 +166,7 @@ async function renderPage(doc: PDFDocumentProxy, i: number, nextId: () => number
     const ctx = canvas.getContext('2d');
     if (!ctx) {
       releaseCanvas(canvas);
-      throw new PdfImportError('Tu navegador no pudo dibujar la hoja.');
+      throw new PdfImportError('pdf.draw');
     }
     // Fondo blanco: el JPEG no tiene transparencia (saldria negro).
     ctx.fillStyle = '#ffffff';

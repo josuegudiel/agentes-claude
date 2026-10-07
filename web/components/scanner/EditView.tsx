@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { detectDocumentQuad, DETECT_MAX_SIDE } from './edge-detect';
 import { applyFilter, FILTERS, type FilterId } from './filters';
 import { IconChevronLeft, IconExpand, IconFrame, IconRotate, IconWand } from './icons';
+import { useI18n } from './i18n';
 import { loupePlacement, loupeRects } from './loupe';
 import { releaseCanvas, renderEdited, renderRotatedPreview, type EditState } from './pipeline';
 import {
@@ -52,6 +53,7 @@ export function EditView({
   onConfirm,
   onBack,
 }: Props): React.ReactElement {
+  const { t } = useI18n();
   const [rotation, setRotation] = useState(0);
   const [filter, setFilter] = useState<FilterId>(initialFilter);
   const [quad, setQuad] = useState<Quad>(() => cloneQuad(INSET_QUAD));
@@ -249,7 +251,7 @@ export function EditView({
       setAutoDetected(true);
     } else {
       setAutoDetected(null);
-      setToolMsg('NO ENCONTRÉ LOS BORDES · AJÚSTALOS A MANO');
+      setToolMsg('edit.noEdges');
     }
   }, [image, rotation]);
 
@@ -382,7 +384,7 @@ export function EditView({
             confirmedRef.current = false;
             setConfirming(false);
             setConfirmError(
-              'No se pudo procesar la página (memoria insuficiente). Guarda las páginas que ya tienes e inténtalo de nuevo.',
+              'edit.errMemory',
             );
           }
         })();
@@ -390,21 +392,23 @@ export function EditView({
     });
   }, [image, rotation, filter, quad, onConfirm, quadOk]);
 
-  const hint = toolMsg
-    ? toolMsg
-    : !quadOk
-      ? 'LAS ESQUINAS SE CRUZAN · AJÚSTALAS'
-      : autoDetected
-        ? 'BORDES LISTOS · AJUSTA SI HACE FALTA'
-        : autoDetected === false
-          ? 'ARRASTRA LAS 4 ESQUINAS'
-          : 'AJUSTA LAS ESQUINAS SI HACE FALTA';
+  const hint = t(
+    toolMsg
+      ? toolMsg
+      : !quadOk
+        ? 'edit.hint.crossed'
+        : autoDetected
+          ? 'edit.hint.detected'
+          : autoDetected === false
+            ? 'edit.hint.drag'
+            : 'edit.hint.adjust',
+  );
 
   return (
     <div className="stage-in safe-top safe-x flex min-h-0 flex-1 flex-col gap-3 short:grid short:grid-cols-[minmax(0,1fr)_minmax(240px,44%)] short:grid-rows-[auto_minmax(0,1fr)] short:gap-x-3">
       {/* Cabecera */}
       <div className="flex shrink-0 items-baseline justify-between">
-        <h2 className="font-display text-[28px] font-extrabold uppercase leading-none tracking-[0.02em]">Ajustar</h2>
+        <h2 className="font-display text-[28px] font-extrabold uppercase leading-none tracking-[0.02em]">{t('edit.title')}</h2>
         <span className="font-mono text-xs tracking-[0.06em] text-night-400">
           02/03{queueLabel ? ` · ${queueLabel}` : ''}
         </span>
@@ -444,7 +448,8 @@ export function EditView({
                     return isConvexQuad(next) ? next : orderQuad(next);
                   });
                 }}
-                label={CORNER_LABELS[i]!}
+                label={t(`edit.corner${i}`)}
+                describe={(x, y) => t('edit.cornerAria', { corner: t(`edit.corner${i}`), x, y })}
               />
             ))}
           </div>
@@ -479,17 +484,17 @@ export function EditView({
 
       {/* Herramientas */}
       <div className="grid shrink-0 grid-cols-4 gap-2">
-        <ToolButton icon={<IconRotate className="h-5 w-5" />} label="ROTAR" onClick={handleRotate} disabled={confirming} />
+        <ToolButton icon={<IconRotate className="h-5 w-5" />} label={t('edit.rotate')} onClick={handleRotate} disabled={confirming} />
         <ToolButton
           icon={<IconWand className="h-5 w-5" />}
           label="AUTO"
-          ariaLabel="Detectar bordes"
+          ariaLabel={t('edit.detect')}
           onClick={handleDetect}
           disabled={confirming}
         />
         <ToolButton
           icon={<IconFrame className="h-5 w-5" />}
-          label="MARGEN"
+          label={t('edit.margin')}
           disabled={confirming}
           onClick={() => {
             setAutoDetected(null);
@@ -498,8 +503,8 @@ export function EditView({
         />
         <ToolButton
           icon={<IconExpand className="h-5 w-5" />}
-          label="TODO"
-          ariaLabel="Imagen completa"
+          label={t('edit.all')}
+          ariaLabel={t('edit.allAria')}
           disabled={confirming}
           onClick={() => {
             setAutoDetected(null);
@@ -509,7 +514,7 @@ export function EditView({
       </div>
 
       {/* Filtros con preview real (tira de pelicula) */}
-      <div className="no-callout shrink-0" role="group" aria-label="Filtro">
+      <div className="no-callout shrink-0" role="group" aria-label={t('edit.filter')}>
         <div className="no-scrollbar -mx-3.5 flex snap-x gap-2 overflow-x-auto px-3.5 pb-0.5">
           {FILTERS.map((f) => {
             const selected = filter === f.id;
@@ -520,8 +525,8 @@ export function EditView({
                 type="button"
                 onClick={() => setFilter(f.id)}
                 disabled={confirming}
-                title={f.hint}
-                aria-label={f.label}
+                title={t(`filterHint.${f.id}`)}
+                aria-label={t(`filter.${f.id}`)}
                 aria-pressed={selected}
                 className="press flex w-[74px] shrink-0 snap-start flex-col items-center gap-1.5"
               >
@@ -540,7 +545,7 @@ export function EditView({
                     selected ? 'text-volt' : 'text-night-400'
                   }`}
                 >
-                  {f.label}
+                  {t(`filter.${f.id}`)}
                 </span>
               </button>
             );
@@ -550,7 +555,7 @@ export function EditView({
 
       {confirmError && (
         <p role="alert" className="shrink-0 rounded-xl border border-danger/60 bg-danger/10 px-3 py-2 text-xs text-danger">
-          {confirmError}
+          {t(confirmError)}
         </p>
       )}
 
@@ -560,7 +565,7 @@ export function EditView({
           type="button"
           onClick={onBack}
           disabled={confirming}
-          aria-label="Volver"
+          aria-label={t('common.back')}
           className="press flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl border border-night-600 text-night-100 disabled:opacity-40"
         >
           <IconChevronLeft className="h-5 w-5" />
@@ -572,7 +577,7 @@ export function EditView({
           className="press flex h-14 flex-1 items-center justify-center gap-2.5 rounded-2xl bg-volt px-5 font-display text-xl font-extrabold uppercase tracking-[0.1em] text-night-950 disabled:opacity-70"
         >
           {confirming && <span className="spinner spinner-sm" aria-hidden />}
-          {confirming ? 'Procesando' : 'Aplicar'}
+          {confirming ? t('edit.processing') : t('edit.apply')}
         </button>
       </div>
       </div>
@@ -607,12 +612,6 @@ function ToolButton({
   );
 }
 
-const CORNER_LABELS = [
-  'esquina superior izquierda',
-  'esquina superior derecha',
-  'esquina inferior derecha',
-  'esquina inferior izquierda',
-];
 
 const LOUPE_SIZE = 112;
 const LOUPE_ZOOM = 3;
@@ -688,13 +687,14 @@ function Handle({
   active,
   onDown,
   onNudge,
-  label,
+  describe,
 }: {
   point: Point;
   active: boolean;
   onDown: (e: React.PointerEvent<HTMLElement>) => void;
   onNudge: (dx: number, dy: number) => void;
   label: string;
+  describe: (x: number, y: number) => string;
 }): React.ReactElement {
   // Un handle de esquina es 2D — no un slider de un valor. Es un boton
   // enfocable que ademas de arrastrarse se puede mover con las flechas
@@ -718,7 +718,7 @@ function Handle({
   return (
     <button
       type="button"
-      aria-label={`${label}: ${Math.round(point.x * 100)}% horizontal, ${Math.round(point.y * 100)}% vertical. Usa las flechas para ajustar.`}
+      aria-label={describe(Math.round(point.x * 100), Math.round(point.y * 100))}
       onPointerDown={onDown}
       onKeyDown={onKeyDown}
       className="group absolute flex h-12 w-12 -translate-x-1/2 -translate-y-1/2 cursor-move items-center justify-center rounded-full outline-none"

@@ -15,10 +15,10 @@ export function isExportFormat(v: unknown): v is ExportFormat {
   return v === 'pdf' || v === 'jpg' || v === 'png';
 }
 
-/** Nombre por defecto con la fecha de hoy: "escaneo_2026-10-04". */
-export function defaultFilename(d: Date = new Date()): string {
+/** Nombre por defecto con la fecha de hoy: "escaneo_2026-10-04" / "scan_2026-10-04". */
+export function defaultFilename(lang: 'es' | 'en' = 'es', d: Date = new Date()): string {
   const pad = (n: number): string => String(n).padStart(2, '0');
-  return `escaneo_${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  return `${lang === 'en' ? 'scan' : 'escaneo'}_${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
 export interface ExportPageInput {

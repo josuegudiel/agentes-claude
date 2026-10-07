@@ -13,7 +13,7 @@ import {
   type ExportFormat,
   type ExportQuality,
 } from './export';
-import { PAPERS, pageLayout, type PaperSize } from './pdf-writer';
+import { pageLayout, type PaperSize } from './pdf-writer';
 import {
   IconCamera,
   IconDownload,
@@ -26,6 +26,7 @@ import {
   IconTrash,
   IconX,
 } from './icons';
+import { LangSwitch, useI18n } from './i18n';
 import { PageThumb } from './PageThumb';
 import { rotatedSize, type ScanPage } from './pages';
 import { useDragReorder } from './reorder';
@@ -51,21 +52,12 @@ const TILE_ASPECT = 3 / 4;
 const IS_IOS = typeof navigator !== 'undefined' && /iPhone|iPad|iPod/.test(navigator.userAgent);
 
 const FORMATS: { id: ExportFormat; label: string; hint: string }[] = [
-  { id: 'pdf', label: 'PDF', hint: 'Todas las páginas en un solo archivo' },
-  {
-    id: 'jpg',
-    label: 'JPG',
-    hint: IS_IOS ? 'Una imagen por página · se guarda en Fotos' : 'Una imagen por página',
-  },
-  { id: 'png', label: 'PNG', hint: 'Una imagen por página · sin compresión' },
+  { id: 'pdf', label: 'PDF', hint: 'exp.hint.pdf' },
+  { id: 'jpg', label: 'JPG', hint: IS_IOS ? 'exp.hint.jpgIos' : 'exp.hint.jpg' },
+  { id: 'png', label: 'PNG', hint: 'exp.hint.png' },
 ];
 
-const PAPER_OPTIONS: { id: PaperSize; label: string }[] = [
-  { id: 'auto', label: 'Ajustar' },
-  { id: 'carta', label: 'Carta' },
-  { id: 'a4', label: 'A4' },
-  { id: 'oficio', label: 'Oficio' },
-];
+const PAPER_IDS: PaperSize[] = ['auto', 'carta', 'a4', 'oficio'];
 
 function isPaperSize(v: unknown): v is PaperSize {
   return v === 'auto' || v === 'carta' || v === 'a4' || v === 'oficio';
@@ -121,6 +113,7 @@ export function ExportView({
   onRotatePage,
   onRestart,
 }: Props): React.ReactElement {
+  const { t } = useI18n();
   const [paper, setPaper] = usePref<PaperSize>('scanner.paper', 'auto', isPaperSize);
   const [quality, setQuality] = usePref<ExportQuality>('scanner.quality', 'max', isExportQuality);
   const [status, setStatus] = useState<Status>({ kind: 'idle' });
@@ -154,7 +147,7 @@ export function ExportView({
   }, [status]);
 
   const doneMsg = (r: 'shared' | 'downloaded', count: number): string =>
-    r === 'shared' ? 'Listo.' : count > 1 ? `${count} archivos descargados.` : 'Archivo descargado.';
+    r === 'shared' ? t('exp.done.shared') : count > 1 ? t('exp.done.downloadedN', { n: count }) : t('exp.done.downloaded1');
 
   const busyRef = useRef(false);
   const run = useCallback(
@@ -186,7 +179,7 @@ export function ExportView({
         if (mountedRef.current) {
           setStatus({
             kind: 'error',
-            msg: `No se pudo generar el archivo. ${err instanceof Error ? err.message : ''}`.trim(),
+            msg: t('exp.errGenerate'),
           });
         }
       } finally {
@@ -204,7 +197,7 @@ export function ExportView({
     sharingRef.current = true;
     try {
       const r = await shareFiles(files);
-      if (r === 'shared') setStatus({ kind: 'done', msg: 'Listo.' });
+      if (r === 'shared') setStatus({ kind: 'done', msg: t('exp.done.shared') });
       else if (r === 'cancelled') setStatus({ kind: 'ready', files });
       else {
         await downloadAll(files);
@@ -228,7 +221,7 @@ export function ExportView({
   const n = pages.length;
   const what =
     format === 'pdf'
-      ? `PDF${n > 1 ? ` · ${n} pág` : ''}`
+      ? `PDF${n > 1 ? ` · ${t('exp.nPages', { n })}` : ''}`
       : n > 1
         ? `${n} ${format.toUpperCase()}`
         : format.toUpperCase();
@@ -256,13 +249,13 @@ export function ExportView({
           paper,
         ).dpi
       : null;
-  const paperLabel = paper === 'auto' ? 'AJUSTADO' : PAPERS[paper].label.toUpperCase();
+  const paperLabel = paper === 'auto' ? t('exp.meta.fitted') : t(`paper.${paper}`).toUpperCase();
   const middleMeta =
     format === 'pdf'
       ? `${paperLabel}${firstDpi ? ` · ${firstDpi} DPI` : ''}`
       : format === 'jpg'
         ? small
-          ? 'JPEG · LIGERA'
+          ? t('exp.meta.jpegSmall')
           : 'JPEG · 92%'
         : 'PNG';
   const showDownload = prefersShare();
@@ -280,9 +273,10 @@ export function ExportView({
     <div className="stage-in safe-top flex min-h-0 flex-1 flex-col">
       {/* Cabecera */}
       <div className="safe-x flex shrink-0 items-baseline justify-between pb-3">
-        <h2 className="font-display text-[28px] font-extrabold uppercase leading-none tracking-[0.02em]">Exportar</h2>
-        <span className="font-mono text-xs tracking-[0.06em] text-night-400">
-          03/03 · {n} PÁG
+        <h2 className="font-display text-[28px] font-extrabold uppercase leading-none tracking-[0.02em]">{t('exp.title')}</h2>
+        <span className="flex items-center gap-2.5 font-mono text-xs tracking-[0.06em] text-night-400">
+          03/03 · {t('exp.pagesShort', { n })}
+          <LangSwitch />
         </span>
       </div>
 
@@ -320,7 +314,7 @@ export function ExportView({
                     if (!working) drag.startMouse(id, e);
                   }}
                   onContextMenu={(e) => e.preventDefault()}
-                  aria-label={`Página ${i + 1} de ${n}. Ver`}
+                  aria-label={t('exp.pageView', { i: i + 1, n })}
                   className={`press absolute inset-0 overflow-hidden rounded-xl border border-night-700 bg-night-800 ${
                     dragging ? 'invisible' : ''
                   }`}
@@ -334,7 +328,7 @@ export function ExportView({
                   <button
                     type="button"
                     onClick={() => onRotatePage(id)}
-                    aria-label={`Girar página ${i + 1}`}
+                    aria-label={t('exp.rotatePage', { i: i + 1 })}
                     className="press absolute bottom-1 right-1 flex h-9 w-9 items-center justify-center rounded-full border border-night-600 bg-night-950/90 text-night-100 active:border-volt active:text-volt"
                   >
                     <IconRotate className="h-[18px] w-[18px]" />
@@ -347,19 +341,19 @@ export function ExportView({
           <button
             type="button"
             onClick={onAddPage}
-            aria-label="Escanear otra página"
+            aria-label={t('exp.scanAnother')}
             className="press flex aspect-[3/4] flex-col items-center justify-center gap-1.5 rounded-xl border-[1.5px] border-dashed border-night-600 text-night-400 active:border-volt active:text-volt"
           >
             <IconCamera className="h-6 w-6" />
-            <span className="font-display text-[13px] font-bold uppercase tracking-[0.12em]">Escanear</span>
+            <span className="font-display text-[13px] font-bold uppercase tracking-[0.12em]">{t('exp.scan')}</span>
           </button>
 
           <label
-            aria-label="Añadir un PDF"
+            aria-label={t('common.addPdf')}
             className="press flex aspect-[3/4] cursor-pointer flex-col items-center justify-center gap-1.5 rounded-xl border-[1.5px] border-dashed border-night-600 text-night-400 focus-within:border-volt active:border-volt active:text-volt"
           >
             <IconFileAdd className="h-6 w-6" />
-            <span className="font-display text-[13px] font-bold uppercase tracking-[0.12em]">Añadir PDF</span>
+            <span className="font-display text-[13px] font-bold uppercase tracking-[0.12em]">{t('exp.addPdf')}</span>
             <input
               type="file"
               accept="application/pdf,.pdf"
@@ -374,16 +368,22 @@ export function ExportView({
         </div>
 
         <p className="mt-2.5 font-mono text-[10px] leading-relaxed tracking-[0.06em] text-night-500">
-          {n > 1 ? 'MANTÉN PRESIONADA UNA HOJA PARA MOVERLA' : 'TOCA UNA PÁGINA PARA VERLA'}
+          {n > 1 ? t('exp.hintDrag') : t('exp.hintTap')}
         </p>
-        <div className="flex justify-end">
+        <div className="flex items-center justify-between gap-2">
+          <a
+            href="/legal"
+            className="flex min-h-[40px] items-center font-mono text-[11px] tracking-[0.08em] text-night-500 underline-offset-4 active:text-volt"
+          >
+            {t('legal.link')}
+          </a>
           <button
             type="button"
             onClick={onRestart}
             className="flex min-h-[40px] items-center gap-1.5 font-mono text-[11px] font-bold tracking-[0.08em] text-night-400 active:text-danger"
           >
             <IconRefresh className="h-3.5 w-3.5" />
-            EMPEZAR DE NUEVO
+            {t('exp.restart')}
           </button>
         </div>
 
@@ -391,7 +391,7 @@ export function ExportView({
           htmlFor="scan-filename"
           className="mt-2 block rounded-2xl border border-night-700 bg-night-850 px-4 pb-2.5 pt-3 focus-within:border-volt"
         >
-          <span className="font-mono text-[11px] tracking-[0.08em] text-night-400">NOMBRE DEL ARCHIVO</span>
+          <span className="font-mono text-[11px] tracking-[0.08em] text-night-400">{t('exp.filename')}</span>
           {/* text-lg (18px): con menos de 16px, iOS hace zoom al enfocar. */}
           <input
             id="scan-filename"
@@ -420,37 +420,33 @@ export function ExportView({
           {format === 'pdf' && (
             <>
               <p id="paper-label" className="font-mono text-[11px] tracking-[0.08em] text-night-400">
-                TAMAÑO DE HOJA
+                {t('exp.paper')}
               </p>
               <Segmented
                 labelledBy="paper-label"
-                options={PAPER_OPTIONS}
+                options={PAPER_IDS.map((id) => ({ id, label: t(`paper.${id}`) }))}
                 value={paper}
                 onChange={setPaper}
               />
               <p className="mt-1 font-mono text-[10px] leading-relaxed tracking-[0.04em] text-night-500">
-                {paper === 'auto'
-                  ? 'LA HOJA TOMA LA FORMA DEL DOCUMENTO, SIN BORDES'
-                  : `${PAPERS[paper].label.toUpperCase()} EXACTA PARA IMPRIMIR · DOCUMENTO CENTRADO`}
+                {paper === 'auto' ? t('exp.paperAutoHint') : t('exp.paperFixedHint', { paper: t(`paper.${paper}`).toUpperCase() })}
               </p>
             </>
           )}
           <p id="quality-label" className={`font-mono text-[11px] tracking-[0.08em] text-night-400 ${format === 'pdf' ? 'mt-3' : ''}`}>
-            CALIDAD
+            {t('exp.quality')}
           </p>
           <Segmented
             labelledBy="quality-label"
             options={[
-              { id: 'max', label: 'Máxima' },
-              { id: 'small', label: 'Ligera' },
+              { id: 'max', label: t('exp.qMax') },
+              { id: 'small', label: t('exp.qSmall') },
             ]}
             value={quality}
             onChange={setQuality}
           />
           <p className="mt-1 font-mono text-[10px] leading-relaxed tracking-[0.04em] text-night-500">
-            {quality === 'max'
-              ? 'LA MEJOR NITIDEZ (300 DPI) · ARCHIVO MÁS PESADO'
-              : 'PESA MUCHO MENOS · IDEAL PARA WHATSAPP Y CORREO'}
+            {quality === 'max' ? t('exp.qMaxHint') : t('exp.qSmallHint')}
           </p>
         </div>
       </div>
@@ -460,7 +456,7 @@ export function ExportView({
         <div
           className="grid grid-cols-3 gap-1 rounded-2xl border border-night-700 bg-night-850 p-1"
           role="radiogroup"
-          aria-label="Formato"
+          aria-label={t('exp.format')}
         >
           {FORMATS.map((f) => {
             const selected = format === f.id;
@@ -487,7 +483,7 @@ export function ExportView({
           <span>{n > 0 ? sizeLabel : '—'}</span>
         </div>
         <p className="mt-1 text-center font-mono text-[10px] tracking-[0.04em] text-night-500">
-          {FORMATS.find((f) => f.id === format)!.hint.toUpperCase()}
+          {t(FORMATS.find((f) => f.id === format)!.hint).toUpperCase()}
         </p>
 
         {status.kind === 'error' && (
@@ -503,7 +499,7 @@ export function ExportView({
             className="press mt-2.5 flex h-14 w-full items-center justify-center gap-2.5 rounded-2xl bg-volt px-5 font-display text-xl font-extrabold uppercase tracking-[0.08em] text-night-950"
           >
             <IconShare className="h-5 w-5" />
-            Listo · toca para guardar
+            {t('exp.readyTap')}
           </button>
         ) : (
           <button
@@ -515,12 +511,12 @@ export function ExportView({
             {status.kind === 'working' ? (
               <>
                 <span className="spinner spinner-sm" aria-hidden />
-                Preparando
+                {t('exp.preparing')}
               </>
             ) : (
               <>
                 <IconShare className="h-5 w-5" />
-                Guardar {what}
+                {t('exp.save', { what })}
               </>
             )}
           </button>
@@ -540,7 +536,7 @@ export function ExportView({
               className="flex min-h-[40px] items-center gap-1.5 px-3 font-mono text-[11px] font-bold tracking-[0.08em] text-night-400 active:text-volt disabled:opacity-40"
             >
               <IconDownload className="h-3.5 w-3.5" />
-              DESCARGAR AL DISPOSITIVO
+              {t('exp.download')}
             </button>
           ) : (
             <span role="status" />
@@ -639,6 +635,7 @@ function PageViewer({
   onRotate: () => void;
   onRemove: () => void;
 }): React.ReactElement {
+  const { t } = useI18n();
   const [url, setUrl] = useState<string | null>(null);
   useEffect(() => {
     const u = URL.createObjectURL(page.blob);
@@ -695,7 +692,7 @@ function PageViewer({
     <div
       role="dialog"
       aria-modal="true"
-      aria-label={`Página ${index + 1} de ${total}`}
+      aria-label={t('exp.viewer.aria', { i: index + 1, n: total })}
       className="fixed inset-0 z-50 flex flex-col bg-night-950/[0.97]"
       style={{
         paddingTop: 'max(0.75rem, env(safe-area-inset-top))',
@@ -704,14 +701,14 @@ function PageViewer({
     >
       <div className="flex shrink-0 items-center justify-between px-4 pb-3">
         <span className="font-display text-2xl font-extrabold uppercase tracking-[0.04em]">
-          Página <span className="font-mono text-lg text-volt">{String(index + 1).padStart(2, '0')}</span>
+          {t('exp.viewer.page')} <span className="font-mono text-lg text-volt">{String(index + 1).padStart(2, '0')}</span>
           <span className="font-mono text-lg text-night-500">/{String(total).padStart(2, '0')}</span>
         </span>
         <button
           ref={closeRef}
           type="button"
           onClick={onClose}
-          aria-label="Cerrar"
+          aria-label={t('common.close')}
           className="press flex h-11 w-11 items-center justify-center rounded-full border border-night-600"
         >
           <IconX className="h-5 w-5" />
@@ -723,7 +720,7 @@ function PageViewer({
           // eslint-disable-next-line @next/next/no-img-element
           <img
             src={url ?? page.thumb}
-            alt={`Página ${index + 1}`}
+            alt={t('exp.viewer.alt', { i: index + 1 })}
             onClick={(e) => e.stopPropagation()}
             className="absolute left-1/2 top-1/2 max-w-none rounded-md shadow-[0_20px_50px_rgba(0,0,0,0.6)] transition-transform duration-200 ease-out motion-reduce:transition-none"
             style={{
@@ -740,17 +737,17 @@ function PageViewer({
           onClick={() => onMove(-1)}
           disabled={index === 0}
           icon={<IconChevronLeft className="h-5 w-5" />}
-          label="ANTES"
-          ariaLabel="Mover antes"
+          label={t('exp.viewer.before')}
+          ariaLabel={t('exp.viewer.beforeAria')}
         />
-        <ViewerAction onClick={onRotate} icon={<IconRotate className="h-5 w-5" />} label="GIRAR" ariaLabel="Girar" />
-        <ViewerAction onClick={onRemove} icon={<IconTrash className="h-5 w-5" />} label="QUITAR" ariaLabel="Quitar" danger />
+        <ViewerAction onClick={onRotate} icon={<IconRotate className="h-5 w-5" />} label={t('exp.viewer.rotate')} ariaLabel={t('exp.viewer.rotateAria')} />
+        <ViewerAction onClick={onRemove} icon={<IconTrash className="h-5 w-5" />} label={t('exp.viewer.remove')} ariaLabel={t('exp.viewer.removeAria')} danger />
         <ViewerAction
           onClick={() => onMove(1)}
           disabled={index === total - 1}
           icon={<IconChevronRight className="h-5 w-5" />}
-          label="DESPUÉS"
-          ariaLabel="Mover después"
+          label={t('exp.viewer.after')}
+          ariaLabel={t('exp.viewer.afterAria')}
         />
       </div>
     </div>,

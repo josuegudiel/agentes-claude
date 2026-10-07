@@ -8,6 +8,8 @@ import { CaptureView } from './CaptureView';
 import { EditView } from './EditView';
 import { defaultFilename, isExportFormat, type ExportFormat } from './export';
 import { ExportView } from './ExportView';
+import { AppError } from './errors';
+import { useI18n } from './i18n';
 import { IconCheck, IconX } from './icons';
 import { filterForMode, isScanMode, type ScanModeId } from './modes';
 import { newUid, pageFromBlob, pageFromCanvas, rotateClockwise, type ScanPage } from './pages';
@@ -60,6 +62,12 @@ const RESTORE_TIMEOUT_MS = 2500;
  * directo a export.
  */
 export function ScannerApp(): React.ReactElement {
+  const { t, lang } = useI18n();
+  // Los callbacks asincronos leen siempre el idioma actual.
+  const tRef = useRef(t);
+  tRef.current = t;
+  const errMsg = (err: unknown): string =>
+    err instanceof AppError ? tRef.current(err.code, err.vars) : tRef.current('err.generic');
   const [stage, setStage] = useState<Stage>('loading');
   // Cola de imagenes por editar (>1 cuando el usuario capturo en rafaga o
   // subio varios archivos). Se editan una a una, en orden.
@@ -166,8 +174,8 @@ export function ScannerApp(): React.ReactElement {
             goExport = true;
             setNotice({
               text:
-                `Sesión anterior restaurada · ${restored.length} ${restored.length === 1 ? 'página' : 'páginas'}` +
-                (missing > 0 ? ` (${missing} no se pudieron recuperar)` : ''),
+                tRef.current('app.restored', { n: restored.length }) +
+                (missing > 0 ? tRef.current('app.restoredMissing', { n: missing }) : ''),
             });
           }
           setOrphanPending(pend);
@@ -188,7 +196,7 @@ export function ScannerApp(): React.ReactElement {
             setPages((prev) => [...restored, ...prev]);
             goExport = true;
             setNotice({
-              text: `Sesión anterior restaurada · ${restored.length} ${restored.length === 1 ? 'página' : 'páginas'}`,
+              text: tRef.current('app.restored', { n: restored.length }),
             });
           }
           // Guardar en el formato nuevo; la base vieja se borra en el
@@ -299,20 +307,20 @@ export function ScannerApp(): React.ReactElement {
     setLoading(true);
     try {
       const loaded: PendingImage[] = [];
-      const failed: string[] = [];
+      const failed: unknown[] = [];
       for (const file of files) {
         try {
           const img = await loadImageFromFile(file);
           loaded.push({ id: nextIdRef.current++, uid: newUid(), blob: file, img });
         } catch (err) {
-          failed.push(err instanceof Error ? err.message : String(err));
+          failed.push(err);
         }
       }
       if (failed.length > 0) {
         setLoadError(
           loaded.length > 0
-            ? `${failed.length} de ${files.length} imágenes no se pudieron abrir. ${failed[0]}`
-            : failed[0]!,
+            ? tRef.current('app.someFailed', { n: failed.length, total: files.length }) + ' ' + errMsg(failed[0])
+            : errMsg(failed[0]),
         );
       }
       if (loaded.length === 0) return;
@@ -351,7 +359,7 @@ export function ScannerApp(): React.ReactElement {
     // sin querer en el telefono: confirmar.
     if (
       pendingImages.length > 1 &&
-      !window.confirm(`Se descartarán ${pendingImages.length} fotos sin editar. ¿Continuar?`)
+      !window.confirm(tRef.current('app.confirmDiscard', { n: pendingImages.length }))
     ) {
       return;
     }
@@ -379,7 +387,7 @@ export function ScannerApp(): React.ReactElement {
       markDirty();
       setOrphanPending([]);
       if (loaded.length === 0) {
-        setLoadError('No se pudieron abrir las fotos sin editar.');
+        setLoadError(tRef.current('app.orphansFailed'));
         return;
       }
       setPendingImages(loaded);
@@ -417,7 +425,7 @@ export function ScannerApp(): React.ReactElement {
         if (result.cancelled) return;
         const added = result.pages;
         if (added.length === 0) {
-          setLoadError('Ese PDF no tiene hojas.');
+          setLoadError(tRef.current('pdf.empty'));
           return;
         }
         markDirty();
@@ -425,12 +433,12 @@ export function ScannerApp(): React.ReactElement {
         setStage('export');
         let text =
           result.total > added.length + result.failed
-            ? `PDF añadido · primeras ${added.length} de ${result.total} hojas`
-            : `PDF añadido · ${added.length} ${added.length === 1 ? 'hoja' : 'hojas'}`;
-        if (result.failed > 0) text += ` (${result.failed} no se pudieron leer)`;
+            ? tRef.current('app.pdfAddedFirst', { n: added.length, total: result.total })
+            : tRef.current('app.pdfAdded', { n: added.length });
+        if (result.failed > 0) text += tRef.current('app.pdfFailed', { n: result.failed });
         setNotice({ text });
       } catch (err) {
-        setLoadError(err instanceof PdfImportError ? err.message : 'No se pudo abrir el PDF.');
+        setLoadError(err instanceof PdfImportError ? errMsg(err) : tRef.current('pdf.open'));
       } finally {
         importAbortRef.current = null;
         setImporting(null);
@@ -513,6 +521,15 @@ export function ScannerApp(): React.ReactElement {
     [markDirty],
   );
 
+  // Si el nombre sigue siendo el automatico, acompaña al idioma
+  // ("escaneo_2026-10-07" <-> "scan_2026-10-07").
+  useEffect(() => {
+    setFilename((f) => {
+      const other = defaultFilename(lang === 'es' ? 'en' : 'es');
+      return f === other ? defaultFilename(lang) : f;
+    });
+  }, [lang]);
+
   const changeFilename = useCallback(
     (v: string) => {
       userTouchedRef.current = true;
@@ -534,7 +551,7 @@ export function ScannerApp(): React.ReactElement {
     const n = pages.length;
     if (
       n > 0 &&
-      !window.confirm(`Se borrarán ${n === 1 ? 'la página' : `las ${n} páginas`} de este documento. ¿Empezar de nuevo?`)
+      !window.confirm(tRef.current('app.confirmRestart', { n }))
     ) {
       return;
     }
@@ -545,17 +562,17 @@ export function ScannerApp(): React.ReactElement {
     setNotice(null);
     setRemoved([]);
     setOrphanPending([]);
-    setFilename(defaultFilename());
+    setFilename(defaultFilename(lang));
     setStage('capture');
     // Guardado normal de una sesion vacia: borra los blobs registro por
     // registro. (Con conflicto de pestanas no se toca el almacenamiento:
     // la sesion guardada es de la otra pestana.)
     markDirty();
-  }, [pages.length, markDirty]);
+  }, [pages.length, markDirty, lang]);
 
   const queueLabel =
     pendingTotal > 1
-      ? `FOTO ${pendingTotal - pendingImages.length + 1}/${pendingTotal}`
+      ? t('app.queue', { i: pendingTotal - pendingImages.length + 1, n: pendingTotal })
       : undefined;
 
   const showNotice = notice && (notice.stage ?? 'export') === stage;
@@ -575,13 +592,13 @@ export function ScannerApp(): React.ReactElement {
             className="toast-in pointer-events-auto flex items-start justify-between gap-2 rounded-2xl border border-danger/60 bg-night-900/95 px-3.5 py-2.5 text-sm text-night-100 shadow-[0_10px_30px_rgba(0,0,0,0.5)] backdrop-blur"
           >
             <span>
-              <strong className="font-mono text-[11px] font-bold tracking-[0.08em] text-danger">NO SE PUDO ABRIR · </strong>
+              <strong className="font-mono text-[11px] font-bold tracking-[0.08em] text-danger">{t('app.cantOpen')} · </strong>
               {loadError}
             </span>
             <button
               type="button"
               onClick={() => setLoadError(null)}
-              aria-label="Cerrar aviso"
+              aria-label={t('common.closeNotice')}
               className="-m-1 flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-night-300"
             >
               <IconX className="h-4 w-4" />
@@ -596,27 +613,26 @@ export function ScannerApp(): React.ReactElement {
           >
             {persistError === 'conflict' ? (
               <span>
-                <strong className="font-mono text-[11px] font-bold tracking-[0.08em] text-warn">OTRA PESTAÑA · </strong>
-                La app está abierta en otra pestaña y los cambios de aquí ya no se guardan.{' '}
+                <strong className="font-mono text-[11px] font-bold tracking-[0.08em] text-warn">{t('app.otherTab')} · </strong>
+                {t('app.otherTabMsg')}{' '}
                 <button
                   type="button"
                   onClick={() => window.location.reload()}
                   className="font-bold text-volt underline underline-offset-2"
                 >
-                  Recargar
+                  {t('common.reload')}
                 </button>
               </span>
             ) : (
               <span>
-                <strong className="font-mono text-[11px] font-bold tracking-[0.08em] text-warn">SIN RESPALDO · </strong>
-                No se pudo guardar la sesión (almacenamiento lleno o modo privado). Guarda el archivo ahora: si
-                recargas, perderás las páginas.
+                <strong className="font-mono text-[11px] font-bold tracking-[0.08em] text-warn">{t('app.noBackup')} · </strong>
+                {t('app.noBackupMsg')}
               </span>
             )}
             <button
               type="button"
               onClick={() => setPersistDismissed(true)}
-              aria-label="Cerrar aviso"
+              aria-label={t('common.closeNotice')}
               className="-m-1 flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-night-300"
             >
               <IconX className="h-4 w-4" />
@@ -630,8 +646,7 @@ export function ScannerApp(): React.ReactElement {
             className="toast-in pointer-events-auto rounded-2xl border border-volt/50 bg-night-900/95 px-3.5 py-2.5 text-sm text-night-100 backdrop-blur"
           >
             <p>
-              Tienes {orphanPending.length === 1 ? '1 foto' : `${orphanPending.length} fotos`} sin editar de la vez
-              anterior.
+              {t('app.orphans', { n: orphanPending.length })}
             </p>
             <div className="mt-2 flex justify-end gap-2">
               <button
@@ -639,14 +654,14 @@ export function ScannerApp(): React.ReactElement {
                 onClick={discardOrphans}
                 className="min-h-[40px] rounded-xl border border-night-600 px-3 font-mono text-[11px] font-bold tracking-[0.08em] text-night-300"
               >
-                DESCARTAR
+                {t('app.discard')}
               </button>
               <button
                 type="button"
                 onClick={() => void resumeOrphans()}
                 className="min-h-[40px] rounded-xl bg-volt px-3 font-mono text-[11px] font-bold tracking-[0.08em] text-night-950"
               >
-                CONTINUAR
+                {t('app.continue')}
               </button>
             </div>
           </div>
@@ -664,7 +679,7 @@ export function ScannerApp(): React.ReactElement {
             <button
               type="button"
               onClick={() => setNotice(null)}
-              aria-label="Cerrar aviso"
+              aria-label={t('common.closeNotice')}
               className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-night-400"
             >
               <IconX className="h-4 w-4" />
@@ -675,7 +690,7 @@ export function ScannerApp(): React.ReactElement {
 
       {stage === 'loading' && (
         <div className="flex flex-1 items-center justify-center" aria-busy="true">
-          <span className="spinner" aria-label="Cargando" />
+          <span className="spinner" aria-label={t('common.loading')} />
         </div>
       )}
 
@@ -731,14 +746,14 @@ export function ScannerApp(): React.ReactElement {
         >
           <span className="spinner" aria-hidden />
           <span className="font-mono text-xs font-bold tracking-[0.12em] text-night-100">
-            LEYENDO PDF{importing.total > 0 ? ` · ${importing.done}/${importing.total}` : ''}
+            {t('app.readingPdf')}{importing.total > 0 ? ` · ${importing.done}/${importing.total}` : ''}
           </span>
           <button
             type="button"
             onClick={() => importAbortRef.current?.abort()}
             className="mt-2 min-h-[44px] rounded-xl border border-night-600 px-5 font-mono text-xs font-bold tracking-[0.1em] text-night-200"
           >
-            CANCELAR
+            {t('common.cancel')}
           </button>
         </div>
       )}
@@ -750,14 +765,14 @@ export function ScannerApp(): React.ReactElement {
           style={{ bottom: 'calc(env(safe-area-inset-bottom) + 13rem)' }}
         >
           <span className="font-mono text-xs font-bold tracking-[0.08em]">
-            {removed.length === 1 ? 'PÁGINA ELIMINADA' : `${removed.length} PÁGINAS ELIMINADAS`}
+            {t('app.removed', { n: removed.length })}
           </span>
           <button
             type="button"
             onClick={handleUndoRemove}
             className="min-h-[44px] rounded-lg px-3 font-display text-lg font-extrabold uppercase tracking-[0.1em] text-volt"
           >
-            Deshacer
+            {t('app.undo')}
           </button>
         </div>
       )}

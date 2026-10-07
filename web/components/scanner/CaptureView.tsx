@@ -12,6 +12,7 @@ import {
 import { detectDocumentQuad } from './edge-detect';
 import { IconCamera, IconFileAdd, IconImages, IconLayers, IconRefresh, IconScanFrame, IconTorch } from './icons';
 import { SCAN_MODES, type ScanModeId } from './modes';
+import { LangSwitch, useI18n, type TFn } from './i18n';
 import { PageThumb } from './PageThumb';
 import type { ScanPage } from './pages';
 import type { Quad } from './perspective';
@@ -56,6 +57,9 @@ export function CaptureView({
   lastPage,
   onImportPdf,
 }: Props): React.ReactElement {
+  const { t } = useI18n();
+  const tRef = useRef(t);
+  tRef.current = t;
   const busy = busyProp || suspended;
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -154,7 +158,7 @@ export function CaptureView({
       setMode('live');
     } catch (err) {
       if (cancellation.cancelled) return;
-      setErrorMsg(friendlyCameraError(err));
+      setErrorMsg(friendlyCameraError(err, tRef.current));
       setMode('fallback');
     }
   }, []);
@@ -341,7 +345,7 @@ export function CaptureView({
     if (inflightRef.current) await inflightRef.current;
     if (!mountedRef.current) return;
     const n = shotsRef.current.length;
-    if (n > 0 && !window.confirm(`Tienes ${n} ${n === 1 ? 'foto' : 'fotos'} sin editar. ¿Descartarlas?`)) {
+    if (n > 0 && !window.confirm(tRef.current('cap.confirmDiscard', { n }))) {
       return;
     }
     onCancel();
@@ -504,18 +508,18 @@ export function CaptureView({
   const hud: { text: string; tone: 'volt' | 'warn' | 'idle' } | null = busy
     ? null
     : shooting
-      ? { text: 'CAPTURANDO · NO TE MUEVAS', tone: 'volt' }
+      ? { text: t('cap.hud.shooting'), tone: 'volt' }
       : !autoMode
-        ? { text: 'MANUAL · TOCA EL OBTURADOR', tone: 'idle' }
+        ? { text: t('cap.hud.manual'), tone: 'idle' }
         : lowContrast
-          ? { text: 'POCO CONTRASTE · MÁS LUZ', tone: 'warn' }
+          ? { text: t('cap.hud.lowContrast'), tone: 'warn' }
           : waitingNext
-            ? { text: 'LISTO · PON LA SIGUIENTE HOJA', tone: 'idle' }
+            ? { text: t('cap.hud.next'), tone: 'idle' }
             : locking
-              ? { text: 'BLOQUEADO · NO TE MUEVAS', tone: 'volt' }
+              ? { text: t('cap.hud.locked'), tone: 'volt' }
               : liveQuad
-                ? { text: 'DOCUMENTO DETECTADO', tone: 'volt' }
-                : { text: 'BUSCANDO BORDES', tone: 'idle' };
+                ? { text: t('cap.hud.detected'), tone: 'volt' }
+                : { text: t('cap.hud.searching'), tone: 'idle' };
 
   const stackPage = lastShotUrl ? undefined : lastPage;
   const stackCount = shots.length > 0 ? shots.length : pageCount;
@@ -552,14 +556,14 @@ export function CaptureView({
             className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-3 bg-black/70 text-night-100"
           >
             <IconCamera className="h-8 w-8" />
-            <span className="font-mono text-xs font-bold tracking-[0.12em]">TOCA PARA ACTIVAR LA CÁMARA</span>
+            <span className="font-mono text-xs font-bold tracking-[0.12em]">{t('cap.tapToStart')}</span>
           </button>
         )}
 
         {mode === 'starting' && (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-night-950 text-night-400">
             <IconCamera className="h-8 w-8 animate-pulse" />
-            <span className="font-mono text-xs tracking-[0.14em]">ABRIENDO CÁMARA</span>
+            <span className="font-mono text-xs tracking-[0.14em]">{t('cap.opening')}</span>
           </div>
         )}
 
@@ -568,15 +572,16 @@ export function CaptureView({
             <div className="flex h-16 w-16 items-center justify-center rounded-2xl border border-night-700 bg-night-850 text-night-300">
               <IconCamera className="h-8 w-8" />
             </div>
+            <div className="top-safe absolute right-3.5">
+              <LangSwitch />
+            </div>
             <div className="max-w-xs">
-              <p className="font-display text-2xl font-bold uppercase tracking-wide text-night-100">Sin cámara</p>
-              <p className="mt-1.5 text-sm leading-relaxed text-night-400">
-                {errorMsg ?? 'No pudimos abrir la cámara en este navegador.'}
-              </p>
+              <p className="font-display text-2xl font-bold uppercase tracking-wide text-night-100">{t('cap.noCamera')}</p>
+              <p className="mt-1.5 text-sm leading-relaxed text-night-400">{errorMsg ?? t('cap.noCameraMsg')}</p>
             </div>
             <label className="press flex min-h-[52px] cursor-pointer items-center gap-2 rounded-2xl bg-volt px-7 font-display text-lg font-extrabold uppercase tracking-[0.1em] text-night-950">
               <IconCamera className="h-5 w-5" />
-              Tomar foto
+              {t('cap.takePhoto')}
               <input
                 type="file"
                 accept="image/*"
@@ -591,8 +596,11 @@ export function CaptureView({
               className="flex min-h-[44px] items-center gap-2 px-3 font-mono text-xs tracking-[0.12em] text-night-300"
             >
               <IconRefresh className="h-4 w-4" />
-              REINTENTAR CÁMARA
+              {t('cap.retry')}
             </button>
+            <a href="/legal" className="font-mono text-[11px] tracking-[0.08em] text-night-500 underline underline-offset-4">
+              {t('legal.link')}
+            </a>
           </div>
         )}
 
@@ -643,26 +651,27 @@ export function CaptureView({
                 active={autoMode}
                 onClick={() => setAutoMode((a) => !a)}
                 label="AUTO"
-                title="Captura automática al detectar el documento"
+                title={t('cap.autoTitle')}
               />
               <Chip
                 active={batchMode}
                 onClick={() => setBatchMode((b) => !b)}
-                label={batchMode && shots.length > 0 ? `RÁFAGA ${shots.length}` : 'RÁFAGA'}
+                label={batchMode && shots.length > 0 ? `${t('cap.burst')} ${shots.length}` : t('cap.burst')}
                 icon={<IconLayers className="h-3.5 w-3.5" />}
-                title="Varias páginas seguidas: se editan al final"
+                title={t('cap.burstTitle')}
               />
-              {torchSupported && (
-                <span className="ml-auto">
+              <span className="ml-auto flex items-center gap-2">
+                {torchSupported && (
                   <Chip
                     active={torchOn}
                     onClick={() => void toggleTorch()}
-                    label={torchOn ? 'LUZ ON' : 'LUZ'}
+                    label={torchOn ? t('cap.torchOn') : t('cap.torch')}
                     icon={<IconTorch className="h-3.5 w-3.5" />}
-                    title="Linterna"
+                    title={t('cap.torchTitle')}
                   />
-                </span>
-              )}
+                )}
+                <LangSwitch />
+              </span>
             </div>
 
             {/* HUD */}
@@ -695,7 +704,7 @@ export function CaptureView({
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-night-950/75 text-volt">
             <span className="spinner" aria-hidden />
             <span className="font-mono text-xs font-bold tracking-[0.14em] text-night-100" role="status">
-              PREPARANDO FOTO
+              {t('cap.preparing')}
             </span>
           </div>
         )}
@@ -704,7 +713,7 @@ export function CaptureView({
       {/* Modos de escaneo */}
       <div
         role="radiogroup"
-        aria-label="Modo de escaneo"
+        aria-label={t('cap.modes')}
         className="no-scrollbar flex shrink-0 justify-center gap-6 overflow-x-auto px-4 pb-1 pt-3.5 short:hidden"
       >
         {SCAN_MODES.map((m) => {
@@ -720,7 +729,7 @@ export function CaptureView({
                 on ? 'text-volt' : 'text-night-400'
               }`}
             >
-              {m.label}
+              {t(`mode.${m.id}`)}
             </button>
           );
         })}
@@ -734,7 +743,7 @@ export function CaptureView({
               type="button"
               onClick={() => void (shots.length > 0 ? handleBatchDone() : handleCancel())}
               disabled={busy}
-              aria-label={shots.length > 0 ? `Editar ${shots.length} capturas` : `Mis páginas (${pageCount})`}
+              aria-label={shots.length > 0 ? t('cap.editShots', { n: shots.length }) : t('cap.myPages', { n: pageCount })}
               className="press relative h-14 w-14 rounded-xl border-2 border-night-100 bg-night-850"
             >
               {lastShotUrl ? (
@@ -751,7 +760,7 @@ export function CaptureView({
             </button>
           ) : (
             <label
-              aria-label="Añadir un PDF"
+              aria-label={t('common.addPdf')}
               className={`press flex h-14 w-14 cursor-pointer flex-col items-center justify-center gap-0.5 rounded-full border border-night-600 text-night-100 ${
                 busy || shooting ? 'pointer-events-none opacity-50' : ''
               }`}
@@ -780,7 +789,7 @@ export function CaptureView({
               onClick={() => handleShutter()}
               disabled={busy || shooting}
               className="shutter shrink-0"
-              aria-label={batchMode ? `Capturar página ${shots.length + 1}` : 'Capturar'}
+              aria-label={batchMode ? t('cap.captureN', { n: shots.length + 1 }) : t('cap.capture')}
             >
               <span className="shutter-inner block" />
             </button>
@@ -797,17 +806,17 @@ export function CaptureView({
               disabled={busy}
               className="press flex h-14 items-center rounded-xl bg-volt px-4 font-display text-lg font-extrabold uppercase tracking-[0.1em] text-night-950"
             >
-              Listo
+              {t('cap.done')}
             </button>
           ) : (
             <label
-              aria-label="Galería"
+              aria-label={t('cap.gallery')}
               className={`press flex h-14 w-14 cursor-pointer flex-col items-center justify-center gap-0.5 rounded-full border border-night-600 text-night-100 ${
                 busy || shooting ? 'pointer-events-none opacity-50' : ''
               }`}
             >
               <IconImages className="h-5 w-5" />
-              <span className="font-mono text-[9px] font-bold tracking-[0.08em]">GALERÍA</span>
+              <span className="font-mono text-[9px] font-bold tracking-[0.08em]">{t('cap.galleryShort')}</span>
               <input
                 type="file"
                 accept="image/*"
@@ -910,19 +919,19 @@ async function takeStill(stream: MediaStream | null, torchOn: boolean): Promise<
 }
 
 /** Traduce los errores de getUserMedia a algo que el usuario pueda resolver. */
-function friendlyCameraError(err: unknown): string {
+function friendlyCameraError(err: unknown, t: TFn): string {
   const name = err instanceof Error ? err.name : '';
   switch (name) {
     case 'NotAllowedError':
     case 'SecurityError':
-      return 'El permiso de cámara está bloqueado. Actívalo en los ajustes del navegador, o toma la foto con el botón de abajo.';
+      return t('cap.errDenied');
     case 'NotFoundError':
     case 'OverconstrainedError':
-      return 'No encontramos una cámara en este dispositivo.';
+      return t('cap.errNotFound');
     case 'NotReadableError':
     case 'AbortError':
-      return 'Otra app está usando la cámara. Ciérrala y reintenta.';
+      return t('cap.errBusy');
     default:
-      return err instanceof Error && err.message ? err.message : 'Error desconocido.';
+      return t('cap.errUnknown');
   }
 }

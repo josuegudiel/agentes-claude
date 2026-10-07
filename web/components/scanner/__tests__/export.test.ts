@@ -33,7 +33,8 @@ describe('outputNames', () => {
 
 describe('defaultFilename', () => {
   it('usa la fecha local AAAA-MM-DD', () => {
-    expect(defaultFilename(new Date(2026, 9, 4, 23, 59))).toBe('escaneo_2026-10-04');
-    expect(defaultFilename(new Date(2027, 0, 9))).toBe('escaneo_2027-01-09');
+    expect(defaultFilename('es', new Date(2026, 9, 4, 23, 59))).toBe('escaneo_2026-10-04');
+    expect(defaultFilename('es', new Date(2027, 0, 9))).toBe('escaneo_2027-01-09');
+    expect(defaultFilename('en', new Date(2027, 0, 9))).toBe('scan_2027-01-09');
   });
 });
