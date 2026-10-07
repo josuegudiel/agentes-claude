@@ -1,4 +1,5 @@
 import { estimateStraighten, straightenRowMapper } from './dewarp';
+import { AppError } from './errors';
 import { applyFilter, type FilterId } from './filters';
 import {
   estimateAspectRatio,
@@ -217,9 +218,7 @@ export async function loadImageFromFile(file: Blob): Promise<HTMLImageElement> {
       // en Android no las sabe abrir. Decirlo claro en vez de un error generico.
       const name = (file as File).name ?? '';
       if (/hei[cf]/i.test(file.type) || /\.hei[cf]$/i.test(name)) {
-        throw new Error(
-          'Este navegador no abre fotos HEIC. Cambia la cámara a "JPG / Más compatible" o compártela como JPG.',
-        );
+        throw new AppError('img.heic');
       }
       throw err;
     }
@@ -228,11 +227,9 @@ export async function loadImageFromFile(file: Blob): Promise<HTMLImageElement> {
 
     // Guarda anti-OOM: si el decode devolvio dimensiones absurdas,
     // abortar con error claro en vez de arrastrar cientos de MB.
-    if (!nw || !nh) throw new Error('La imagen no tiene dimensiones válidas');
+    if (!nw || !nh) throw new AppError('img.invalid');
     if ((nw * nh) / 1e6 > MAX_MEGAPIXELS) {
-      throw new Error(
-        `Imagen demasiado grande (${Math.round((nw * nh) / 1e6)} MP). Máximo ${MAX_MEGAPIXELS} MP.`,
-      );
+      throw new AppError('img.tooBig', { mp: Math.round((nw * nh) / 1e6), max: MAX_MEGAPIXELS });
     }
 
     // PNG/WebP/GIF pueden traer transparencia: los filtros la leian como
@@ -308,7 +305,7 @@ function loadImage(src: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.onload = () => resolve(img);
-    img.onerror = () => reject(new Error('No se pudo abrir la imagen (formato no compatible o archivo dañado).'));
+    img.onerror = () => reject(new AppError('img.decode'));
     img.src = src;
   });
 }
